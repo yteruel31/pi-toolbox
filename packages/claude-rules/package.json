@@ -26,6 +26,7 @@
   ],
   "scripts": {
     "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.mjs",
     "pack:dry": "npm pack --dry-run"
   },
   "peerDependencies": {
@@ -39,6 +40,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.80.2",
     "@types/node": "^22.19.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
 }

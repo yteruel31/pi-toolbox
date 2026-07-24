@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Skip inaccessible directories while discovering Claude rule files, including Windows paths that return `EPERM`.
+
 ### Added
 - Initial `pi-claude-rules` package.
 - Claude rule discovery from `.claude/rules/`, descendant `*/.claude/rules/`, and `~/.claude/rules/`.
