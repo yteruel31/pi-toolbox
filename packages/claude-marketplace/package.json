@@ -1,0 +1,50 @@
+{
+  "name": "pi-claude-marketplace",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pi extension for installing and running Claude Code marketplace plugins.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "claude",
+    "claude-code",
+    "marketplace",
+    "plugins"
+  ],
+  "author": "Yoann Teruel",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "scripts/test-hooks.mjs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit && node scripts/test-hooks.mjs",
+    "test:hooks": "node scripts/test-hooks.mjs",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-tui": "0.80.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.2",
+    "@types/node": "^22.19.1",
+    "typescript": "^5.9.3"
+  }
+}

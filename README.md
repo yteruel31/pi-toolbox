@@ -20,6 +20,18 @@ To pin the installation to a tag or commit, append a ref such as `@v0.1.0`.
 
 ## Packages
 
+### [`pi-claude-marketplace`](./packages/claude-marketplace)
+
+Install and run Claude Code marketplace plugins in Pi.
+
+### [`pi-claude-context`](./packages/claude-context)
+
+Inject descendant Claude Code `CLAUDE.md` context files into Pi sessions.
+
+### [`pi-claude-rules`](./packages/claude-rules)
+
+Inject relevant Claude Code `.claude/rules/` files into Pi sessions.
+
 ### [`pi-learning`](./packages/pi-learning)
 
 A pull-only, challenge-first technical learning mode for Pi.
