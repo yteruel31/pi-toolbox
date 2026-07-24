@@ -4,6 +4,8 @@ import * as path from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import { findDescendantDirectories, findMarkdownFiles } from "./directory-scanning.ts";
+
 type ClaudeRuleScope = "project" | "user";
 
 type ClaudeRule = {
@@ -82,68 +84,6 @@ function matchingRulesForFiles(rules: ClaudeRule[], files: string[]): ClaudeRule
 
 function extractPathLikeTokens(command: string): string[] {
 	return [...command.matchAll(/(?:^|\s)([./]?[\w@-][\w@./(){}+,-]*\.\w+)(?=\s|$)/g)].map((match) => match[1]);
-}
-
-const IGNORED_DIRS = new Set([".git", ".bare", "node_modules", ".next", "dist", "build", "coverage", ".turbo", ".cache"]);
-const MAX_DESCENDANT_DEPTH = 4;
-
-function findMarkdownFiles(dir: string, basePath = ""): string[] {
-	if (!fs.existsSync(dir)) {
-		return [];
-	}
-
-	const entries = fs.readdirSync(dir, { withFileTypes: true });
-	const files: string[] = [];
-
-	for (const entry of entries) {
-		const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name;
-		const absolutePath = path.join(dir, entry.name);
-
-		if (entry.isDirectory()) {
-			if (!IGNORED_DIRS.has(entry.name)) {
-				files.push(...findMarkdownFiles(absolutePath, relativePath));
-			}
-		} else if (entry.isFile() && entry.name.endsWith(".md")) {
-			files.push(relativePath);
-		}
-	}
-
-	return files.sort((a, b) => a.localeCompare(b));
-}
-
-function findDescendantDirectories(rootDir: string, targetDirectoryPath: string): string[] {
-	if (!fs.existsSync(rootDir)) {
-		return [];
-	}
-
-	const results: string[] = [];
-	const targetParts = targetDirectoryPath.split("/");
-
-	const visit = (directory: string, relativeDirectory: string, depth: number) => {
-		if (depth > MAX_DESCENDANT_DEPTH) {
-			return;
-		}
-
-		for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-			if (!entry.isDirectory() || IGNORED_DIRS.has(entry.name)) {
-				continue;
-			}
-
-			const absolutePath = path.join(directory, entry.name);
-			const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-			const relativeParts = relativePath.split("/");
-			const tail = relativeParts.slice(-targetParts.length).join("/");
-
-			if (tail === targetDirectoryPath) {
-				results.push(relativePath);
-			}
-
-			visit(absolutePath, relativePath, depth + 1);
-		}
-	};
-
-	visit(rootDir, "", 0);
-	return results.sort((a, b) => a.localeCompare(b));
 }
 
 function parseRule(rulesDir: string, relativePath: string, scope: ClaudeRuleScope, displayRoot: string, matchPathPrefix = ""): ClaudeRule {
