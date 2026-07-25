@@ -36,6 +36,10 @@ Inject relevant Claude Code `.claude/rules/` files into Pi sessions.
 
 A pull-only, challenge-first technical learning mode for Pi.
 
+### [`pi-session-title`](./packages/session-title)
+
+Keep Pi session names synchronized with Herdr tabs, tmux windows, and terminal titles.
+
 ## Themes
 
 ### Fallout: New Vegas

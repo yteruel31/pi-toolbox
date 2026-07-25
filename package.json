@@ -15,7 +15,8 @@
       "./packages/claude-marketplace/src/index.ts",
       "./packages/claude-context/src/index.ts",
       "./packages/claude-rules/src/index.ts",
-      "./packages/pi-learning/src/index.ts"
+      "./packages/pi-learning/src/index.ts",
+      "./packages/session-title/src/index.ts"
     ],
     "themes": [
       "./themes/*.json"
