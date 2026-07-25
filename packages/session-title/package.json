@@ -1,0 +1,53 @@
+{
+  "name": "pi-session-title",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Keep Pi session names synchronized with Herdr tabs, tmux windows, and terminal titles.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "herdr",
+    "session-title",
+    "tmux"
+  ],
+  "author": "Yoann Teruel",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "scripts/test-session-title.mjs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit && node scripts/test-session-title.mjs",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.81.1",
+    "@earendil-works/pi-coding-agent": "0.81.1",
+    "@types/node": "^22.19.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
