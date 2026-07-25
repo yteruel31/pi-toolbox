@@ -89,13 +89,19 @@ try {
   assert(handlers.has("session_start"), "the extension should register session lifecycle handlers");
 
   const titles = [];
+  const statuses = [];
   const notifications = [];
   const context = {
     mode: "tui",
     model: undefined,
     modelRegistry: {},
     ui: {
+      theme: {
+        fg(_color, text) { return text; },
+        bold(text) { return text; },
+      },
       setTitle(title) { titles.push(title); },
+      setStatus(key, value) { statuses.push({ key, value }); },
       notify(message, level) { notifications.push({ message, level }); },
     },
     sessionManager: {
@@ -113,6 +119,8 @@ try {
   assertEqual(sessionNames.at(-1), "π implement oauth callback…", "raw input should name the Pi session before prompt expansion");
   await handlers.get("session_info_changed")({ name: sessionNames.at(-1) }, context);
   assertEqual(titles.at(-1), sessionNames.at(-1), "the terminal title should stay synchronized through the session event");
+  assertEqual(statuses.at(-1)?.key, "session-title", "the session title should use a stable status bar key");
+  assertEqual(statuses.at(-1)?.value, `session ◀ ${sessionNames.at(-1)} ▶`, "the Pi status bar should display the current session name");
 
   const generatedNameCount = sessionNames.length;
   await handlers.get("before_agent_start")({ prompt: "A later prompt must not rename it" }, context);
@@ -144,6 +152,7 @@ try {
   await handlers.get("session_info_changed")({ name: sessionNames.at(-1) }, jsonContext);
   assertEqual(sessionNames.at(-1), "Headless title", "headless mode should still update session metadata");
   assertEqual(titles.length, titleCount, "headless mode should not write terminal title side effects");
+  assertEqual(statuses.at(-1)?.value, "session ◀ Manual title ▶", "headless mode should not write status bar side effects");
   await handlers.get("session_shutdown")({ reason: "quit" }, context);
 
   const fakeBin = join(tmpRoot, "bin");
