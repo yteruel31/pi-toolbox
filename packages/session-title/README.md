@@ -8,7 +8,7 @@ Keep Pi session names synchronized with Herdr tabs, tmux windows, and terminal t
 - Restores an existing Pi session name when a session is resumed.
 - Renames the current Herdr tab when Pi runs inside Herdr.
 - Renames the current tmux window when Pi runs inside tmux.
-- Updates the host terminal title in interactive Pi sessions.
+- Updates the host terminal title and displays the current session name in Pi's status bar in interactive sessions.
 - Provides `/rename <title>` for manual names and `/rename` for a new AI-generated name based on the conversation.
 - Falls back to deterministic prompt keywords when the active model or credentials are unavailable.
 

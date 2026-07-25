@@ -151,7 +151,13 @@ async function summarizePrompt(prompt: string, ctx: ExtensionContext, signal?: A
 
 function setTerminalTitle(title: string, ctx: ExtensionContext): void {
 	const safe = safeTitle(title);
-	if (safe && ctx.mode === "tui") ctx.ui.setTitle(safe);
+	if (!safe || ctx.mode !== "tui") return;
+
+	ctx.ui.setTitle(safe);
+	const theme = ctx.ui.theme;
+	const label = theme.fg("dim", "session ");
+	const sessionName = theme.fg("accent", theme.bold(`◀ ${safe} ▶`));
+	ctx.ui.setStatus("session-title", label + sessionName);
 }
 
 async function resetHerdrTabTitle(signal: AbortSignal): Promise<void> {

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Current session name display in Pi's interactive status bar.
 - Initial `pi-session-title` package.
 - Automatic short session titles generated in the background from the first user prompt.
 - Non-blocking synchronization with Pi session names, Herdr tabs, tmux windows, and interactive terminal titles.
