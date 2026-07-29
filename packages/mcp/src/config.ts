@@ -11,16 +11,17 @@ export interface McpUiSettings {
 	idleTimeoutMs: number;
 }
 
+export type DirectToolsSetting = boolean | readonly string[];
 export type McpServerDefinition = Record<string, unknown>;
 export interface ConfigDiagnostic {
 	source: string;
-	code: "invalid-json" | "invalid-top-level" | "unsafe-key" | "invalid-ui" | "invalid-server" | "read-error";
+	code: "invalid-json" | "invalid-top-level" | "unsafe-key" | "invalid-ui" | "invalid-direct-tools" | "invalid-server" | "read-error";
 	path: string;
 	message: string;
 }
 export interface McpConfig {
 	mcpServers: Record<string, McpServerDefinition>;
-	settings: { ui: McpUiSettings };
+	settings: { ui: McpUiSettings; directTools?: boolean };
 	diagnostics: ConfigDiagnostic[];
 }
 
@@ -67,6 +68,12 @@ function validHostname(value: unknown): value is string {
 }
 const validPort = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 65_535;
 
+export function parseDirectTools(value: unknown): DirectToolsSetting | undefined {
+	if (typeof value === "boolean") return value;
+	if (!Array.isArray(value) || value.length > 100 || !value.every((item) => typeof item === "string" && item.length > 0 && item.length <= 256) || new Set(value).size !== value.length) return undefined;
+	return Object.freeze([...value]);
+}
+
 function parseUi(value: unknown, base: McpUiSettings): McpUiSettings | undefined {
 	if (!isPlainObject(value) || unsafePath(value) || Object.keys(value).some((key) => !UI_KEYS.has(key))) return undefined;
 	const candidate = { ...base, ...value };
@@ -85,6 +92,7 @@ export function loadMcpConfig(options: { homeDir?: string; paths?: readonly stri
 	const diagnostics: ConfigDiagnostic[] = [];
 	const mcpServers: Record<string, McpServerDefinition> = Object.create(null) as Record<string, McpServerDefinition>;
 	let ui = { ...DEFAULT_UI_SETTINGS };
+	let directTools = false;
 	const paths = options.paths ?? getMcpConfigPaths(options.homeDir);
 	const report = (source: string, code: ConfigDiagnostic["code"], path: string, message: string): void => {
 		diagnostics.push({ source, code, path, message });
@@ -113,13 +121,20 @@ export function loadMcpConfig(options: { homeDir?: string; paths?: readonly stri
 			}
 		}
 		if (layer.settings !== undefined) {
-			if (!isPlainObject(layer.settings) || unsafePath(layer.settings)) report(source, "invalid-ui", "$.settings.ui", "UI settings layer was rejected");
-			else if (layer.settings.ui !== undefined) {
-				const parsed = parseUi(layer.settings.ui, ui);
-				if (parsed) ui = parsed;
-				else report(source, "invalid-ui", "$.settings.ui", "UI settings layer was rejected");
+			if (!isPlainObject(layer.settings) || unsafePath(layer.settings)) report(source, "invalid-ui", "$.settings", "Settings layer was rejected");
+			else {
+				if (layer.settings.ui !== undefined) {
+					const parsed = parseUi(layer.settings.ui, ui);
+					if (parsed) ui = parsed;
+					else report(source, "invalid-ui", "$.settings.ui", "UI settings layer was rejected");
+				}
+				if (layer.settings.directTools !== undefined) {
+					const parsed = parseDirectTools(layer.settings.directTools);
+					if (typeof parsed === "boolean") directTools = parsed;
+					else report(source, "invalid-direct-tools", "$.settings.directTools", "Direct tools setting was rejected");
+				}
 			}
 		}
 	}
-	return { mcpServers, settings: { ui }, diagnostics };
+	return { mcpServers, settings: { ui, directTools }, diagnostics };
 }

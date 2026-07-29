@@ -21,6 +21,19 @@ test("server parser preserves valid URL siblings and emits value-free diagnostic
 	assert.equal(parsed.diagnostics.length, 3);
 });
 
+test("server directTools overrides are carried and malformed selection does not discard transport", () => {
+	const parsed = parseServerConfigs({ mcpServers: {
+		on: { url: "https://safe.test", directTools: true },
+		list: { command: "node", directTools: ["read", "write"] },
+		malformed: { url: "https://safe.test", directTools: ["duplicate", "duplicate"] },
+	} } as never);
+	assert.deepEqual([...parsed.servers.keys()], ["on", "list", "malformed"]);
+	assert.equal(parsed.servers.get("on")?.directTools, true);
+	assert.deepEqual(parsed.servers.get("list")?.directTools, ["read", "write"]);
+	assert.equal(parsed.servers.get("malformed")?.directTools, false, "invalid selection fails closed instead of inheriting a global enable");
+	assert.equal(parsed.diagnostics.length, 1);
+});
+
 test("parser accepts stdio and SSE while isolating malformed or ambiguous siblings", () => {
 	const parsed = parseServerConfigs({ mcpServers: {
 		stdio: { command: "node", args: ["fixture.js"], env: { TOKEN: "MARKER" }, cwd: "/tmp", transport: "stdio" },

@@ -47,11 +47,15 @@ export class McpServerManager {
 	private closing?: Promise<void>;
 	private closed = false;
 
+	private metadataListener?: () => void;
+
 	constructor(configs: Iterable<ServerConfig>, private readonly authProviderFactory?: AuthProviderFactory) {
 		for (const config of configs) {
 			this.entries.set(config.name, { name: config.name, config, state: "disconnected", tools: [], resources: [], resourceTemplates: [], prompts: [], epoch: 0 });
 		}
 	}
+
+	onMetadataChange(listener: () => void): void { this.metadataListener = listener; }
 
 	status(): ConnectedServer[] {
 		return [...this.entries.values()]
@@ -130,6 +134,7 @@ export class McpServerManager {
 			entry.prompts.sort((a, b) => a.name.localeCompare(b.name));
 			entry.instructions = client.getInstructions();
 			entry.state = "connected";
+			this.metadataListener?.();
 			return entry;
 		} catch (error) {
 			const interrupted = entry.epoch !== epoch;
@@ -311,6 +316,7 @@ export class McpServerManager {
 				entry.tools = [];
 				entry.instructions = undefined;
 			}));
+			this.metadataListener?.();
 		})();
 		return this.closing;
 	}

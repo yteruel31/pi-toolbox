@@ -1,10 +1,11 @@
-import type { McpConfig } from "../config.js";
+import { parseDirectTools, type DirectToolsSetting, type McpConfig } from "../config.js";
 
 export interface UrlServerConfig {
 	name: string;
 	transport?: "http" | "sse" | "auto";
 	url: URL;
 	headers: Readonly<Record<string, string>>;
+	directTools?: DirectToolsSetting;
 }
 export interface StdioServerConfig {
 	name: string;
@@ -13,6 +14,7 @@ export interface StdioServerConfig {
 	args?: readonly string[];
 	env?: Readonly<Record<string, string>>;
 	cwd?: string;
+	directTools?: DirectToolsSetting;
 }
 export type ServerConfig = UrlServerConfig | StdioServerConfig;
 /** Compatibility alias for consumers which construct a URL config. */
@@ -45,8 +47,13 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 		const hasCommand = "command" in value;
 		if (hasUrl === hasCommand) { diagnostics.push(report(name, "invalid-definition", "Exactly one transport source is required")); continue; }
 		const marker = value.type ?? value.transport;
+		let directTools = value.directTools === undefined ? undefined : parseDirectTools(value.directTools);
+		if (value.directTools !== undefined && directTools === undefined) {
+			diagnostics.push(report(name, "invalid-definition", "Direct tools selection was rejected"));
+			directTools = false;
+		}
 		if (hasCommand) {
-			if (!onlyFields(value, new Set(["command", "args", "env", "cwd", "type", "transport"])) ||
+			if (!onlyFields(value, new Set(["command", "args", "env", "cwd", "type", "transport", "directTools"])) ||
 				marker !== undefined && (typeof marker !== "string" || marker.toLowerCase() !== "stdio") ||
 				typeof value.command !== "string" || value.command.length === 0 ||
 				value.args !== undefined && (!Array.isArray(value.args) || !value.args.every((arg) => typeof arg === "string")) ||
@@ -55,10 +62,10 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 				diagnostics.push(report(name, "invalid-definition", "Stdio definition was rejected")); continue;
 			}
 			servers.set(name, { name, transport: "stdio", command: value.command, args: value.args as string[] | undefined,
-				env: value.env as Record<string, string> | undefined, cwd: value.cwd as string | undefined });
+				env: value.env as Record<string, string> | undefined, cwd: value.cwd as string | undefined, directTools });
 			continue;
 		}
-		if (!onlyFields(value, new Set(["url", "headers", "type", "transport"])) || typeof value.url !== "string") {
+		if (!onlyFields(value, new Set(["url", "headers", "type", "transport", "directTools"])) || typeof value.url !== "string") {
 			diagnostics.push(report(name, "invalid-definition", "URL definition was rejected")); continue;
 		}
 		let transport: UrlServerConfig["transport"] = "auto";
@@ -82,7 +89,7 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 			seen.add(normalized); headers[key] = item;
 		}
 		if (invalid) { diagnostics.push(report(name, "unsafe-header", "Headers were rejected")); continue; }
-		servers.set(name, { name, transport, url, headers: Object.freeze(headers) });
+		servers.set(name, { name, transport, url, headers: Object.freeze(headers), directTools });
 	}
 	return { servers, diagnostics };
 }

@@ -127,6 +127,8 @@ export interface McpRuntimeOptions {
 
 export class McpRuntime {
 	readonly manager: McpServerManager;
+	readonly config: McpConfig;
+	readonly serverConfigs: ReturnType<typeof parseServerConfigs>["servers"];
 	readonly coordinator?: OAuthCoordinator;
 	readonly apps: McpAppController;
 	readonly publisher?: AppPublisher;
@@ -138,7 +140,9 @@ export class McpRuntime {
 		apps?: McpAppController,
 		options: McpRuntimeOptions = {},
 	) {
+		this.config = config;
 		const parsed = parseServerConfigs(config);
+		this.serverConfigs = parsed.servers;
 		this.diagnostics = parsed.diagnostics;
 		if (manager) {
 			this.manager = manager;
@@ -258,6 +262,10 @@ export class McpRuntime {
 			.slice(0, 100);
 		return this.text(hits.map((hit) => `${alias(hit.server, hit.tool.name)} — ${(hit.tool.description ?? "").slice(0, 500)}`)
 			.join("\n") || "No matching MCP tools.", { count: hits.length });
+	}
+
+	async executeDirect(server: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
+		return this.invoke(tool, args, server, signal);
 	}
 
 	private async invoke(tool: string, args: Record<string, unknown>, server: string | undefined, signal?: AbortSignal) {

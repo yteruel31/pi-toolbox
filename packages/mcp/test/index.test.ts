@@ -6,12 +6,16 @@ test("extension lifecycle stays network-idle until an MCP operation needs a conn
 	const commands: unknown[][] = [];
 	const tools: Array<{ name: string; execute: (...args: any[]) => Promise<any> }> = [];
 	const events = new Map<string, (...args: any[]) => Promise<void>>();
+	let activeTools = ["mcp"];
 	const statuses: Array<{ id: string; value: string | undefined }> = [];
 	const context = { ui: { setStatus: (id: string, value: string | undefined) => statuses.push({ id, value }) } };
 	mcpExtension({
 		registerCommand: (...args: unknown[]) => commands.push(args),
 		registerTool: (tool: typeof tools[number]) => tools.push(tool),
 		on: (name: string, handler: (...args: any[]) => Promise<void>) => events.set(name, handler),
+		getAllTools: () => tools,
+		getActiveTools: () => activeTools,
+		setActiveTools: (names: string[]) => { activeTools = names; },
 	} as never);
 
 	assert.equal(commands.length, 1);

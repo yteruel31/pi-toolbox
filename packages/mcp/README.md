@@ -9,9 +9,10 @@ Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/
 ```json
 {
   "mcpServers": {
-    "example": { "url": "https://example.invalid/mcp" }
+    "example": { "url": "https://example.invalid/mcp", "directTools": ["search", "read"] }
   },
   "settings": {
+    "directTools": false,
     "ui": {
       "hostname": "auto",
       "httpsPort": 8443,
@@ -40,7 +41,7 @@ npm pack --dry-run
 
 ## MCP transports and tools (U3a/U5)
 
-The lazy `mcp` tool reports server status, connects or refreshes one server, lists and searches tools, and invokes tools by unique original name or stable `<server>_<tool>` alias. It also provides capability-aware resource and prompt operations: `resources-list`, `resources-read`, `prompts-list`, and `prompts-get`, each explicitly qualified by `server`. Discovery is paginated and bounded; unsupported server capabilities are never queried. Only HTTPS endpoints and literal loopback HTTP endpoints are accepted. OAuth-protected HTTP and SSE servers reuse stored tokens when possible; OAuth is unavailable for stdio.
+The lazy `mcp` tool reports server status, connects or refreshes one server, lists and searches tools, and invokes tools by unique original name or stable `<server>_<tool>` alias. Set `settings.directTools` to `true` to expose discovered model-visible tools directly to Pi, or override each server with `directTools: true`, `false`, or a unique bounded array of original tool names. Direct tools use the MCP input schema and the same bounded, abort-aware result/App path as `mcp`; App-only tools are never exposed directly. Opted-in servers may connect in the background at session start, while the extension remains network-idle when direct tools are disabled. It also provides capability-aware resource and prompt operations: `resources-list`, `resources-read`, `prompts-list`, and `prompts-get`, each explicitly qualified by `server`. Discovery is paginated and bounded; unsupported server capabilities are never queried. Only HTTPS endpoints and literal loopback HTTP endpoints are accepted. OAuth-protected HTTP and SSE servers reuse stored tokens when possible; OAuth is unavailable for stdio.
 
 ## OAuth (U3b)
 

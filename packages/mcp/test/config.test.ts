@@ -42,6 +42,20 @@ test("merges server maps and lets Pi replace matching names and augment UI", () 
 	assert.equal(result.settings.ui.gatewayPort, 20000);
 });
 
+test("parses direct tool settings independently and fail-soft", () => {
+	const home = homeWith(
+		{ settings: { directTools: true, ui: { hostname: "safe.example" } }, mcpServers: { one: { command: "x", directTools: ["read", "write"] } } },
+		{ settings: { directTools: ["not-global"], ui: { gatewayPort: 20000 } }, mcpServers: { two: { command: "y", directTools: false } } },
+	);
+	const result = loadMcpConfig({ homeDir: home });
+	assert.equal(result.settings.directTools, true);
+	assert.equal(result.settings.ui.hostname, "safe.example");
+	assert.equal(result.settings.ui.gatewayPort, 20000);
+	assert.deepEqual(result.mcpServers.one?.directTools, ["read", "write"]);
+	assert.ok(result.diagnostics.some((item) => item.code === "invalid-direct-tools"));
+	assert.doesNotMatch(JSON.stringify(result.diagnostics), /not-global/);
+});
+
 test("normalizes safe paths and treats path text literally without expansion", () => {
 	const home = homeWith({ settings: { ui: { basePath: "/apps/mcp/" } } });
 	assert.equal(loadMcpConfig({ homeDir: home }).settings.ui.basePath, "/apps/mcp");
