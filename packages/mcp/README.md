@@ -40,7 +40,7 @@ npm pack --dry-run
 
 ## MCP transports and tools (U3a/U5)
 
-The lazy `mcp` tool reports server status, connects or refreshes one server, lists and searches tools, and invokes tools by unique original name or stable `<server>_<tool>` alias. Only HTTPS endpoints and literal loopback HTTP endpoints are accepted. OAuth-protected HTTP and SSE servers reuse stored tokens when possible; OAuth is unavailable for stdio.
+The lazy `mcp` tool reports server status, connects or refreshes one server, lists and searches tools, and invokes tools by unique original name or stable `<server>_<tool>` alias. It also provides capability-aware resource and prompt operations: `resources-list`, `resources-read`, `prompts-list`, and `prompts-get`, each explicitly qualified by `server`. Discovery is paginated and bounded; unsupported server capabilities are never queried. Only HTTPS endpoints and literal loopback HTTP endpoints are accepted. OAuth-protected HTTP and SSE servers reuse stored tokens when possible; OAuth is unavailable for stdio.
 
 ## OAuth (U3b)
 

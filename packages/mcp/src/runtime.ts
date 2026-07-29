@@ -17,7 +17,11 @@ const Params = Type.Object({
 	connect: Type.Optional(Type.String({ maxLength: 64 })),
 	tool: Type.Optional(Type.String({ maxLength: 500 })),
 	args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-	action: Type.Optional(Type.Union([Type.Literal("auth-start"), Type.Literal("auth-complete")])),
+	action: Type.Optional(Type.Union([
+		Type.Literal("auth-start"), Type.Literal("auth-complete"),
+		Type.Literal("resources-list"), Type.Literal("resources-read"),
+		Type.Literal("prompts-list"), Type.Literal("prompts-get"),
+	])),
 }, { additionalProperties: false });
 type Input = Static<typeof Params>;
 type Details = Record<string, unknown>;
@@ -39,6 +43,17 @@ function safeJson(value: unknown): string {
 }
 function alias(server: string, tool: string): string {
 	return `${server}_${tool}`;
+}
+
+function visibleResourceReference(value: unknown): string | undefined {
+	if (typeof value !== "string" || !value || value.length > 4_096 || /[\u0000-\u001f\u007f]/.test(value)) return undefined;
+	try {
+		const parsed = new URL(value);
+		if (parsed.username || parsed.password || parsed.search || parsed.hash) return undefined;
+		return value;
+	} catch {
+		return value.includes("?") || value.includes("#") || value.includes("@") ? undefined : value;
+	}
 }
 
 function compactDetails(details: Details): Details {
@@ -162,8 +177,40 @@ export class McpRuntime {
 
 	async execute(input: Input, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
 		if (input.action) {
-			if (!input.server) throw new Error("OAuth actions require server");
-			if (input.search !== undefined || input.connect !== undefined || input.tool !== undefined) throw new Error("OAuth actions cannot be combined with another MCP operation");
+			if (!input.server) throw new Error("MCP actions require server");
+			if (input.search !== undefined || input.connect !== undefined || input.tool !== undefined) throw new Error("MCP actions cannot be combined with another MCP operation");
+			if (input.action === "resources-list") {
+				if (input.args !== undefined) throw new Error("resources-list does not accept args");
+				const listed = await this.manager.listResources(input.server, signal);
+				const lines = [
+					...listed.resources.slice(0, 200).map((item) => {
+						const reference = visibleResourceReference(item.uri);
+						return `resource: ${utf8Prefix(item.name, 256)}${reference ? ` — ${utf8Prefix(reference, 4_096)}` : " [URI hidden]"}${item.mimeType ? ` (${utf8Prefix(item.mimeType, 128)})` : ""}`;
+					}),
+					...listed.resourceTemplates.slice(0, 200).map((item) => {
+						const reference = visibleResourceReference(item.uriTemplate);
+						return `template: ${utf8Prefix(item.name, 256)}${reference ? ` — ${utf8Prefix(reference, 4_096)}` : " [URI template hidden]"}`;
+					}),
+				];
+				return this.text(lines.join("\n") || "No MCP resources.", { server: input.server, action: input.action, resourceCount: listed.resources.length, templateCount: listed.resourceTemplates.length });
+			}
+			if (input.action === "resources-read") {
+				if (!input.args || Object.keys(input.args).length !== 1 || typeof input.args.uri !== "string" || !input.args.uri || input.args.uri.length > 4096) throw new Error("resources-read requires only bounded args.uri");
+				const result = await this.manager.readResource(input.server, input.args.uri, signal);
+				return this.renderBlocks(result.contents, { server: input.server, action: input.action }, "MCP resource returned no content.");
+			}
+			if (input.action === "prompts-list") {
+				if (input.args !== undefined) throw new Error("prompts-list does not accept args");
+				const prompts = await this.manager.listPrompts(input.server, signal);
+				return this.text(prompts.slice(0, 200).map((item) => `${utf8Prefix(item.name, 256)}${item.description ? ` — ${utf8Prefix(item.description, 500)}` : ""}`).join("\n") || "No MCP prompts.", { server: input.server, action: input.action, count: prompts.length });
+			}
+			if (input.action === "prompts-get") {
+				if (!input.args || typeof input.args.name !== "string" || !input.args.name || input.args.name.length > 500) throw new Error("prompts-get requires bounded args.name");
+				const keys = Object.keys(input.args); if (keys.some((key) => key !== "name" && key !== "arguments")) throw new Error("prompts-get accepts only args.name and args.arguments");
+				const values = input.args.arguments ?? {}; if (typeof values !== "object" || values === null || Array.isArray(values) || Object.keys(values).length > 50 || Object.entries(values).some(([key, value]) => key.length > 256 || typeof value !== "string" || value.length > 4096)) throw new Error("prompts-get arguments must be a bounded string object");
+				const result = await this.manager.getPrompt(input.server, input.args.name, values as Record<string, string>, signal);
+				return this.renderBlocks(result.messages.map((message) => message.content), { server: input.server, action: input.action, prompt: utf8Prefix(input.args.name, 500) }, "MCP prompt returned no messages.");
+			}
 			if (!this.coordinator) throw new Error("MCP OAuth is unavailable");
 			if (input.action === "auth-start") {
 				if (input.args !== undefined) throw new Error("auth-start does not accept args");
@@ -186,19 +233,19 @@ export class McpRuntime {
 				"No valid MCP servers configured.", { servers, invalidServerCount: this.diagnostics.length });
 		}
 		if (input.connect) {
-			await this.manager.connect(input.connect, true);
+			await this.manager.connect(input.connect, true, signal);
 			return this.list(input.connect);
 		}
 		if (input.server && !input.tool) {
-			await this.manager.connect(input.server);
+			await this.manager.connect(input.server, false, signal);
 			return this.list(input.server);
 		}
-		if (input.search !== undefined) return this.search(input.search);
+		if (input.search !== undefined) return this.search(input.search, signal);
 		return this.invoke(input.tool!, input.args ?? {}, input.server, signal);
 	}
 
-	private async search(query: string): Promise<AgentToolResult<Details>> {
-		await Promise.allSettled(this.manager.status().map((server) => this.manager.connect(server.name)));
+	private async search(query: string, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
+		await Promise.allSettled(this.manager.status().map((server) => this.manager.connect(server.name, false, signal)));
 		const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
 		const hits = this.manager.status().flatMap((server) => this.manager.modelTools(server.name).map((tool) => ({
 			server: server.name,
@@ -226,10 +273,10 @@ export class McpRuntime {
 			}
 		}
 		if (targetServer) {
-			await this.manager.connect(targetServer);
+			await this.manager.connect(targetServer, false, signal);
 			if (!this.manager.modelTool(targetServer, targetTool)) throw new Error("Unknown MCP tool");
 		} else {
-			await Promise.allSettled(this.manager.status().map((candidate) => this.manager.connect(candidate.name)));
+			await Promise.allSettled(this.manager.status().map((candidate) => this.manager.connect(candidate.name, false, signal)));
 			const matches = this.manager.status().flatMap((candidate) =>
 				this.manager.modelTools(candidate.name).filter((item) => item.name === targetTool).map(() => candidate.name));
 			if (matches.length > 1) throw new Error("Ambiguous MCP tool name; specify server or stable alias");
@@ -278,6 +325,20 @@ export class McpRuntime {
 			(server.instructions ? `Instructions: ${server.instructions.slice(0, 2000)}\n` : "") +
 			modelTools.map((tool) => `${alias(name, tool.name)} — ${(tool.description ?? "").slice(0, 500)}`).join("\n");
 		return this.text(body, { server: name, state: server.state, count: modelTools.length, tools });
+	}
+
+	private renderBlocks(blocks: Array<Record<string, unknown>>, details: Details, empty: string): AgentToolResult<Details> {
+		const budget = new OutputBudget(details);
+		for (const block of blocks) {
+			if ((block.type === "text" || block.type === undefined) && typeof block.text === "string") budget.text(block.text);
+			else if (block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string") budget.image(block.data, block.mimeType);
+			else if ((block.type === "blob" || block.type === undefined) && typeof block.blob === "string") budget.text(`[binary resource omitted${typeof block.mimeType === "string" ? `: ${block.mimeType}` : ""}]`);
+			else if (block.type === "resource" || block.type === "resource_link") budget.text(`[embedded resource omitted]`);
+			else if (block.type === "audio") budget.text(`[audio omitted${typeof block.mimeType === "string" ? `: ${block.mimeType}` : ""}]`);
+			else budget.text(`[unsupported MCP content: ${typeof block.type === "string" ? block.type : "unknown"}]`);
+		}
+		if (!budget.content.length) budget.text(empty);
+		return budget.result();
 	}
 
 	private text(text: string, details: Details): AgentToolResult<Details> {

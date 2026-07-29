@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate as McpResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { McpServerManager } from "../src/mcp/manager.js";
@@ -27,6 +27,7 @@ function config(port: number, name = "real") {
 
 async function protocolServer(delayMs = 0) {
 	let cancelled = false;
+	let unauthorized = false;
 	let resolveSlowStarted!: () => void;
 	const slowStarted = new Promise<void>((resolve) => resolveSlowStarted = resolve);
 	let current: { transport: StreamableHTTPServerTransport; mcp: McpServer };
@@ -55,6 +56,21 @@ async function protocolServer(delayMs = 0) {
 			],
 			structuredContent: { extra: "B".repeat(30_000) },
 		}));
+		mcp.registerResource("guide", "test://guide", { description: "safe guide", mimeType: "text/plain" }, async (uri) => ({
+			contents: [{ uri: uri.href, text: "resource-text" }],
+		}));
+		mcp.registerResource("large", "test://large", {}, async (uri) => ({
+			contents: [{ uri: uri.href, text: "é".repeat(60_000) }],
+		}));
+		mcp.registerResource("hidden", "https://resource.invalid/item?token=RESOURCE_MARKER", {}, async (uri) => ({
+			contents: [{ uri: uri.href, text: "hidden" }],
+		}));
+		mcp.registerResource("entry", new McpResourceTemplate("test://entries/{id}", { list: undefined }), { description: "entry template" }, async (uri) => ({
+			contents: [{ uri: uri.href, text: "template-text" }],
+		}));
+		mcp.registerPrompt("welcome", { description: "welcome prompt" }, async () => ({
+			messages: [{ role: "user", content: { type: "text", text: "prompt-text" } }],
+		}));
 		mcp.registerTool("slow", {}, async (extra) => new Promise((resolve) => {
 			resolveSlowStarted();
 			extra.signal.addEventListener("abort", () => {
@@ -69,6 +85,11 @@ async function protocolServer(delayMs = 0) {
 	current = await createInstance();
 	const http = createServer(async (request, response) => {
 		if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+		if (unauthorized) {
+			response.writeHead(401, { "content-type": "application/json" });
+			response.end(JSON.stringify({ error: "RESOURCE_AUTH_MARKER" }));
+			return;
+		}
 		if (!request.headers["mcp-session-id"] && current.transport.sessionId !== undefined) {
 			void createInstance().then((instance) => {
 				current = instance;
@@ -83,6 +104,7 @@ async function protocolServer(delayMs = 0) {
 		http,
 		port,
 		cancelled: () => cancelled,
+		setUnauthorized: (value: boolean) => { unauthorized = value; },
 		waitForSlowStart: () => slowStarted,
 		close: async () => Promise.all(instances.map((instance) => instance.close())).then(() => undefined),
 	};
@@ -219,6 +241,22 @@ test("real Streamable HTTP initializes, lists, calls all result forms, refreshes
 		assert.match(JSON.stringify(mixed.content), /hello/);
 		assert.match(JSON.stringify(mixed.content), /image\/png/);
 		assert.match(JSON.stringify(mixed.content), /answer/);
+		const resources = await runtime.execute({ action: "resources-list", server: "real" });
+		assert.match(JSON.stringify(resources), /guide.*test:\/\/guide/);
+		assert.match(JSON.stringify(resources), /entry.*test:\/\/entries\/\{id\}/);
+		assert.match(JSON.stringify(resources), /hidden.*URI hidden/);
+		assert.doesNotMatch(JSON.stringify(resources), /RESOURCE_MARKER/);
+		const resource = await runtime.execute({ action: "resources-read", server: "real", args: { uri: "test:\/\/guide" } });
+		assert.match(JSON.stringify(resource.content), /resource-text/);
+		assert.doesNotMatch(JSON.stringify(resource.details), /resource-text|test:\/\/guide/);
+		const largeResource = await runtime.execute({ action: "resources-read", server: "real", args: { uri: "test://large" } });
+		assert.ok(Buffer.byteLength(JSON.stringify(largeResource)) <= 50 * 1024);
+		assert.doesNotMatch(JSON.stringify(largeResource.content), /�/u);
+		const prompts = await runtime.execute({ action: "prompts-list", server: "real" });
+		assert.match(JSON.stringify(prompts), /welcome/);
+		const prompt = await runtime.execute({ action: "prompts-get", server: "real", args: { name: "welcome", arguments: {} } });
+		assert.match(JSON.stringify(prompt.content), /prompt-text/);
+		assert.doesNotMatch(JSON.stringify(prompt.details), /prompt-text/);
 		const failure = await runtime.execute({ server: "real", tool: "failure" });
 		assert.equal(failure.details.isError, true);
 		assert.match(JSON.stringify(failure.content), /reported an error/);
@@ -308,6 +346,80 @@ test("401 errors are classified without SSE downgrade and marker secrets never e
 	} finally {
 		await manager.close();
 		await stop(http);
+	}
+});
+
+test("resource and prompt requests classify post-connect auth failures without leaking server bodies", async () => {
+	for (const operation of ["resource", "prompt"] as const) {
+		const fixture = await protocolServer();
+		const manager = new McpServerManager([{
+			name: "protected",
+			transport: "http",
+			url: new URL(`http://127.0.0.1:${fixture.port}/mcp`),
+			headers: {},
+		}]);
+		try {
+			await manager.connect("protected");
+			fixture.setUnauthorized(true);
+			const pending = operation === "resource"
+				? manager.readResource("protected", "test://guide")
+				: manager.getPrompt("protected", "welcome");
+			await assert.rejects(pending, (error: Error) => {
+				assert.match(error.message, /Authentication required/);
+				assert.doesNotMatch(JSON.stringify(error), /RESOURCE_AUTH_MARKER/);
+				return true;
+			});
+			assert.equal(manager.get("protected")?.state, "auth-required");
+		} finally {
+			await manager.close();
+			await fixture.close();
+			await stop(fixture.http);
+		}
+	}
+});
+
+test("discovery pagination stops on repeated cursors, enforces metadata caps, and observes cancellation", async () => {
+	const manager = new McpServerManager([]);
+	const paginate = (manager as unknown as {
+		paginate<T>(request: (cursor?: string) => Promise<Record<string, unknown>>, key: string, signal?: AbortSignal): Promise<T[]>;
+	}).paginate.bind(manager) as <T>(request: (cursor?: string) => Promise<Record<string, unknown>>, key: string, signal?: AbortSignal) => Promise<T[]>;
+	let calls = 0;
+	const repeated = await paginate<{ name: string }>(async () => ({
+		tools: [{ name: `tool-${calls++}` }],
+		nextCursor: "same",
+	}), "tools");
+	assert.equal(calls, 2);
+	assert.equal(repeated.length, 2);
+
+	const oversized = await paginate<{ name: string }>(async () => ({
+		tools: Array.from({ length: 500 }, (_, index) => ({ name: `${index}-${"x".repeat(2_000)}` })),
+	}), "tools");
+	assert.ok(oversized.length < 500);
+	assert.ok(Buffer.byteLength(JSON.stringify(oversized)) <= 512 * 1024);
+
+	const controller = new AbortController();
+	await assert.rejects(paginate(async () => {
+		controller.abort();
+		return { tools: [{ name: "first" }], nextCursor: "next" };
+	}, "tools", controller.signal), /cancelled/);
+	await manager.close();
+});
+
+test("initial discovery observes its caller AbortSignal and cleans the partial connection", async () => {
+	const fixture = await protocolServer(30);
+	const manager = new McpServerManager([{
+		name: "real", transport: "http", url: new URL(`http://127.0.0.1:${fixture.port}/mcp`), headers: {},
+	}]);
+	try {
+		const controller = new AbortController();
+		const opening = manager.connect("real", false, controller.signal);
+		setTimeout(() => controller.abort(), 10);
+		await assert.rejects(opening, /connection cancelled/);
+		assert.equal(manager.get("real")?.state, "disconnected");
+	} finally {
+		await manager.close();
+		await fixture.close();
+		await stop(fixture.http);
 	}
 });
 
