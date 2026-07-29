@@ -8,6 +8,7 @@ import { OAuthStore } from "./auth/store.js";
 import { StoredOAuthProvider } from "./auth/provider.js";
 import { GatewayClient } from "./gateway/client.js";
 import { TailscaleAdapter } from "./tailscale.js";
+import { McpAppController } from "./apps/controller.js";
 
 const Params = Type.Object({
 	server: Type.Optional(Type.String({ maxLength: 64 })),
@@ -103,11 +104,12 @@ class OutputBudget {
 export class McpRuntime {
 	readonly manager: McpServerManager;
 	readonly coordinator?: OAuthCoordinator;
+	readonly apps: McpAppController;
 	readonly diagnostics;
-	constructor(config: McpConfig, manager?: McpServerManager, coordinator?: OAuthCoordinator) {
+	constructor(config: McpConfig, manager?: McpServerManager, coordinator?: OAuthCoordinator, apps?: McpAppController) {
 		const parsed = parseHttpServerConfigs(config);
 		this.diagnostics = parsed.diagnostics;
-		if (manager) { this.manager = manager; this.coordinator = coordinator; return; }
+		if (manager) { this.manager = manager; this.coordinator = coordinator; this.apps = apps ?? new McpAppController(manager); return; }
 		const store = new OAuthStore();
 		this.manager = new McpServerManager(parsed.servers.values(), async (name) => {
 			const server = parsed.servers.get(name);
@@ -120,6 +122,7 @@ export class McpRuntime {
 			const hostname = await tailscale.hostname(); if (!hostname) throw new Error("Tailscale hostname unavailable"); return hostname;
 		} });
 		this.coordinator = new OAuthCoordinator(this.manager, parsed.servers, settings, gateway, tailscale, store);
+		this.apps = apps ?? new McpAppController(this.manager);
 	}
 
 	async execute(input: Input, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
@@ -162,7 +165,7 @@ export class McpRuntime {
 	private async search(query: string): Promise<AgentToolResult<Details>> {
 		await Promise.allSettled(this.manager.status().map((server) => this.manager.connect(server.name)));
 		const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-		const hits = this.manager.status().flatMap((server) => server.tools.map((tool) => ({
+		const hits = this.manager.status().flatMap((server) => this.manager.modelTools(server.name).map((tool) => ({
 			server: server.name,
 			tool,
 			score: terms.reduce((score, term) => score +
@@ -189,18 +192,24 @@ export class McpRuntime {
 		}
 		if (targetServer) {
 			await this.manager.connect(targetServer);
-			const match = this.manager.get(targetServer)?.tools.find((candidate) => candidate.name === targetTool);
-			if (!match) throw new Error("Unknown MCP tool");
+			if (!this.manager.modelTool(targetServer, targetTool)) throw new Error("Unknown MCP tool");
 		} else {
 			await Promise.allSettled(this.manager.status().map((candidate) => this.manager.connect(candidate.name)));
 			const matches = this.manager.status().flatMap((candidate) =>
-				candidate.tools.filter((item) => item.name === targetTool).map(() => candidate.name));
+				this.manager.modelTools(candidate.name).filter((item) => item.name === targetTool).map(() => candidate.name));
 			if (matches.length > 1) throw new Error("Ambiguous MCP tool name; specify server or stable alias");
 			if (!matches.length) throw new Error("Unknown MCP tool");
 			targetServer = matches[0]!;
 		}
-		const result = await this.manager.call(targetServer, targetTool, args, signal);
-		const details = { server: targetServer, tool: targetTool, isError: result.isError === true };
+		const metadata = this.manager.modelTool(targetServer, targetTool)!;
+		const result = await this.manager.callFromModel(targetServer, targetTool, args, signal);
+		let ui: { state: "available" | "unavailable" } | undefined;
+		try {
+			if (await this.apps.open(targetServer, metadata, args, result, signal)) ui = { state: "available" };
+		} catch {
+			ui = { state: "unavailable" };
+		}
+		const details = { server: targetServer, tool: targetTool, isError: result.isError === true, ...(ui ? { ui } : {}) };
 		const budget = new OutputBudget(details);
 		if (result.isError) budget.text("MCP tool reported an error.\n");
 		for (const item of result.content ?? []) {
@@ -215,16 +224,23 @@ export class McpRuntime {
 		return budget.result();
 	}
 
+	async close(): Promise<void> {
+		await this.apps.close();
+		await this.coordinator?.close();
+		await this.manager.close();
+	}
+
 	private list(name: string): AgentToolResult<Details> {
 		const server = this.manager.get(name)!;
-		const tools = server.tools.slice(0, 25).map((tool) => ({
+		const modelTools = this.manager.modelTools(name);
+		const tools = modelTools.slice(0, 25).map((tool) => ({
 			name: utf8Prefix(tool.name, 256),
 			alias: utf8Prefix(alias(name, tool.name), 320),
 		}));
 		const body = `Server ${name}: ${server.state}\n` +
 			(server.instructions ? `Instructions: ${server.instructions.slice(0, 2000)}\n` : "") +
-			server.tools.map((tool) => `${alias(name, tool.name)} — ${(tool.description ?? "").slice(0, 500)}`).join("\n");
-		return this.text(body, { server: name, state: server.state, count: server.tools.length, tools });
+			modelTools.map((tool) => `${alias(name, tool.name)} — ${(tool.description ?? "").slice(0, 500)}`).join("\n");
+		return this.text(body, { server: name, state: server.state, count: modelTools.length, tools });
 	}
 
 	private text(text: string, details: Details): AgentToolResult<Details> {

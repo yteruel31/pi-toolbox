@@ -231,6 +231,7 @@ test("listing keeps serialized content and details within the aggregate budget",
 		status: () => [server],
 		get: () => server,
 		connect: async () => server,
+		modelTools: () => tools,
 		close: async () => undefined,
 	};
 	const runtime = new McpRuntime({ mcpServers: {}, settings: { ui: {} }, diagnostics: [] } as never, manager as never);

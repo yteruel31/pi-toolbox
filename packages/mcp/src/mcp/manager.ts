@@ -5,7 +5,8 @@ import {
 	StreamableHTTPClientTransport,
 	StreamableHTTPError,
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import { isToolVisibilityAppOnly, isToolVisibilityModelOnly } from "@modelcontextprotocol/ext-apps/app-bridge";
+import type { CallToolResult, ReadResourceResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { HttpServerConfig } from "./config.js";
 
 export type ServerState = "disconnected" | "connecting" | "connected" | "auth-required" | "error";
@@ -153,7 +154,38 @@ export class McpServerManager {
 		entry.state = "disconnected";
 	}
 
-	async call(
+	tool(name: string, tool: string): Tool | undefined {
+		return this.entries.get(name)?.tools.find(candidate => candidate.name === tool);
+	}
+
+	modelTools(name: string): Tool[] {
+		return this.entries.get(name)?.tools.filter((tool) => !isToolVisibilityAppOnly(tool)) ?? [];
+	}
+
+	modelTool(name: string, tool: string): Tool | undefined {
+		return this.modelTools(name).find((candidate) => candidate.name === tool);
+	}
+
+	async readResource(name: string, uri: string, signal?: AbortSignal): Promise<ReadResourceResult> {
+		const entry = this.entries.get(name); if (!entry) throw new Error(`Unknown MCP server: ${name}`);
+		await this.connect(name);
+		try { return await entry.client!.readResource({ uri }, { signal }); }
+		catch (error) { if (isAuthFailure(error)) entry.state = "auth-required"; throw new Error(isAuthFailure(error) ? `Authentication required for MCP server ${name}` : `MCP resource read failed on ${name}`); }
+	}
+
+	/** App calls are deliberately scoped by the owning session's server name. */
+	async callFromApp(name: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult> {
+		const metadata = this.tool(name, tool);
+		if (!metadata || isToolVisibilityModelOnly(metadata)) throw new Error("Unknown same-server MCP tool");
+		return this.call(name, tool, args, signal);
+	}
+
+	async callFromModel(name: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult> {
+		if (!this.modelTool(name, tool)) throw new Error("Unknown MCP tool");
+		return this.call(name, tool, args, signal);
+	}
+
+	private async call(
 		name: string,
 		tool: string,
 		args: Record<string, unknown>,

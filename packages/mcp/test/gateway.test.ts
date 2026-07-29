@@ -118,7 +118,8 @@ test("two concurrent clients share one launch and register isolated sessions", a
 
 test("the production launcher starts the packaged daemon runtime", async () => {
 	const home = await mkdtemp(join(tmpdir(), "pi-mcp-production-launch-"));
-	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 100 };
+	// Leave enough post-hello time for register() when test files run concurrently.
+	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 1_000 };
 	const client = new GatewayClient({ settings, hostnameResolver: async () => "node.ts.net", homeDir: home });
 	try {
 		const session = await client.register({ label: "production", backendOrigin: "http://127.0.0.1:12345" });

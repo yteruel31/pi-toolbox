@@ -10,14 +10,13 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 	registerMcpTool(pi, () => runtime);
 	pi.on("session_start", async () => {
 		const previous = runtime;
-		if (previous) { await previous.coordinator?.close(); await previous.manager.close(); }
+		if (previous) await previous.close();
 		runtime = new McpRuntime(loadMcpConfig());
 	});
 	pi.on("session_shutdown", async () => {
 		const previous = runtime;
 		runtime = undefined;
-		await previous?.coordinator?.close();
-		await previous?.manager.close();
+		await previous?.close();
 	});
 }
 
@@ -25,3 +24,5 @@ export { DEFAULT_UI_SETTINGS, getMcpConfigPaths, loadMcpConfig } from "./config.
 export type { ConfigDiagnostic, McpConfig, McpServerDefinition, McpUiSettings } from "./config.js";
 export { GatewayClient } from "./gateway/client.js";
 export { TailscaleAdapter } from "./tailscale.js";
+export { McpAppController } from "./apps/controller.js";
+export { appResourceUri, selectAppResource } from "./apps/resource.js";

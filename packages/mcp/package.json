@@ -19,13 +19,17 @@
   },
   "files": [
     "src",
+    "scripts",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
-    "check": "tsc --noEmit && tsx --test test/**/*.test.ts",
-    "pack:dry": "npm pack --dry-run"
+    "build:app-bridge": "node scripts/build-mcp-app-bridge.mjs",
+    "check:app-bridge": "node scripts/build-mcp-app-bridge.mjs --check",
+    "check": "tsc --noEmit && npm run check:app-bridge && tsx --test test/**/*.test.ts",
+    "pack:dry": "npm pack --dry-run",
+    "prepack": "npm run check:app-bridge"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
@@ -45,6 +49,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.81.1",
     "@types/node": "^22.19.1",
+    "esbuild": "0.28.1",
     "typescript": "^5.9.3"
   },
   "engines": {

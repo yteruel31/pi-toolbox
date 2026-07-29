@@ -1,6 +1,6 @@
 # pi-mcp
 
-In-progress private Tailnet MCP Apps gateway for Pi. The package connects Streamable HTTP MCP servers, including OAuth-protected servers, and manages the local gateway and its Tailscale Serve route. It does **not** yet host MCP Apps.
+In-progress private Tailnet MCP Apps gateway for Pi. The package connects Streamable HTTP MCP servers, including OAuth-protected servers, manages the local gateway and its Tailscale Serve route, and hosts MCP App resources on a private loopback backend. Gateway publication and the persistent Pi footer link are not connected yet.
 
 ## Configuration contract
 
@@ -47,3 +47,11 @@ The lazy `mcp` tool reports server status, connects or refreshes one server, lis
 Run `/mcp-gateway setup` first. Start an interactive flow with `mcp({ action: "auth-start", server: "example" })`, then open or copy the returned authorization URL; Pi never opens a browser automatically. The remote callback normally completes the flow. If it cannot, copy the complete browser redirect URL into `mcp({ action: "auth-complete", server: "example", args: { redirectUrl: "…" } })`.
 
 OAuth credentials, PKCE material, and dynamic client registration are sensitive. They are stored as mode `0600` JSON below the private mode `0700` directory `~/.pi/agent/pi-mcp/oauth/`. Delete that directory to revoke Pi's local saved credentials (and revoke the provider-side grant separately when needed). Each authorization attempt receives a dedicated short-lived callback-only gateway capability; it does not grant MCP tool access.
+
+## Local MCP App host (U4a)
+
+Tools declaring `_meta.ui.resourceUri` (or the legacy `_meta["ui/resourceUri"]`) can return an MCP App. After a successful tool call, Pi reads the exact `ui://` resource, validates and bounds its HTML and metadata, and creates an isolated short-lived App session on a lazy `127.0.0.1` server. The normal tool result remains visible even if App loading fails.
+
+The host uses the official bundled AppBridge, initializes it before loading an opaque sandboxed iframe, asks for browser consent before the first App-initiated tool call, scopes those calls to the owning MCP server, and records bounded message/context intents for later Pi integration. Sessions use heartbeat-based expiry, persistent replayable SSE, strict CSP/permissions, a process-private backend secret, and no automatic opening of the App UI. Explicit App `openLink` requests are validated, recorded, and delegated to the browser with `noopener,noreferrer`. Local backend origins, secrets, and routes are not included in model-visible tool details.
+
+This unit is intentionally not remotely reachable on its own. A subsequent unit will register active App routes with the persistent private gateway and expose the stable Tailnet dashboard/footer link.
