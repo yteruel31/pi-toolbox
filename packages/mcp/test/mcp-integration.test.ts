@@ -23,6 +23,8 @@ function config(port: number, name = "real") {
 
 async function protocolServer(delayMs = 0) {
 	let cancelled = false;
+	let resolveSlowStarted!: () => void;
+	const slowStarted = new Promise<void>((resolve) => resolveSlowStarted = resolve);
 	let current: { transport: StreamableHTTPServerTransport; mcp: McpServer };
 	const instances: McpServer[] = [];
 	const createInstance = async () => {
@@ -50,6 +52,7 @@ async function protocolServer(delayMs = 0) {
 			structuredContent: { extra: "B".repeat(30_000) },
 		}));
 		mcp.registerTool("slow", {}, async (extra) => new Promise((resolve) => {
+			resolveSlowStarted();
 			extra.signal.addEventListener("abort", () => {
 				cancelled = true;
 				resolve({ content: [{ type: "text", text: "cancelled" }] });
@@ -76,11 +79,12 @@ async function protocolServer(delayMs = 0) {
 		http,
 		port,
 		cancelled: () => cancelled,
+		waitForSlowStart: () => slowStarted,
 		close: async () => Promise.all(instances.map((instance) => instance.close())).then(() => undefined),
 	};
 }
 
-test("status and unavailable OAuth actions perform no network requests", async () => {
+test("status and OAuth validation perform no MCP network requests", async () => {
 	const fixture = await protocolServer();
 	let requests = 0;
 	fixture.http.on("request", () => { requests++; });
@@ -88,9 +92,7 @@ test("status and unavailable OAuth actions perform no network requests", async (
 	try {
 		const status = await runtime.execute({});
 		assert.match(JSON.stringify(status), /disconnected/);
-		const oauth = await runtime.execute({ action: "auth-start", server: "real" });
-		assert.match(JSON.stringify(oauth), /not available yet/);
-		assert.equal(oauth.details.server, "real");
+		await assert.rejects(runtime.execute({ action: "auth-start" }), /require server/);
 		assert.equal(requests, 0);
 	} finally {
 		await runtime.manager.close();
@@ -158,7 +160,8 @@ test("AbortSignal cancels a slow protocol tool call", async () => {
 	try {
 		const controller = new AbortController();
 		const pending = runtime.execute({ server: "real", tool: "slow" }, controller.signal);
-		setTimeout(() => controller.abort(), 30);
+		await fixture.waitForSlowStart();
+		controller.abort();
 		await assert.rejects(pending, /cancelled/);
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.equal(fixture.cancelled(), true);

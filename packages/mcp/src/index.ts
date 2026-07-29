@@ -9,12 +9,14 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 	registerGatewayCommand(pi);
 	registerMcpTool(pi, () => runtime);
 	pi.on("session_start", async () => {
-		await runtime?.manager.close();
+		const previous = runtime;
+		if (previous) { await previous.coordinator?.close(); await previous.manager.close(); }
 		runtime = new McpRuntime(loadMcpConfig());
 	});
 	pi.on("session_shutdown", async () => {
 		const previous = runtime;
 		runtime = undefined;
+		await previous?.coordinator?.close();
 		await previous?.manager.close();
 	});
 }

@@ -1,6 +1,6 @@
 # pi-mcp
 
-In-progress private Tailnet MCP Apps gateway for Pi. The package can connect Streamable HTTP MCP servers and manage the local gateway and its Tailscale Serve route, but it does **not** yet complete OAuth or host MCP Apps.
+In-progress private Tailnet MCP Apps gateway for Pi. The package connects Streamable HTTP MCP servers, including OAuth-protected servers, and manages the local gateway and its Tailscale Serve route. It does **not** yet host MCP Apps.
 
 ## Configuration contract
 
@@ -40,4 +40,10 @@ npm pack --dry-run
 
 ## Streamable HTTP MCP (U3a)
 
-The lazy `mcp` tool reports server status, connects or refreshes one server, lists and searches tools, and invokes tools by unique original name or stable `<server>_<tool>` alias. Only HTTPS endpoints and literal loopback HTTP endpoints are accepted. OAuth-protected servers are reported as `auth-required`; the authorization flow is implemented in the next phase.
+The lazy `mcp` tool reports server status, connects or refreshes one server, lists and searches tools, and invokes tools by unique original name or stable `<server>_<tool>` alias. Only HTTPS endpoints and literal loopback HTTP endpoints are accepted. OAuth-protected servers reuse stored tokens when possible.
+
+## OAuth (U3b)
+
+Run `/mcp-gateway setup` first. Start an interactive flow with `mcp({ action: "auth-start", server: "example" })`, then open or copy the returned authorization URL; Pi never opens a browser automatically. The remote callback normally completes the flow. If it cannot, copy the complete browser redirect URL into `mcp({ action: "auth-complete", server: "example", args: { redirectUrl: "…" } })`.
+
+OAuth credentials, PKCE material, and dynamic client registration are sensitive. They are stored as mode `0600` JSON below the private mode `0700` directory `~/.pi/agent/pi-mcp/oauth/`. Delete that directory to revoke Pi's local saved credentials (and revoke the provider-side grant separately when needed). Each authorization attempt receives a dedicated short-lived callback-only gateway capability; it does not grant MCP tool access.

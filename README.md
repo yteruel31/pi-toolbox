@@ -38,7 +38,7 @@ A pull-only, challenge-first technical learning mode for Pi.
 
 ### [`pi-mcp`](./packages/mcp)
 
-In-progress private Tailnet MCP Apps gateway with a lazy Streamable HTTP client and non-destructive Tailscale Serve management. OAuth and App hosting are not implemented yet.
+In-progress private Tailnet MCP Apps gateway with a lazy Streamable HTTP client, OAuth, and non-destructive Tailscale Serve management. MCP App hosting is not implemented yet.
 
 ### [`pi-session-title`](./packages/session-title)
 

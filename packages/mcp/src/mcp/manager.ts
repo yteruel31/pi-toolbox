@@ -22,8 +22,10 @@ interface Entry extends ConnectedServer {
 	transport?: StreamableHTTPClientTransport;
 	pending?: Promise<ConnectedServer>;
 	epoch: number;
+	authActive?: boolean;
+	authPending?: Promise<void>;
 }
-export type AuthProviderFactory = (server: string) => OAuthClientProvider | undefined;
+export type AuthProviderFactory = (server: string) => OAuthClientProvider | undefined | Promise<OAuthClientProvider | undefined>;
 
 function isAuthFailure(error: unknown): boolean {
 	return error instanceof UnauthorizedError ||
@@ -56,6 +58,7 @@ export class McpServerManager {
 		const entry = this.entries.get(name);
 		if (!entry) throw new Error(`Unknown MCP server: ${name}`);
 		if (this.closed) throw new Error("MCP manager is closed");
+		if (entry.authActive) throw new Error(`OAuth is active for MCP server ${name}`);
 		if (entry.pending) return entry.pending;
 		if (entry.state === "connected" && !refresh) return entry;
 		const epoch = entry.epoch;
@@ -67,13 +70,14 @@ export class McpServerManager {
 		return pending;
 	}
 
-	private async open(entry: Entry, refresh: boolean, epoch: number): Promise<ConnectedServer> {
+	private async open(entry: Entry, refresh: boolean, epoch: number, provider?: OAuthClientProvider, retainAuth = false): Promise<ConnectedServer> {
 		if (refresh) await this.closeResources(entry);
 		entry.state = "connecting";
+		const authProvider = provider ?? await this.authProviderFactory?.(entry.name);
 		const client = new Client({ name: "pi-mcp", version: "0.1.0" });
 		const transport = new StreamableHTTPClientTransport(entry.config.url, {
 			requestInit: { headers: entry.config.headers },
-			authProvider: this.authProviderFactory?.(entry.name),
+			authProvider,
 		});
 		entry.client = client;
 		entry.transport = transport;
@@ -90,13 +94,63 @@ export class McpServerManager {
 			return entry;
 		} catch (error) {
 			const interrupted = entry.epoch !== epoch;
-			if (!interrupted) entry.state = isAuthFailure(error) ? "auth-required" : "error";
-			await this.closeResources(entry);
+			const authFailure = isAuthFailure(error);
+			if (!interrupted) entry.state = authFailure ? "auth-required" : "error";
+			if (!(retainAuth && authFailure && !interrupted)) await this.closeResources(entry);
 			if (interrupted) throw new Error("MCP connection was closed during startup");
 			throw new Error(isAuthFailure(error)
 				? `Authentication required for MCP server ${entry.name}`
 				: `MCP server ${entry.name} could not connect`);
 		}
+	}
+
+	async beginAuth(name: string, provider: OAuthClientProvider): Promise<void> {
+		const entry = this.entries.get(name);
+		if (!entry) throw new Error(`Unknown MCP server: ${name}`);
+		if (this.closed) throw new Error("MCP manager is closed");
+		if (entry.authActive) throw new Error("OAuth attempt already active");
+		if (entry.pending) {
+			try { await entry.pending; } catch { /* the auth open supersedes it */ }
+		}
+		if (this.closed) throw new Error("MCP manager is closed");
+		entry.authActive = true;
+		const authPending = (async () => {
+			try {
+				await this.open(entry, true, entry.epoch, provider, true);
+			} catch {
+				if (entry.state !== "auth-required") {
+					entry.authActive = false;
+					throw new Error(`OAuth could not start for MCP server ${name}`);
+				}
+			}
+		})();
+		entry.authPending = authPending;
+		try {
+			await authPending;
+		} finally {
+			if (entry.authPending === authPending) entry.authPending = undefined;
+		}
+	}
+
+	async finishAuth(name: string, code: string): Promise<ConnectedServer> {
+		if (this.closed) throw new Error("MCP manager is closed");
+		const entry = this.entries.get(name); if (!entry?.authActive || !entry.transport || entry.state !== "auth-required") throw new Error("No active OAuth attempt");
+		try { await entry.transport.finishAuth(code); }
+		catch { entry.authActive = false; await this.closeResources(entry); entry.state = "error"; throw new Error(`OAuth could not complete for MCP server ${name}`); }
+		entry.authActive = false;
+		await this.closeResources(entry);
+		return this.connect(name, true);
+	}
+
+	async cancelAuth(name: string): Promise<void> {
+		const entry = this.entries.get(name);
+		if (!entry?.authActive) return;
+		entry.authActive = false;
+		entry.epoch++;
+		await this.closeResources(entry);
+		try { await entry.authPending; } catch { /* cancellation interrupts startup */ }
+		await this.closeResources(entry);
+		entry.state = "disconnected";
 	}
 
 	async call(
@@ -134,8 +188,10 @@ export class McpServerManager {
 		this.closing = (async () => {
 			for (const entry of this.entries.values()) entry.epoch++;
 			await Promise.all([...this.entries.values()].map(async (entry) => {
+				entry.authActive = false;
 				await this.closeResources(entry);
 				try { await entry.pending; } catch { /* expected for interrupted opens */ }
+				try { await entry.authPending; } catch { /* expected for interrupted auth */ }
 				await this.closeResources(entry);
 				entry.state = "disconnected";
 				entry.tools = [];

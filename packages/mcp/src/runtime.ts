@@ -1,8 +1,13 @@
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import type { McpConfig } from "./config.js";
+import { DEFAULT_UI_SETTINGS, type McpConfig } from "./config.js";
 import { parseHttpServerConfigs } from "./mcp/config.js";
 import { McpServerManager } from "./mcp/manager.js";
+import { OAuthCoordinator } from "./auth/coordinator.js";
+import { OAuthStore } from "./auth/store.js";
+import { StoredOAuthProvider } from "./auth/provider.js";
+import { GatewayClient } from "./gateway/client.js";
+import { TailscaleAdapter } from "./tailscale.js";
 
 const Params = Type.Object({
 	server: Type.Optional(Type.String({ maxLength: 64 })),
@@ -97,22 +102,39 @@ class OutputBudget {
 
 export class McpRuntime {
 	readonly manager: McpServerManager;
+	readonly coordinator?: OAuthCoordinator;
 	readonly diagnostics;
-	constructor(config: McpConfig, manager?: McpServerManager) {
+	constructor(config: McpConfig, manager?: McpServerManager, coordinator?: OAuthCoordinator) {
 		const parsed = parseHttpServerConfigs(config);
 		this.diagnostics = parsed.diagnostics;
-		this.manager = manager ?? new McpServerManager(parsed.servers.values());
+		if (manager) { this.manager = manager; this.coordinator = coordinator; return; }
+		const store = new OAuthStore();
+		this.manager = new McpServerManager(parsed.servers.values(), async (name) => {
+			const server = parsed.servers.get(name);
+			return server ? StoredOAuthProvider.passive(server.url.href, store) : undefined;
+		});
+		const settings = { ...DEFAULT_UI_SETTINGS, ...config.settings.ui };
+		const tailscale = new TailscaleAdapter();
+		const gateway = new GatewayClient({ settings, hostnameResolver: async () => {
+			if (settings.hostname !== "auto") return settings.hostname;
+			const hostname = await tailscale.hostname(); if (!hostname) throw new Error("Tailscale hostname unavailable"); return hostname;
+		} });
+		this.coordinator = new OAuthCoordinator(this.manager, parsed.servers, settings, gateway, tailscale, store);
 	}
 
 	async execute(input: Input, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
 		if (input.action) {
-			if (input.search !== undefined || input.connect !== undefined || input.tool !== undefined) {
-				throw new Error("OAuth actions cannot be combined with another MCP operation");
+			if (!input.server) throw new Error("OAuth actions require server");
+			if (input.search !== undefined || input.connect !== undefined || input.tool !== undefined) throw new Error("OAuth actions cannot be combined with another MCP operation");
+			if (!this.coordinator) throw new Error("MCP OAuth is unavailable");
+			if (input.action === "auth-start") {
+				if (input.args !== undefined) throw new Error("auth-start does not accept args");
+				const result = await this.coordinator.begin(input.server);
+				return this.text(`Open this authorization URL (it is not opened automatically):\n${result.authorizationUrl}`, { state: "authorization-required", server: input.server, authorizationUrl: result.authorizationUrl });
 			}
-			return this.text("MCP OAuth is not available yet.", {
-				state: "not-yet-available",
-				...(input.server ? { server: input.server } : {}),
-			});
+			if (!input.args || Object.keys(input.args).length !== 1 || typeof input.args.redirectUrl !== "string") throw new Error("auth-complete requires only args.redirectUrl");
+			await this.coordinator.complete(input.server, input.args.redirectUrl);
+			return this.text(`Authentication complete for ${input.server}.`, { state: "connected", server: input.server });
 		}
 		const operations = [input.server, input.search, input.connect, input.tool]
 			.filter((value) => value !== undefined).length;
