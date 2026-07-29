@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { McpServerManager } from "../src/mcp/manager.js";
 import { McpRuntime } from "../src/runtime.js";
@@ -101,6 +105,109 @@ test("status and OAuth validation perform no MCP network requests", async () => 
 	}
 });
 
+test("real stdio initializes, lists, calls, and terminates children on refresh and close", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-mcp-stdio-"));
+	const fixture = new URL("./fixtures/stdio-server.mjs", import.meta.url).pathname;
+	const firstPid = join(directory, "first.pid"); const firstExit = join(directory, "first.exit");
+	const manager = new McpServerManager([{
+		name: "local",
+		transport: "stdio",
+		command: process.execPath,
+		args: [fixture, firstPid, firstExit],
+		env: { PI_MCP_TEST: "configured" },
+	}]);
+	try {
+		assert.equal((await manager.connect("local")).state, "connected");
+		assert.equal(manager.tool("local", "echo")?.name, "echo");
+		assert.match(JSON.stringify(await manager.callFromModel("local", "echo", {})), /stdio-ok:configured:has-path/);
+		const initialPid = Number(readFileSync(firstPid, "utf8"));
+		assert.ok(initialPid > 0);
+		await manager.connect("local", true);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.throws(() => process.kill(initialPid, 0));
+		const secondPid = Number(readFileSync(firstPid, "utf8"));
+		await manager.close();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.throws(() => process.kill(secondPid, 0));
+	} finally {
+		await manager.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+async function legacySseServer() {
+	const sessions = new Map<string, { transport: SSEServerTransport; mcp: McpServer }>();
+	let modernAttempts = 0;
+	let streamStarts = 0;
+	let configuredHeaderRequests = 0;
+	const http = createServer(async (request, response) => {
+		if (request.headers["x-test"] === "configured") configuredHeaderRequests++;
+		const url = new URL(request.url ?? "/", "http://127.0.0.1");
+		if (request.method === "POST" && url.pathname === "/mcp") {
+			modernAttempts++;
+			response.writeHead(405).end();
+			return;
+		}
+		if (request.method === "GET" && url.pathname === "/mcp") {
+			streamStarts++;
+			const transport = new SSEServerTransport("/messages", response);
+			const mcp = new McpServer({ name: "legacy-sse", version: "1.0.0" });
+			mcp.registerTool("legacy", {}, async () => ({ content: [{ type: "text", text: "sse-ok" }] }));
+			sessions.set(transport.sessionId, { transport, mcp });
+			transport.onclose = () => { sessions.delete(transport.sessionId); };
+			await mcp.connect(transport);
+			return;
+		}
+		if (request.method === "POST" && url.pathname === "/messages") {
+			const session = sessions.get(url.searchParams.get("sessionId") ?? "");
+			if (!session) { response.writeHead(404).end(); return; }
+			await session.transport.handlePostMessage(request, response);
+			return;
+		}
+		response.writeHead(404).end();
+	});
+	const port = await listen(http);
+	return {
+		http,
+		port,
+		modernAttempts: () => modernAttempts,
+		streamStarts: () => streamStarts,
+		configuredHeaderRequests: () => configuredHeaderRequests,
+		activeSessions: () => sessions.size,
+		close: async () => {
+			await Promise.allSettled([...sessions.values()].map(({ mcp }) => mcp.close()));
+			await stop(http);
+		},
+	};
+}
+
+test("real legacy SSE initializes, lists, calls, closes, and auto-falls back only from unsupported HTTP", async () => {
+	const fixture = await legacySseServer();
+	const explicit = new McpServerManager([{
+		name: "legacy", transport: "sse", url: new URL(`http://127.0.0.1:${fixture.port}/mcp`), headers: { "x-test": "configured" },
+	}]);
+	const automatic = new McpServerManager([{
+		name: "auto", transport: "auto", url: new URL(`http://127.0.0.1:${fixture.port}/mcp`), headers: { "x-test": "configured" },
+	}]);
+	try {
+		assert.equal((await explicit.connect("legacy")).state, "connected");
+		assert.match(JSON.stringify(await explicit.callFromModel("legacy", "legacy", {})), /sse-ok/);
+		assert.equal(fixture.modernAttempts(), 0);
+		await explicit.close();
+
+		assert.equal((await automatic.connect("auto")).state, "connected");
+		assert.match(JSON.stringify(await automatic.callFromModel("auto", "legacy", {})), /sse-ok/);
+		assert.equal(fixture.modernAttempts(), 1);
+		assert.equal(fixture.streamStarts(), 2);
+		assert.ok(fixture.configuredHeaderRequests() >= 5);
+	} finally {
+		await Promise.all([explicit.close(), automatic.close()]);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(fixture.activeSessions(), 0);
+		await fixture.close();
+	}
+});
+
 test("real Streamable HTTP initializes, lists, calls all result forms, refreshes, and closes", async () => {
 	const fixture = await protocolServer();
 	const runtime = new McpRuntime(config(fixture.port));
@@ -172,9 +279,13 @@ test("AbortSignal cancels a slow protocol tool call", async () => {
 	}
 });
 
-test("401 errors are classified and marker secrets never escape", async () => {
+test("401 errors are classified without SSE downgrade and marker secrets never escape", async () => {
 	const marker = "MARKER-secret-token";
-	const http = createServer((_request, response) => {
+	let requests = 0;
+	let getRequests = 0;
+	const http = createServer((request, response) => {
+		requests++;
+		if (request.method === "GET") getRequests++;
 		response.writeHead(401, {
 			"content-type": "application/json",
 			"www-authenticate": `Bearer resource_metadata=\"https://example.invalid/${marker}\"`,
@@ -192,6 +303,8 @@ test("401 errors are classified and marker secrets never escape", async () => {
 			return true;
 		});
 		assert.equal(manager.get("protected")?.state, "auth-required");
+		assert.equal(requests, 1);
+		assert.equal(getRequests, 0);
 	} finally {
 		await manager.close();
 		await stop(http);

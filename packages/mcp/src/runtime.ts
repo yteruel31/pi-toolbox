@@ -1,7 +1,7 @@
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { DEFAULT_UI_SETTINGS, type McpConfig } from "./config.js";
-import { parseHttpServerConfigs } from "./mcp/config.js";
+import { parseServerConfigs } from "./mcp/config.js";
 import { McpServerManager } from "./mcp/manager.js";
 import { OAuthCoordinator } from "./auth/coordinator.js";
 import { OAuthStore } from "./auth/store.js";
@@ -123,7 +123,7 @@ export class McpRuntime {
 		apps?: McpAppController,
 		options: McpRuntimeOptions = {},
 	) {
-		const parsed = parseHttpServerConfigs(config);
+		const parsed = parseServerConfigs(config);
 		this.diagnostics = parsed.diagnostics;
 		if (manager) {
 			this.manager = manager;
@@ -135,7 +135,7 @@ export class McpRuntime {
 		const store = new OAuthStore();
 		this.manager = new McpServerManager(parsed.servers.values(), async (name) => {
 			const server = parsed.servers.get(name);
-			return server ? StoredOAuthProvider.passive(server.url.href, store) : undefined;
+			return server && server.transport !== "stdio" ? StoredOAuthProvider.passive(server.url.href, store) : undefined;
 		});
 		const settings = { ...DEFAULT_UI_SETTINGS, ...config.settings.ui };
 		const tailscale = options.tailscale ?? new TailscaleAdapter();

@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import type { McpUiSettings } from "../config.js";
 import { INTERNAL_SECRET_HEADER, type Registration, type Session } from "../gateway/protocol.js";
-import type { HttpServerConfig } from "../mcp/config.js";
+import type { ServerConfig } from "../mcp/config.js";
 import { McpServerManager } from "../mcp/manager.js";
 import type { RouteState } from "../tailscale.js";
 import { StoredOAuthProvider } from "./provider.js";
@@ -60,7 +60,7 @@ export class OAuthCoordinator {
 
 	constructor(
 		private readonly manager: McpServerManager,
-		private readonly servers: Map<string, HttpServerConfig>,
+		private readonly servers: Map<string, ServerConfig>,
 		private readonly settings: McpUiSettings,
 		private readonly gateway: OAuthGateway,
 		private readonly tailscale: OAuthTailscale,
@@ -73,7 +73,7 @@ export class OAuthCoordinator {
 
 	async passiveProvider(name: string): Promise<StoredOAuthProvider | undefined> {
 		const config = this.servers.get(name);
-		return config ? StoredOAuthProvider.passive(config.url.href, this.store) : undefined;
+		return config && config.transport !== "stdio" ? StoredOAuthProvider.passive(config.url.href, this.store) : undefined;
 	}
 
 	async begin(name: string): Promise<{ authorizationUrl: string }> {
@@ -94,6 +94,7 @@ export class OAuthCoordinator {
 	private async start(name: string): Promise<{ authorizationUrl: string }> {
 		const config = this.servers.get(name);
 		if (!config) throw new Error(`Unknown MCP server: ${name}`);
+		if (config.transport === "stdio") throw new Error(`OAuth is unavailable for MCP server ${name}`);
 		if ((await this.tailscale.status(this.settings)).state !== "matching") {
 			throw new Error("Tailscale gateway route is not configured; run /mcp-gateway setup");
 		}

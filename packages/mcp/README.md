@@ -1,6 +1,6 @@
 # pi-mcp
 
-Private Tailnet MCP Apps gateway for Pi. The package connects Streamable HTTP MCP servers, hosts Apps on loopback, and lazily publishes active sessions through the configured Tailscale Serve route with a private dashboard and persistent Pi status link.
+Private Tailnet MCP Apps gateway for Pi. The package connects Streamable HTTP, legacy SSE, and stdio MCP servers, hosts Apps on loopback, and lazily publishes active sessions through the configured Tailscale Serve route with a private dashboard and persistent Pi status link.
 
 ## Configuration contract
 
@@ -24,7 +24,7 @@ Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/
 }
 ```
 
-Server definitions remain opaque plain objects for future transports. Configuration values are never passed to shell commands. `idleTimeoutMs` must be between 15 seconds and 24 hours so capability heartbeats and bounded gateway operations can complete before lease expiry.
+URL definitions may explicitly select `streamable-http` or legacy `sse`; when omitted, Pi tries Streamable HTTP and falls back to SSE only when the modern endpoint is unsupported. Stdio definitions use `{ "command": "executable", "args": [], "env": {}, "cwd": "..." }`. Commands are spawned directly without a shell. Configured stdio commands execute trusted local code with the user's privileges; only configure commands you trust. Configuration values and child stderr are never exposed in model-visible errors. `idleTimeoutMs` must be between 15 seconds and 24 hours so capability heartbeats and bounded gateway operations can complete before lease expiry.
 
 ## Development
 
@@ -38,9 +38,9 @@ npm pack --dry-run
 
 `/mcp-gateway setup` persistently adds only the configured Tailscale Serve HTTPS path; existing Serve routes are retained. `/mcp-gateway doctor` reports local gateway/config, hostname, and route state. `/mcp-gateway remove [--yes]` removes only an exactly matching route and asks for confirmation unless `--yes` is supplied. The gateway starts on demand, binds its public listener to `127.0.0.1`, and uses private capability URLs; loading the extension starts no service.
 
-## Streamable HTTP MCP (U3a)
+## MCP transports and tools (U3a/U5)
 
-The lazy `mcp` tool reports server status, connects or refreshes one server, lists and searches tools, and invokes tools by unique original name or stable `<server>_<tool>` alias. Only HTTPS endpoints and literal loopback HTTP endpoints are accepted. OAuth-protected servers reuse stored tokens when possible.
+The lazy `mcp` tool reports server status, connects or refreshes one server, lists and searches tools, and invokes tools by unique original name or stable `<server>_<tool>` alias. Only HTTPS endpoints and literal loopback HTTP endpoints are accepted. OAuth-protected HTTP and SSE servers reuse stored tokens when possible; OAuth is unavailable for stdio.
 
 ## OAuth (U3b)
 
@@ -56,4 +56,4 @@ The host uses the official bundled AppBridge, initializes it before loading an o
 
 ## Private App publication (U4b)
 
-Run `/mcp-gateway setup` explicitly before using Apps. The first active App verifies (but never mutates) the exact Serve route, obtains one process-local capability, and publishes a bounded dashboard; concurrent Apps remain isolated below its proxy. Gateway protocol v2 fails closed against an older resident daemon; if one is still draining after an upgrade, wait for its idle shutdown before retrying. Tailscale identity is required by default. The capability is removed when the last App completes or expires, and the compact Pi status link is cleared. Pi startup remains resource-idle, no browser is opened, and capability URLs and backend credentials never enter model-visible results. Phase 2 general compatibility remains deferred.
+Run `/mcp-gateway setup` explicitly before using Apps. The first active App verifies (but never mutates) the exact Serve route, obtains one process-local capability, and publishes a bounded dashboard; concurrent Apps remain isolated below its proxy. Gateway protocol v2 fails closed against an older resident daemon; if one is still draining after an upgrade, wait for its idle shutdown before retrying. Tailscale identity is required by default. The capability is removed when the last App completes or expires, and the compact Pi status link is cleared. Pi startup remains resource-idle, no browser is opened, and capability URLs and backend credentials never enter model-visible results.

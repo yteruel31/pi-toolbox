@@ -1,13 +1,16 @@
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
 	StreamableHTTPClientTransport,
 	StreamableHTTPError,
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { isToolVisibilityAppOnly, isToolVisibilityModelOnly } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { CallToolResult, ReadResourceResult, Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { HttpServerConfig } from "./config.js";
+import type { ServerConfig, UrlServerConfig } from "./config.js";
 
 export type ServerState = "disconnected" | "connecting" | "connected" | "auth-required" | "error";
 export interface ConnectedServer {
@@ -18,9 +21,10 @@ export interface ConnectedServer {
 	tools: Tool[];
 }
 interface Entry extends ConnectedServer {
-	config: HttpServerConfig;
+	config: ServerConfig;
 	client?: Client;
-	transport?: StreamableHTTPClientTransport;
+	transport?: Transport;
+	authTransport?: StreamableHTTPClientTransport | SSEClientTransport;
 	pending?: Promise<ConnectedServer>;
 	epoch: number;
 	authActive?: boolean;
@@ -31,6 +35,7 @@ export type AuthProviderFactory = (server: string) => OAuthClientProvider | unde
 function isAuthFailure(error: unknown): boolean {
 	return error instanceof UnauthorizedError ||
 		(error instanceof StreamableHTTPError && error.code === 401) ||
+		(error instanceof SseError && error.code === 401) ||
 		(typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === 401);
 }
 
@@ -39,7 +44,7 @@ export class McpServerManager {
 	private closing?: Promise<void>;
 	private closed = false;
 
-	constructor(configs: Iterable<HttpServerConfig>, private readonly authProviderFactory?: AuthProviderFactory) {
+	constructor(configs: Iterable<ServerConfig>, private readonly authProviderFactory?: AuthProviderFactory) {
 		for (const config of configs) {
 			this.entries.set(config.name, { name: config.name, config, state: "disconnected", tools: [], epoch: 0 });
 		}
@@ -71,19 +76,40 @@ export class McpServerManager {
 		return pending;
 	}
 
+	private createTransport(config: ServerConfig, provider?: OAuthClientProvider, legacy = false): Transport {
+		if (config.transport === "stdio") return new StdioClientTransport({
+			command: config.command, args: config.args ? [...config.args] : undefined,
+			env: config.env ? { ...getDefaultEnvironment(), ...config.env } : undefined,
+			cwd: config.cwd,
+			stderr: "ignore",
+		});
+		if (legacy || config.transport === "sse") {
+			const fetchWithHeaders: typeof fetch = (input, init) => fetch(input, { ...init, headers: { ...config.headers, ...Object.fromEntries(new Headers(init?.headers).entries()) } });
+			return new SSEClientTransport(config.url, { authProvider: provider, fetch: fetchWithHeaders });
+		}
+		return new StreamableHTTPClientTransport(config.url, { requestInit: { headers: config.headers }, authProvider: provider });
+	}
+
 	private async open(entry: Entry, refresh: boolean, epoch: number, provider?: OAuthClientProvider, retainAuth = false): Promise<ConnectedServer> {
 		if (refresh) await this.closeResources(entry);
 		entry.state = "connecting";
-		const authProvider = provider ?? await this.authProviderFactory?.(entry.name);
+		if (provider && entry.config.transport === "stdio") throw new Error(`OAuth is unavailable for MCP server ${entry.name}`);
+		const authProvider = entry.config.transport === "stdio" ? undefined : provider ?? await this.authProviderFactory?.(entry.name);
 		const client = new Client({ name: "pi-mcp", version: "0.1.0" });
-		const transport = new StreamableHTTPClientTransport(entry.config.url, {
-			requestInit: { headers: entry.config.headers },
-			authProvider,
-		});
-		entry.client = client;
-		entry.transport = transport;
+		let transport = this.createTransport(entry.config, authProvider);
+		entry.client = client; entry.transport = transport;
+		if (transport instanceof StreamableHTTPClientTransport || transport instanceof SSEClientTransport) entry.authTransport = transport;
 		try {
-			await client.connect(transport);
+			try { await client.connect(transport); }
+			catch (error) {
+				const auto = entry.config.transport === "auto";
+				const unsupported = error instanceof StreamableHTTPError && (error.code === 404 || error.code === 405);
+				if (!auto || !unsupported || entry.epoch !== epoch) throw error;
+				await transport.close().catch(() => undefined);
+				transport = this.createTransport(entry.config, authProvider, true);
+				entry.transport = transport; entry.authTransport = transport as SSEClientTransport;
+				await client.connect(transport);
+			}
 			const listed = await client.listTools();
 			if (entry.epoch !== epoch) {
 				await transport.close().catch(() => undefined);
@@ -109,6 +135,7 @@ export class McpServerManager {
 		const entry = this.entries.get(name);
 		if (!entry) throw new Error(`Unknown MCP server: ${name}`);
 		if (this.closed) throw new Error("MCP manager is closed");
+		if (entry.config.transport === "stdio") throw new Error(`OAuth is unavailable for MCP server ${name}`);
 		if (entry.authActive) throw new Error("OAuth attempt already active");
 		if (entry.pending) {
 			try { await entry.pending; } catch { /* the auth open supersedes it */ }
@@ -135,8 +162,8 @@ export class McpServerManager {
 
 	async finishAuth(name: string, code: string): Promise<ConnectedServer> {
 		if (this.closed) throw new Error("MCP manager is closed");
-		const entry = this.entries.get(name); if (!entry?.authActive || !entry.transport || entry.state !== "auth-required") throw new Error("No active OAuth attempt");
-		try { await entry.transport.finishAuth(code); }
+		const entry = this.entries.get(name); if (!entry?.authActive || !entry.authTransport || entry.state !== "auth-required") throw new Error("No active OAuth attempt");
+		try { await entry.authTransport.finishAuth(code); }
 		catch { entry.authActive = false; await this.closeResources(entry); entry.state = "error"; throw new Error(`OAuth could not complete for MCP server ${name}`); }
 		entry.authActive = false;
 		await this.closeResources(entry);
@@ -211,6 +238,7 @@ export class McpServerManager {
 		const transport = entry.transport;
 		entry.client = undefined;
 		entry.transport = undefined;
+		entry.authTransport = undefined;
 		try { await transport?.close(); } catch { /* close is best effort */ }
 	}
 
