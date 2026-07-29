@@ -6,6 +6,8 @@ test("extension lifecycle stays network-idle until an MCP operation needs a conn
 	const commands: unknown[][] = [];
 	const tools: Array<{ name: string; execute: (...args: any[]) => Promise<any> }> = [];
 	const events = new Map<string, (...args: any[]) => Promise<void>>();
+	const statuses: Array<{ id: string; value: string | undefined }> = [];
+	const context = { ui: { setStatus: (id: string, value: string | undefined) => statuses.push({ id, value }) } };
 	mcpExtension({
 		registerCommand: (...args: unknown[]) => commands.push(args),
 		registerTool: (tool: typeof tools[number]) => tools.push(tool),
@@ -26,12 +28,14 @@ test("extension lifecycle stays network-idle until an MCP operation needs a conn
 		throw new Error("unexpected eager network request");
 	}) as typeof fetch;
 	try {
-		await events.get("session_start")!();
+		await events.get("session_start")!({}, context);
 		assert.doesNotMatch(JSON.stringify(await tool.execute("status", {}, undefined)), /before session start/);
-		await events.get("session_start")!();
-		await events.get("session_shutdown")!();
-		await events.get("session_shutdown")!();
+		await events.get("session_start")!({}, context);
+		await events.get("session_shutdown")!({}, context);
+		await events.get("session_shutdown")!({}, context);
 		assert.equal(requests, 0);
+		assert.ok(statuses.length >= 4);
+		assert.ok(statuses.every((status) => status.id === "mcp-ui" && status.value === undefined));
 	} finally {
 		globalThis.fetch = originalFetch;
 	}

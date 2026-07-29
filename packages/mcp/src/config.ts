@@ -35,6 +35,7 @@ export const DEFAULT_UI_SETTINGS: Readonly<McpUiSettings> = Object.freeze({
 
 const UNSAFE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const UI_KEYS = new Set(Object.keys(DEFAULT_UI_SETTINGS));
+const MIN_IDLE_TIMEOUT_MS = 15_000;
 const MAX_IDLE_TIMEOUT_MS = 86_400_000;
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -72,7 +73,7 @@ function parseUi(value: unknown, base: McpUiSettings): McpUiSettings | undefined
 	const basePath = normalizeBasePath(candidate.basePath);
 	if (!validHostname(candidate.hostname) || !validPort(candidate.httpsPort) || !basePath ||
 		!validPort(candidate.gatewayPort) || typeof candidate.requireTailscaleIdentity !== "boolean" ||
-		!Number.isInteger(candidate.idleTimeoutMs) || candidate.idleTimeoutMs < 1 || candidate.idleTimeoutMs > MAX_IDLE_TIMEOUT_MS) return undefined;
+		!Number.isInteger(candidate.idleTimeoutMs) || candidate.idleTimeoutMs < MIN_IDLE_TIMEOUT_MS || candidate.idleTimeoutMs > MAX_IDLE_TIMEOUT_MS) return undefined;
 	return { ...candidate, basePath } as McpUiSettings;
 }
 

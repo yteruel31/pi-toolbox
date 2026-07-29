@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { McpUiSettings } from "../config.js";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const INTERNAL_SECRET_HEADER = "x-pi-mcp-backend-secret";
 
 export interface Registration {

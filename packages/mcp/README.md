@@ -1,6 +1,6 @@
 # pi-mcp
 
-In-progress private Tailnet MCP Apps gateway for Pi. The package connects Streamable HTTP MCP servers, including OAuth-protected servers, manages the local gateway and its Tailscale Serve route, and hosts MCP App resources on a private loopback backend. Gateway publication and the persistent Pi footer link are not connected yet.
+Private Tailnet MCP Apps gateway for Pi. The package connects Streamable HTTP MCP servers, hosts Apps on loopback, and lazily publishes active sessions through the configured Tailscale Serve route with a private dashboard and persistent Pi status link.
 
 ## Configuration contract
 
@@ -24,7 +24,7 @@ Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/
 }
 ```
 
-Server definitions remain opaque plain objects for future transports. Configuration values are never passed to shell commands.
+Server definitions remain opaque plain objects for future transports. Configuration values are never passed to shell commands. `idleTimeoutMs` must be between 15 seconds and 24 hours so capability heartbeats and bounded gateway operations can complete before lease expiry.
 
 ## Development
 
@@ -54,4 +54,6 @@ Tools declaring `_meta.ui.resourceUri` (or the legacy `_meta["ui/resourceUri"]`)
 
 The host uses the official bundled AppBridge, initializes it before loading an opaque sandboxed iframe, asks for browser consent before the first App-initiated tool call, scopes those calls to the owning MCP server, and records bounded message/context intents for later Pi integration. Sessions use heartbeat-based expiry, persistent replayable SSE, strict CSP/permissions, a process-private backend secret, and no automatic opening of the App UI. Explicit App `openLink` requests are validated, recorded, and delegated to the browser with `noopener,noreferrer`. Local backend origins, secrets, and routes are not included in model-visible tool details.
 
-This unit is intentionally not remotely reachable on its own. A subsequent unit will register active App routes with the persistent private gateway and expose the stable Tailnet dashboard/footer link.
+## Private App publication (U4b)
+
+Run `/mcp-gateway setup` explicitly before using Apps. The first active App verifies (but never mutates) the exact Serve route, obtains one process-local capability, and publishes a bounded dashboard; concurrent Apps remain isolated below its proxy. Gateway protocol v2 fails closed against an older resident daemon; if one is still draining after an upgrade, wait for its idle shutdown before retrying. Tailscale identity is required by default. The capability is removed when the last App completes or expires, and the compact Pi status link is cleared. Pi startup remains resource-idle, no browser is opened, and capability URLs and backend credentials never enter model-visible results. Phase 2 general compatibility remains deferred.

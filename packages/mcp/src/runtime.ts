@@ -9,6 +9,7 @@ import { StoredOAuthProvider } from "./auth/provider.js";
 import { GatewayClient } from "./gateway/client.js";
 import { TailscaleAdapter } from "./tailscale.js";
 import { McpAppController } from "./apps/controller.js";
+import { AppPublisher, type AppPublicationStatus } from "./apps/publisher.js";
 
 const Params = Type.Object({
 	server: Type.Optional(Type.String({ maxLength: 64 })),
@@ -101,28 +102,62 @@ class OutputBudget {
 	}
 }
 
+export interface McpRuntimeOptions {
+	publisher?: AppPublisher;
+	onUiStatus?: (status?: AppPublicationStatus) => void;
+	publishApps?: boolean;
+	tailscale?: TailscaleAdapter;
+	gateway?: GatewayClient;
+}
+
 export class McpRuntime {
 	readonly manager: McpServerManager;
 	readonly coordinator?: OAuthCoordinator;
 	readonly apps: McpAppController;
+	readonly publisher?: AppPublisher;
 	readonly diagnostics;
-	constructor(config: McpConfig, manager?: McpServerManager, coordinator?: OAuthCoordinator, apps?: McpAppController) {
+	constructor(
+		config: McpConfig,
+		manager?: McpServerManager,
+		coordinator?: OAuthCoordinator,
+		apps?: McpAppController,
+		options: McpRuntimeOptions = {},
+	) {
 		const parsed = parseHttpServerConfigs(config);
 		this.diagnostics = parsed.diagnostics;
-		if (manager) { this.manager = manager; this.coordinator = coordinator; this.apps = apps ?? new McpAppController(manager); return; }
+		if (manager) {
+			this.manager = manager;
+			this.coordinator = coordinator;
+			this.apps = apps ?? new McpAppController(manager);
+			this.publisher = options.publisher;
+			return;
+		}
 		const store = new OAuthStore();
 		this.manager = new McpServerManager(parsed.servers.values(), async (name) => {
 			const server = parsed.servers.get(name);
 			return server ? StoredOAuthProvider.passive(server.url.href, store) : undefined;
 		});
 		const settings = { ...DEFAULT_UI_SETTINGS, ...config.settings.ui };
-		const tailscale = new TailscaleAdapter();
-		const gateway = new GatewayClient({ settings, hostnameResolver: async () => {
+		const tailscale = options.tailscale ?? new TailscaleAdapter();
+		const gateway = options.gateway ?? new GatewayClient({ settings, hostnameResolver: async () => {
 			if (settings.hostname !== "auto") return settings.hostname;
 			const hostname = await tailscale.hostname(); if (!hostname) throw new Error("Tailscale hostname unavailable"); return hostname;
 		} });
 		this.coordinator = new OAuthCoordinator(this.manager, parsed.servers, settings, gateway, tailscale, store);
-		this.apps = apps ?? new McpAppController(this.manager);
+		let activePublisher: AppPublisher | undefined;
+		this.apps = apps ?? new McpAppController(this.manager, {
+			onChange: (current) => { void activePublisher?.reconcile(current); },
+		});
+		this.publisher = options.publishApps === false
+			? undefined
+			: options.publisher ?? new AppPublisher({
+				settings,
+				gateway,
+				tailscale,
+				backend: () => this.apps.backend(),
+				onStatus: options.onUiStatus,
+			});
+		activePublisher = this.publisher;
 	}
 
 	async execute(input: Input, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
@@ -205,7 +240,8 @@ export class McpRuntime {
 		const result = await this.manager.callFromModel(targetServer, targetTool, args, signal);
 		let ui: { state: "available" | "unavailable" } | undefined;
 		try {
-			if (await this.apps.open(targetServer, metadata, args, result, signal)) ui = { state: "available" };
+			const opened = await this.apps.open(targetServer, metadata, args, result, signal);
+			if (opened) ui = { state: this.publisher ? (await this.publisher.reconcile(this.apps.list())).state : "available" };
 		} catch {
 			ui = { state: "unavailable" };
 		}
@@ -226,6 +262,7 @@ export class McpRuntime {
 
 	async close(): Promise<void> {
 		await this.apps.close();
+		await this.publisher?.close();
 		await this.coordinator?.close();
 		await this.manager.close();
 	}

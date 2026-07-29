@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { DEFAULT_UI_SETTINGS } from "../src/config.js";
 import { GatewayClient, GatewayIncompatibleError } from "../src/gateway/client.js";
-import { INTERNAL_SECRET_HEADER, type Session } from "../src/gateway/protocol.js";
+import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, settingsSignature, type Session } from "../src/gateway/protocol.js";
 import { startGatewayServer } from "../src/gateway/server.js";
 
 interface HttpResult {
@@ -19,7 +19,7 @@ interface HttpResult {
 
 function http(port: number, path: string, options: { method?: string; body?: string; headers?: Record<string, string> } = {}): Promise<HttpResult> {
 	return new Promise((resolve, reject) => {
-		const outgoing = request({ host: "127.0.0.1", port, path, method: options.method, headers: options.headers }, (response) => {
+		const outgoing = request({ host: "127.0.0.1", port, path, method: options.method, headers: { "tailscale-user-login": "tester@example.com", ...options.headers } }, (response) => {
 			let body = "";
 			response.on("data", (chunk) => body += chunk);
 			response.on("end", () => resolve({ status: response.statusCode!, body, headers: response.headers }));
@@ -64,12 +64,17 @@ function wrongLease(session: Session): Session {
 }
 
 test("capability dashboard is isolated, escaped, mounted/direct equivalent, and secured", async () => {
+	const backend = createServer((request, response) => {
+		if (request.headers[INTERNAL_SECRET_HEADER] !== "dashboard-secret") return response.writeHead(404).end();
+		response.end(JSON.stringify([{ id: "abcdefghijklmnopqrstuvwx", label: "<unsafe>", route: "apps/abcdefghijklmnopqrstuvwx/", state: "active" }]));
+	});
+	const backendPort = await listen(backend);
 	const home = await mkdtemp(join(tmpdir(), "pi-mcp-"));
 	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
 	const client = new GatewayClient({ settings, hostnameResolver: async () => "tail.test", homeDir: home });
 	const gateway = await startGatewayServer({ settings, hostname: "tail.test", socketPath: client.socket });
 	try {
-		const session = await client.register({ label: "<unsafe>", backendOrigin: "http://127.0.0.1:23456" });
+		const session = await client.register({ label: "<unsafe>", backendOrigin: `http://127.0.0.1:${backendPort}`, backendSecret: "dashboard-secret" });
 		const direct = await http(settings.gatewayPort, `/s/${session.capability}/`);
 		const mounted = await http(settings.gatewayPort, `${settings.basePath}/s/${session.capability}/`);
 		assert.equal(direct.body, mounted.body);
@@ -83,8 +88,53 @@ test("capability dashboard is isolated, escaped, mounted/direct equivalent, and 
 		await client.unregister(session);
 	} finally {
 		await gateway.close();
+		await new Promise<void>((resolve) => backend.close(() => resolve()));
 		await rm(home, { recursive: true, force: true });
 	}
+});
+
+test("dashboard rejects oversized or malformed backend descriptors", async () => {
+	let payload = JSON.stringify([{ id: "abcdefghijklmnopqrstuvwx", label: "x".repeat(70_000), route: "apps/abcdefghijklmnopqrstuvwx/", state: "active" }]);
+	const backend = createServer((_request, response) => response.end(payload));
+	const backendPort = await listen(backend);
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-dashboard-bounds-"));
+	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
+	const client = new GatewayClient({ settings, hostnameResolver: async () => "tail.test", homeDir: home });
+	const gateway = await startGatewayServer({ settings, hostname: "tail.test", socketPath: client.socket });
+	try {
+		const session = await client.register({ label: "bounded", backendOrigin: `http://127.0.0.1:${backendPort}` });
+		assert.equal((await http(settings.gatewayPort, `/s/${session.capability}/`)).status, 502);
+		payload = JSON.stringify([{ id: "abcdefghijklmnopqrstuvwx", label: "bad\nlabel", route: "apps/abcdefghijklmnopqrstuvwx/", state: "active" }]);
+		assert.equal((await http(settings.gatewayPort, `/s/${session.capability}/`)).status, 502);
+	} finally {
+		await gateway.close();
+		await new Promise<void>((resolve) => backend.close(() => resolve()));
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("direct and mounted capabilities require identity unless explicitly disabled", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-identity-"));
+	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
+	const client = new GatewayClient({ settings, hostnameResolver: async () => "tail.test", homeDir: home });
+	const gateway = await startGatewayServer({ settings, hostname: "tail.test", socketPath: client.socket });
+	try {
+		const session = await client.register({ label: "identity", backendOrigin: "http://127.0.0.1:1" });
+		const direct = `/s/${session.capability}/`;
+		const mounted = `${settings.basePath}${direct}`;
+		assert.equal((await http(settings.gatewayPort, direct, { headers: { "tailscale-user-login": "" } })).status, 404);
+		assert.equal((await http(settings.gatewayPort, mounted, { headers: { "tailscale-user-login": "" } })).status, 404);
+		assert.equal((await http(settings.gatewayPort, mounted, { headers: { "tailscale-user-login": "valid@example.com" } })).status, 502);
+	} finally { await gateway.close(); await rm(home, { recursive: true, force: true }); }
+
+	const disabledHome = await mkdtemp(join(tmpdir(), "pi-mcp-identity-disabled-"));
+	const disabledSettings = { ...settings, gatewayPort: await freePort(), requireTailscaleIdentity: false };
+	const disabledClient = new GatewayClient({ settings: disabledSettings, hostnameResolver: async () => "tail.test", homeDir: disabledHome });
+	const disabledGateway = await startGatewayServer({ settings: disabledSettings, hostname: "tail.test", socketPath: disabledClient.socket });
+	try {
+		const session = await disabledClient.register({ label: "disabled", backendOrigin: "http://127.0.0.1:1" });
+		assert.equal((await http(disabledSettings.gatewayPort, `/s/${session.capability}/`, { headers: { "tailscale-user-login": "" } })).status, 502);
+	} finally { await disabledGateway.close(); await rm(disabledHome, { recursive: true, force: true }); }
 });
 
 test("two concurrent clients share one launch and register isolated sessions", async () => {
@@ -136,13 +186,16 @@ test("the production launcher starts the packaged daemon runtime", async () => {
 	}
 });
 
-test("reachable incompatible gateway is terminal and is not replaced", async () => {
+test("a reachable previous-protocol gateway fails closed and is not replaced", async () => {
 	const home = await mkdtemp(join(tmpdir(), "pi-mcp-mismatch-"));
 	const client = new GatewayClient({ settings: DEFAULT_UI_SETTINGS, hostnameResolver: async () => "node.ts.net", homeDir: home, spawnDaemon: () => assert.fail("must not spawn") });
 	await mkdir(client.dir, { recursive: true });
 	const incompatible = createServer((_request, response) => {
 		response.writeHead(200, { "content-type": "application/json" });
-		response.end(JSON.stringify({ protocol: 999, signature: "other" }));
+		response.end(JSON.stringify({
+			protocol: PROTOCOL_VERSION - 1,
+			signature: settingsSignature(DEFAULT_UI_SETTINGS),
+		}));
 	});
 	await new Promise<void>((resolve, reject) => incompatible.once("error", reject).listen(client.socket, resolve));
 	try {
@@ -162,6 +215,7 @@ test("real proxy preserves query/body, enforces headers, injects secret, and rej
 		incoming.on("end", () => {
 			received = { url: incoming.url, body, headers: incoming.headers };
 			response.setHeader("cache-control", "public");
+			response.setHeader("content-security-policy", "default-src 'none'; frame-ancestors 'self'");
 			response.setHeader("connection", "x-upstream-hop");
 			response.setHeader("x-upstream-hop", "must-not-leak");
 			response.end("backend-ok");
@@ -185,7 +239,9 @@ test("real proxy preserves query/body, enforces headers, injects secret, and rej
 		assert.equal(received.body, "payload");
 		assert.equal(received.headers?.[INTERNAL_SECRET_HEADER], "private-value");
 		assert.equal(received.headers?.["x-client-hop"], undefined);
+		assert.equal(received.headers?.["tailscale-user-login"], undefined);
 		assert.equal(response.headers["cache-control"], "no-store");
+		assert.equal(response.headers["content-security-policy"], "default-src 'none'; frame-ancestors 'self'");
 		assert.equal(response.headers["x-upstream-hop"], undefined);
 		assert.equal(response.headers[INTERNAL_SECRET_HEADER], undefined);
 		for (const path of ["//host", "%2fhost", "%5chost", "../escape", "%2e%2e/escape"]) {
@@ -228,7 +284,7 @@ test("SSE proxy forwards the first event before the backend completes", async ()
 				host: "127.0.0.1",
 				port: settings.gatewayPort,
 				path: `/s/${session.capability}/proxy/events`,
-				headers: { connection: "x-client-hop", "x-client-hop": "remove-me" },
+				headers: { connection: "x-client-hop", "x-client-hop": "remove-me", "tailscale-user-login": "tester@example.com" },
 			}, (response) => {
 				let body = "";
 				let sawFirst = false;
@@ -257,6 +313,66 @@ test("SSE proxy forwards the first event before the backend completes", async ()
 	}
 });
 
+test("proxy propagates downstream SSE cancellation and survives truncated upstream responses", async () => {
+	let mode: "sse" | "truncated" = "sse";
+	let resolveBackendClosed!: () => void;
+	const backendClosed = new Promise<void>((resolve) => { resolveBackendClosed = resolve; });
+	const backend = createServer((_incoming, response) => {
+		response.on("close", resolveBackendClosed);
+		if (mode === "truncated") {
+			response.writeHead(200, { "content-type": "text/plain" });
+			response.write("partial");
+			response.destroy();
+			return;
+		}
+		response.writeHead(200, { "content-type": "text/event-stream" });
+		response.write("data: first\n\n");
+	});
+	const backendPort = await listen(backend);
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-proxy-abort-"));
+	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
+	const client = new GatewayClient({ settings, hostnameResolver: async () => "tail.test", homeDir: home });
+	const gateway = await startGatewayServer({ settings, hostname: "tail.test", socketPath: client.socket });
+	try {
+		const session = await client.register({ label: "abort", backendOrigin: `http://127.0.0.1:${backendPort}` });
+		await new Promise<void>((resolve, reject) => {
+			const outgoing = request({
+				host: "127.0.0.1",
+				port: settings.gatewayPort,
+				path: `/s/${session.capability}/proxy/events`,
+				headers: { "tailscale-user-login": "tester@example.com" },
+			}, (response) => response.once("data", () => { outgoing.destroy(); resolve(); }));
+			outgoing.on("error", (error) => {
+				if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error);
+			});
+			outgoing.end();
+		});
+		await Promise.race([backendClosed, new Promise((_, reject) => setTimeout(() => reject(new Error("backend stream remained open")), 1_000))]);
+
+		mode = "truncated";
+		await new Promise<void>((resolve, reject) => {
+			const outgoing = request({
+				host: "127.0.0.1",
+				port: settings.gatewayPort,
+				path: `/s/${session.capability}/proxy/truncated`,
+				headers: { "tailscale-user-login": "tester@example.com" },
+			}, (response) => {
+				response.on("aborted", resolve);
+				response.on("end", resolve);
+				response.on("error", () => resolve());
+				response.resume();
+			});
+			outgoing.on("error", (error) => (error as NodeJS.ErrnoException).code === "ECONNRESET" ? resolve() : reject(error));
+			outgoing.end();
+		});
+		await client.hello();
+	} finally {
+		await gateway.close();
+		await new Promise<void>((resolve) => backend.close(() => resolve()));
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
 test("lease authentication protects updates and unregister revokes the capability", async () => {
 	const home = await mkdtemp(join(tmpdir(), "pi-mcp-lease-"));
 	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
@@ -269,7 +385,7 @@ test("lease authentication protects updates and unregister revokes the capabilit
 		await assert.rejects(client.unregister(wrongLease(session)), /not found/);
 		await client.heartbeat(session);
 		await client.update(session, "updated");
-		assert.match((await http(settings.gatewayPort, `/s/${session.capability}/`)).body, /updated/);
+		assert.equal((await http(settings.gatewayPort, `/s/${session.capability}/`)).status, 502);
 		await client.unregister(session);
 		assert.equal((await http(settings.gatewayPort, `/s/${session.capability}/`)).status, 404);
 	} finally {

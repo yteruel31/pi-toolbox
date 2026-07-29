@@ -86,11 +86,12 @@ test("rejects prototype-pollution keys recursively without exposing values", () 
 test("validates every UI field", () => {
 	const invalid = [
 		{ hostname: "bad host" }, { httpsPort: 0 }, { gatewayPort: 65536 }, { basePath: "relative" },
-		{ requireTailscaleIdentity: "true" }, { idleTimeoutMs: 0 }, { idleTimeoutMs: 86_400_001 }, { unknown: true },
+		{ requireTailscaleIdentity: "true" }, { idleTimeoutMs: 14_999 }, { idleTimeoutMs: 86_400_001 }, { unknown: true },
 	];
 	for (const ui of invalid) {
 		const result = loadMcpConfig({ homeDir: homeWith({ settings: { ui } }) });
 		assert.deepEqual(result.settings.ui, DEFAULT_UI_SETTINGS);
 		assert.equal(result.diagnostics[0]?.code, "invalid-ui");
 	}
+	assert.equal(loadMcpConfig({ homeDir: homeWith({ settings: { ui: { idleTimeoutMs: 15_000 } } }) }).settings.ui.idleTimeoutMs, 15_000);
 });

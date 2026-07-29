@@ -9,3 +9,4 @@
 - Lazy Streamable HTTP MCP client with status, discovery, search, refresh, and bounded tool calls.
 - Interactive OAuth authorization with private persisted credentials and an ephemeral callback-only gateway session.
 - Lazy loopback MCP App host with exact `ui://` resource loading, official bundled AppBridge, sandbox/CSP enforcement, consented same-server tool calls, replayable SSE, and heartbeat-based session expiry.
+- Lazy private publication of active Apps through a verified Tailscale Serve route, with an identity-gated dashboard, capability proxy, persistent Pi status link, and fail-closed gateway protocol v2.

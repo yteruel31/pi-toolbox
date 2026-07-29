@@ -6,8 +6,13 @@ const execFile = promisify(execFileCallback);
 export interface TailscaleExec { (args: readonly string[]): Promise<{ stdout: string }> }
 export type RouteState = "absent" | "matching" | "conflicting";
 
+const TAILSCALE_TIMEOUT_MS = 5_000;
 export class TailscaleAdapter {
-	constructor(private readonly run: TailscaleExec = async (args) => execFile("tailscale", [...args], { encoding: "utf8" })) {}
+	constructor(private readonly run: TailscaleExec = async (args) => execFile("tailscale", [...args], {
+		encoding: "utf8",
+		timeout: TAILSCALE_TIMEOUT_MS,
+		killSignal: "SIGKILL",
+	})) {}
 
 	async status(settings: McpUiSettings): Promise<{ state: RouteState; target: string }> {
 		const target = `http://127.0.0.1:${settings.gatewayPort}`;

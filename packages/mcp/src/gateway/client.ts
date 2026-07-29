@@ -105,6 +105,7 @@ export class GatewayClient {
 	}
 }
 
+const CONTROL_REQUEST_TIMEOUT_MS = 5_000;
 function call(socketPath: string, path: string, body: unknown): Promise<any> {
 	return new Promise((resolve, reject) => {
 		const outgoing = request({ socketPath, path, method: "POST", headers: { "content-type": "application/json" } }, (response) => {
@@ -118,6 +119,7 @@ function call(socketPath: string, path: string, body: unknown): Promise<any> {
 				else reject(new Error(typeof value?.error === "string" ? value.error : "Gateway request failed"));
 			});
 		});
+		outgoing.setTimeout(CONTROL_REQUEST_TIMEOUT_MS, () => outgoing.destroy(new Error("Gateway request timed out")));
 		outgoing.on("error", reject);
 		outgoing.end(JSON.stringify(body));
 	});

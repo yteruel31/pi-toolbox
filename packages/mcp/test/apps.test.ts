@@ -435,7 +435,7 @@ test("real SDK tool metadata and resources/read open an App while preserving the
 		mcpServers: { real: { url: `http://127.0.0.1:${port}/mcp` } },
 		settings: { ui: {} },
 		diagnostics: [],
-	} as never);
+	} as never, undefined, undefined, undefined, { publishApps: false });
 	try {
 		const listing = await runtime.execute({ connect: "real" });
 		assert.match(JSON.stringify(listing), /real_model-only/);

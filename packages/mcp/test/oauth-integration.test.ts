@@ -216,7 +216,7 @@ test("OAuth DCR/PKCE completes through the real gateway and stored tokens reconn
 		const directCallback = new URL(storedAttempt.backendOrigin);
 		assert.equal((await get(Number(directCallback.port), "/oauth/callback?code=valid-code&state=" + encodeURIComponent(state))).status, 404);
 
-		const callback = await get(settings.gatewayPort, `${redirect.pathname}?code=valid-code&state=${encodeURIComponent(state)}`);
+		const callback = await get(settings.gatewayPort, `${redirect.pathname}?code=valid-code&state=${encodeURIComponent(state)}`, { "tailscale-user-login": "tester@example.com" });
 		assert.equal(callback.status, 200);
 		assert.match(callback.body, /Authentication complete/);
 		assert.equal(callback.headers["cache-control"], "no-store");

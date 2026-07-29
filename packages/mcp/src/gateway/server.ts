@@ -16,8 +16,10 @@ const SECURITY_HEADERS = {
 	"cache-control": "no-store",
 	"referrer-policy": "no-referrer",
 	"x-content-type-options": "nosniff",
-	"content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
 };
+const DASHBOARD_CSP = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+const MAX_DESCRIPTORS_BYTES = 64 * 1024;
+const IDENTITY_HEADER = "tailscale-user-login";
 const HOP_HEADERS = new Set(["connection", "proxy-connection", "keep-alive", "transfer-encoding", "upgrade", "trailer", "te"]);
 const token = (): string => randomBytes(32).toString("base64url");
 const equalSecret = (left: string, right: string): boolean => {
@@ -52,7 +54,7 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 	let idleSince: number | undefined = now();
 
 	const controlServer = createServer((request, response) => void handleControl(request, response));
-	const publicServer = createServer((request, response) => void handlePublic(request, response));
+	const publicServer = createServer((request, response) => void handlePublic(request, response).catch(() => gatewayError(response)));
 
 	async function handleControl(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		const reply = (status: number, value?: unknown): void => {
@@ -97,20 +99,17 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		}
 	}
 
-	function handlePublic(request: IncomingMessage, response: ServerResponse): void {
+	async function handlePublic(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		applySecurity(response);
 		let parsed: URL;
 		try { parsed = new URL(request.url ?? "/", "http://127.0.0.1"); } catch { return notFound(response); }
 		const mounted = parsed.pathname.startsWith(`${options.settings.basePath}/s/`);
+		if (options.settings.requireTailscaleIdentity && !validIdentity(request.headers[IDENTITY_HEADER])) return notFound(response);
 		const route = mounted ? parsed.pathname.slice(options.settings.basePath.length) : parsed.pathname;
 		const match = route.match(/^\/s\/([^/]+)\/(.*)$/);
 		const stored = match ? capabilities.get(match[1]) : undefined;
 		if (!stored) return notFound(response);
-		if (match![2] === "") {
-			response.setHeader("content-type", "text/html; charset=utf-8");
-			response.end(`<!doctype html><title>Pi MCP</title><h1>${escapeHtml(stored.label)}</h1>`);
-			return;
-		}
+		if (match![2] === "") return dashboard(response, stored);
 		if (!match![2].startsWith("proxy/")) return notFound(response);
 		const rawPath = rawProxyPath(request.url ?? "", mounted, options.settings.basePath, stored.capability);
 		if (!rawPath) return notFound(response);
@@ -122,20 +121,89 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		const headers: Record<string, string | string[]> = {};
 		const hopHeaders = dynamicHopHeaders(incoming.headers);
 		for (const [name, value] of Object.entries(incoming.headers)) {
-			if (!hopHeaders.has(name) && name !== "host" && value !== undefined) headers[name] = value;
+			if (!hopHeaders.has(name) && name !== "host" && name !== IDENTITY_HEADER && value !== undefined) headers[name] = value;
 		}
 		headers[INTERNAL_SECRET_HEADER] = session.backendSecret;
-		const outgoing = httpRequest(target, { method: incoming.method, headers }, (upstream) => {
-			const safe = stripResponseHeaders(upstream.headers);
-			response.writeHead(upstream.statusCode ?? 502, { ...safe, ...SECURITY_HEADERS });
-			upstream.pipe(response);
+		let upstream: IncomingMessage | undefined;
+		let completed = false;
+		const abort = (): void => {
+			if (completed) return;
+			outgoing.destroy();
+			upstream?.destroy();
+		};
+		const fail = (): void => {
+			if (completed) return;
+			outgoing.destroy();
+			upstream?.destroy();
+			completed = true;
+			if (!response.headersSent) gatewayError(response);
+			else response.destroy();
+		};
+		const outgoing = httpRequest(target, { method: incoming.method, headers }, (received) => {
+			upstream = received;
+			const safe = stripResponseHeaders(received.headers);
+			response.writeHead(received.statusCode ?? 502, { ...safe, ...SECURITY_HEADERS });
+			received.on("aborted", fail);
+			received.on("error", fail);
+			received.on("end", () => { completed = true; });
+			received.pipe(response);
 		});
-		outgoing.on("error", () => {
-			if (!response.headersSent) response.writeHead(502, SECURITY_HEADERS);
-			response.end("Gateway error");
-		});
-		incoming.on("error", () => outgoing.destroy());
+		outgoing.on("error", fail);
+		incoming.on("aborted", abort);
+		incoming.on("error", abort);
+		response.on("close", abort);
 		incoming.pipe(outgoing);
+	}
+
+	async function dashboard(response: ServerResponse, session: StoredSession): Promise<void> {
+		let descriptors: unknown;
+		try {
+			descriptors = await backendJson(session, "/apps");
+			if (!validDescriptors(descriptors)) throw new Error("invalid descriptors");
+		} catch { return gatewayError(response); }
+		const apps = descriptors as Array<{ id: string; label: string; route: string }>;
+		const links = apps.map((app) => `<li><a href="proxy/apps/${app.id}/">${escapeHtml(app.label)}</a></li>`).join("");
+		response.writeHead(200, { ...SECURITY_HEADERS, "content-type": "text/html; charset=utf-8", "content-security-policy": DASHBOARD_CSP });
+		response.end(`<!doctype html><meta charset="utf-8"><title>Pi MCP Apps</title><h1>Pi MCP Apps (${apps.length})</h1><ul>${links}</ul>`);
+	}
+
+	function backendJson(session: StoredSession, path: string): Promise<unknown> {
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const finish = (error?: Error, value?: unknown): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				error ? reject(error) : resolve(value);
+			};
+			const outgoing = httpRequest(new URL(path, `${session.backendOrigin}/`), { headers: { [INTERNAL_SECRET_HEADER]: session.backendSecret } }, (upstream) => {
+				if (upstream.statusCode !== 200) {
+					upstream.resume();
+					return finish(new Error("upstream"));
+				}
+				const chunks: Buffer[] = [];
+				let size = 0;
+				upstream.on("data", (chunk: Buffer) => {
+					size += chunk.length;
+					if (size > MAX_DESCRIPTORS_BYTES) {
+						upstream.destroy();
+						finish(new Error("upstream"));
+					} else chunks.push(chunk);
+				});
+				upstream.on("aborted", () => finish(new Error("upstream")));
+				upstream.on("error", () => finish(new Error("upstream")));
+				upstream.on("end", () => {
+					try { finish(undefined, JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+					catch { finish(new Error("upstream")); }
+				});
+			});
+			const timeout = setTimeout(() => {
+				outgoing.destroy();
+				finish(new Error("upstream"));
+			}, 2_000);
+			outgoing.on("error", () => finish(new Error("upstream")));
+			outgoing.end();
+		});
 	}
 
 	const sweep = setInterval(() => {
@@ -149,7 +217,7 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		if (sessions.size === 0) {
 			idleSince ??= time;
 			if (time - idleSince >= options.settings.idleTimeoutMs) {
-				void close().then(() => options.onIdle?.());
+				void close().then(() => options.onIdle?.()).catch(() => undefined);
 			}
 		} else idleSince = undefined;
 	}, Math.min(250, options.settings.idleTimeoutMs)).unref();
@@ -171,7 +239,7 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 	function close(): Promise<void> {
 		closePromise ??= (async () => {
 			clearInterval(sweep);
-			await Promise.all([closeServer(controlServer), closeServer(publicServer)]);
+			await Promise.all([closeServer(controlServer, true), closeServer(publicServer, true)]);
 			await removeOwned(options.socketPath, ownedSocket);
 			if (options.pidPath) {
 				try {
@@ -193,7 +261,18 @@ function validRegistration(value: unknown): value is Registration {
 }
 function publicSession({ sessionId, capability, leaseSecret, externalUrl }: StoredSession): Session { return { sessionId, capability, leaseSecret, externalUrl }; }
 function applySecurity(response: ServerResponse): void { for (const [name, value] of Object.entries(SECURITY_HEADERS)) response.setHeader(name, value); }
-function notFound(response: ServerResponse): void { response.writeHead(404); response.end("Not found"); }
+function notFound(response: ServerResponse): void { response.writeHead(404, { ...SECURITY_HEADERS, "content-security-policy": "default-src 'none'" }); response.end("Not found"); }
+function gatewayError(response: ServerResponse): void { if (!response.headersSent) response.writeHead(502, { ...SECURITY_HEADERS, "content-security-policy": "default-src 'none'" }); response.end("Gateway error"); }
+function validIdentity(value: string | string[] | undefined): boolean { return typeof value === "string" && value.length > 0 && value.length <= 256 && /^[\x20-\x7e]+$/.test(value); }
+function validDescriptors(value: unknown): boolean {
+	return Array.isArray(value) && value.length <= 16 && value.every((item) => {
+		if (!item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).sort().join(",") !== "id,label,route,state") return false;
+		const app = item as Record<string, unknown>;
+		return typeof app.id === "string" && /^[A-Za-z0-9_-]{24}$/.test(app.id) && typeof app.label === "string" &&
+			app.label.length > 0 && Buffer.byteLength(app.label, "utf8") <= 512 && !/[\u0000-\u001f\u007f]/u.test(app.label) &&
+			app.route === `apps/${app.id}/` && app.state === "active";
+	});
+}
 function rawProxyPath(url: string, mounted: boolean, basePath: string, capability: string): string | undefined {
 	const question = url.indexOf("?");
 	const raw = question < 0 ? url : url.slice(0, question);
@@ -234,7 +313,12 @@ async function readJson(request: IncomingMessage): Promise<any> {
 	}
 	return chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
 }
-function closeServer(server: ReturnType<typeof createServer>): Promise<void> { return new Promise((resolve) => server.close(() => resolve())); }
+function closeServer(server: ReturnType<typeof createServer>, force = false): Promise<void> {
+	return new Promise((resolve) => {
+		server.close(() => resolve());
+		if (force) server.closeAllConnections();
+	});
+}
 async function removeOwned(path: string, owned: Awaited<ReturnType<typeof stat>>): Promise<void> {
 	try { const current = await stat(path); if (current.dev === owned.dev && current.ino === owned.ino) await rm(path); }
 	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
