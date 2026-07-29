@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 
 import { DEFAULT_UI_SETTINGS, getMcpConfigPaths, loadMcpConfig } from "../src/config.js";
 
+const temporaryHomes: string[] = [];
+afterEach(() => {
+	for (const home of temporaryHomes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
+
 function homeWith(xdg: unknown, pi?: unknown): string {
 	const home = mkdtempSync(join(tmpdir(), "pi-mcp-"));
+	temporaryHomes.push(home);
 	const [xdgPath, piPath] = getMcpConfigPaths(home);
 	mkdirSync(join(xdgPath, ".."), { recursive: true });
 	writeFileSync(xdgPath, typeof xdg === "string" ? xdg : JSON.stringify(xdg));

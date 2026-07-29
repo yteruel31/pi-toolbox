@@ -1,6 +1,6 @@
 # pi-mcp
 
-In-progress configuration foundation for a future private Tailnet MCP Apps gateway in Pi. This package does **not** yet run a gateway, connect MCP clients, host apps, authenticate users, or register Pi tools and commands.
+In-progress private Tailnet MCP Apps gateway for Pi. The package can manage the local gateway and its Tailscale Serve route, but it does **not** yet connect MCP clients, host apps, or authenticate users.
 
 ## Configuration contract
 
@@ -33,3 +33,7 @@ npm install
 npm run check
 npm pack --dry-run
 ```
+
+## Private gateway (U2)
+
+`/mcp-gateway setup` persistently adds only the configured Tailscale Serve HTTPS path; existing Serve routes are retained. `/mcp-gateway doctor` reports local gateway/config, hostname, and route state. `/mcp-gateway remove [--yes]` removes only an exactly matching route and asks for confirmation unless `--yes` is supplied. The gateway starts on demand, binds its public listener to `127.0.0.1`, and uses private capability URLs; loading the extension starts no service.

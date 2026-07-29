@@ -2,12 +2,27 @@
   "name": "pi-mcp",
   "version": "0.1.0",
   "type": "module",
-  "description": "Configuration foundation for a future private Tailnet MCP Apps gateway in Pi.",
-  "keywords": ["pi-package", "pi", "pi-coding-agent", "mcp", "mcp-apps"],
+  "description": "Private Tailnet MCP Apps gateway foundation for Pi.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "mcp",
+    "mcp-apps"
+  ],
   "author": "Yoann Teruel",
   "license": "MIT",
-  "pi": { "extensions": ["./src/index.ts"] },
-  "files": ["src", "README.md", "CHANGELOG.md", "LICENSE"],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "check": "tsc --noEmit && tsx --test test/**/*.test.ts",
     "pack:dry": "npm pack --dry-run"
@@ -15,15 +30,23 @@
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "tsx": "^4.21.0"
   },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
-  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.81.1",
     "@types/node": "^22.19.1",
-    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
-  "engines": { "node": ">=22.19.0" }
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }
