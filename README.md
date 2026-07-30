@@ -38,7 +38,7 @@ A pull-only, challenge-first technical learning mode for Pi.
 
 ### [`pi-mcp`](./packages/mcp)
 
-Private Tailnet MCP Apps gateway with a lazy Streamable HTTP client, OAuth, non-destructive explicit Tailscale Serve setup, a secure local App host, identity-gated capability dashboard, and persistent Pi status link. It never exposes publicly or opens an App UI automatically.
+Phase-2 private Tailnet MCP client and Apps gateway for the approved Mobbin/Tailnet scope, with Streamable HTTP/SSE/stdio, OAuth, non-destructive explicit Tailscale Serve setup, a secure local App host, identity-gated capability dashboard, and persistent Pi status link. It never exposes publicly or opens an App UI automatically, and does not claim universal `pi-mcp-adapter` parity. See the package [parity matrix, migration runbook, and conformance command](./packages/mcp/PARITY.md).
 
 ### [`pi-session-title`](./packages/session-title)
 

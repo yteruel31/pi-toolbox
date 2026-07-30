@@ -3,7 +3,7 @@
   "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "A collection of packages, themes, and extensions for Pi.",
+  "description": "Pi extensions including a Phase-2 private Tailnet MCP client and Apps gateway.",
   "keywords": [
     "pi-package",
     "pi",

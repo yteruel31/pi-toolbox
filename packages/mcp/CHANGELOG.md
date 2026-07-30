@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+Phase 2 is implemented for the approved Mobbin/Tailnet scope. This release does not claim universal `pi-mcp-adapter` parity; see `PARITY.md` for gaps and migration guidance.
+
 ### Added
 - Initial lifecycle-idle Pi extension package.
 - Typed, fail-soft configuration loading and validation for the future MCP Apps gateway.
@@ -13,3 +15,5 @@
 - Configurable global/per-server direct Pi tools for discovered model-visible MCP tools, with collision-safe aliases, shared bounded execution, and session/refresh lifecycle deactivation.
 - Consent-gated text-only MCP sampling and bounded interactive form elicitation, with accurate client capabilities, cancellation, and no automatic URL opening.
 - Resilient MCP reconnects and bounded list-change refreshes, private metadata caching for immediate direct tools, and value-free diagnostics.
+- Executable `check:conformance` coverage for the named Phase-2 protocol, OAuth, Apps, publication, cache, diagnostics, and lifecycle scenarios.
+- An explicit `pi-mcp-adapter` 2.15 parity matrix and acceptance-first Mobbin/Tailnet migration runbook.

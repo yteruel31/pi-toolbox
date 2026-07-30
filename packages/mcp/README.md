@@ -1,6 +1,6 @@
 # pi-mcp
 
-Private Tailnet MCP Apps gateway for Pi. The package connects Streamable HTTP, legacy SSE, and stdio MCP servers, hosts Apps on loopback, and lazily publishes active sessions through the configured Tailscale Serve route with a private dashboard and persistent Pi status link.
+Private Tailnet MCP client and Apps gateway for Pi. Phase 2 is implemented for the approved Mobbin/Tailnet scope: the package connects Streamable HTTP, legacy SSE, and stdio MCP servers, hosts Apps on loopback, and lazily publishes active sessions through the configured Tailscale Serve route with a private dashboard and persistent Pi status link. It is not a universal `pi-mcp-adapter` replacement; see the [parity matrix and migration runbook](./PARITY.md).
 
 ## Configuration contract
 
@@ -35,8 +35,11 @@ URL definitions may explicitly select `streamable-http` or legacy `sse`; when om
 ```bash
 npm install
 npm run check
-npm pack --dry-run
+npm run check:conformance
+npm run pack:dry
 ```
+
+`check:conformance` verifies that the named Phase-2 scenarios remain present and runs real current MCP SDK protocol/transport, OAuth, Apps, gateway, cache, lifecycle, and package-manifest tests. It uses loopback and temporary files only. The normal `check` command includes it.
 
 ## Private gateway (U2)
 
