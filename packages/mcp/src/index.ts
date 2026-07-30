@@ -17,6 +17,7 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		if (previous) await previous.close();
 		ctx?.ui.setStatus("mcp-ui", undefined);
 		runtime = new McpRuntime(loadMcpConfig(), undefined, undefined, undefined, {
+			context: ctx,
 			onUiStatus: (status) => {
 				ctx?.ui.setStatus("mcp-ui", status ? appStatusText(status) : undefined);
 			},

@@ -9,6 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { isToolVisibilityAppOnly, isToolVisibilityModelOnly } from "@modelcontextprotocol/ext-apps/app-bridge";
+import { CreateMessageRequestSchema, ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { CallToolResult, GetPromptResult, Prompt, ReadResourceResult, Resource, ResourceTemplate, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig } from "./config.js";
 
@@ -34,6 +35,10 @@ interface Entry extends ConnectedServer {
 	authPending?: Promise<void>;
 }
 export type AuthProviderFactory = (server: string) => OAuthClientProvider | undefined | Promise<OAuthClientProvider | undefined>;
+export interface ClientRequestHandlers {
+	sampling?: (server: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<Record<string, unknown>>;
+	elicitation?: (server: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<Record<string, unknown>>;
+}
 
 function isAuthFailure(error: unknown): boolean {
 	return error instanceof UnauthorizedError ||
@@ -49,7 +54,7 @@ export class McpServerManager {
 
 	private metadataListener?: () => void;
 
-	constructor(configs: Iterable<ServerConfig>, private readonly authProviderFactory?: AuthProviderFactory) {
+	constructor(configs: Iterable<ServerConfig>, private readonly authProviderFactory?: AuthProviderFactory, private readonly requestHandlers: ClientRequestHandlers = {}) {
 		for (const config of configs) {
 			this.entries.set(config.name, { name: config.name, config, state: "disconnected", tools: [], resources: [], resourceTemplates: [], prompts: [], epoch: 0 });
 		}
@@ -102,7 +107,14 @@ export class McpServerManager {
 		entry.state = "connecting";
 		if (provider && entry.config.transport === "stdio") throw new Error(`OAuth is unavailable for MCP server ${entry.name}`);
 		const authProvider = entry.config.transport === "stdio" ? undefined : provider ?? await this.authProviderFactory?.(entry.name);
-		const client = new Client({ name: "pi-mcp", version: "0.1.0" });
+		const capabilities = {
+			...(this.requestHandlers.sampling ? { sampling: {} } : {}),
+			...(this.requestHandlers.elicitation ? { elicitation: { form: {} } } : {}),
+		};
+		const client = new Client({ name: "pi-mcp", version: "0.1.0" }, { capabilities });
+		// Server-initiated handlers must exist before initialize/connect.
+		if (this.requestHandlers.sampling) client.setRequestHandler(CreateMessageRequestSchema, (request, extra) => this.requestHandlers.sampling!(entry.name, request.params as Record<string, unknown>, extra.signal));
+		if (this.requestHandlers.elicitation) client.setRequestHandler(ElicitRequestSchema, (request, extra) => this.requestHandlers.elicitation!(entry.name, request.params as Record<string, unknown>, extra.signal));
 		let transport = this.createTransport(entry.config, authProvider);
 		entry.client = client; entry.transport = transport;
 		if (transport instanceof StreamableHTTPClientTransport || transport instanceof SSEClientTransport) entry.authTransport = transport;

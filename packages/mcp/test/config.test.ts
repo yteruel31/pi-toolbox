@@ -56,6 +56,21 @@ test("parses direct tool settings independently and fail-soft", () => {
 	assert.doesNotMatch(JSON.stringify(result.diagnostics), /not-global/);
 });
 
+test("parses client capability settings independently and fail-soft", () => {
+	const home = homeWith(
+		{ settings: { sampling: true, samplingAutoApprove: false, elicitation: true, ui: { hostname: "safe.example" } } },
+		{ settings: { sampling: "SECRET_INVALID", samplingAutoApprove: true, elicitation: false, ui: { gatewayPort: 20000 } } },
+	);
+	const result = loadMcpConfig({ homeDir: home });
+	assert.equal(result.settings.sampling, true);
+	assert.equal(result.settings.samplingAutoApprove, true);
+	assert.equal(result.settings.elicitation, false);
+	assert.equal(result.settings.ui.hostname, "safe.example");
+	assert.equal(result.settings.ui.gatewayPort, 20000);
+	assert.ok(result.diagnostics.some((item) => item.code === "invalid-capability"));
+	assert.doesNotMatch(JSON.stringify(result.diagnostics), /SECRET_INVALID/);
+});
+
 test("normalizes safe paths and treats path text literally without expansion", () => {
 	const home = homeWith({ settings: { ui: { basePath: "/apps/mcp/" } } });
 	assert.equal(loadMcpConfig({ homeDir: home }).settings.ui.basePath, "/apps/mcp");

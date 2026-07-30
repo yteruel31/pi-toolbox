@@ -15,13 +15,13 @@ export type DirectToolsSetting = boolean | readonly string[];
 export type McpServerDefinition = Record<string, unknown>;
 export interface ConfigDiagnostic {
 	source: string;
-	code: "invalid-json" | "invalid-top-level" | "unsafe-key" | "invalid-ui" | "invalid-direct-tools" | "invalid-server" | "read-error";
+	code: "invalid-json" | "invalid-top-level" | "unsafe-key" | "invalid-ui" | "invalid-direct-tools" | "invalid-capability" | "invalid-server" | "read-error";
 	path: string;
 	message: string;
 }
 export interface McpConfig {
 	mcpServers: Record<string, McpServerDefinition>;
-	settings: { ui: McpUiSettings; directTools?: boolean };
+	settings: { ui: McpUiSettings; directTools?: boolean; sampling?: boolean; samplingAutoApprove?: boolean; elicitation?: boolean };
 	diagnostics: ConfigDiagnostic[];
 }
 
@@ -93,6 +93,9 @@ export function loadMcpConfig(options: { homeDir?: string; paths?: readonly stri
 	const mcpServers: Record<string, McpServerDefinition> = Object.create(null) as Record<string, McpServerDefinition>;
 	let ui = { ...DEFAULT_UI_SETTINGS };
 	let directTools = false;
+	let sampling: boolean | undefined;
+	let samplingAutoApprove: boolean | undefined;
+	let elicitation: boolean | undefined;
 	const paths = options.paths ?? getMcpConfigPaths(options.homeDir);
 	const report = (source: string, code: ConfigDiagnostic["code"], path: string, message: string): void => {
 		diagnostics.push({ source, code, path, message });
@@ -133,8 +136,17 @@ export function loadMcpConfig(options: { homeDir?: string; paths?: readonly stri
 					if (typeof parsed === "boolean") directTools = parsed;
 					else report(source, "invalid-direct-tools", "$.settings.directTools", "Direct tools setting was rejected");
 				}
+				for (const key of ["sampling", "samplingAutoApprove", "elicitation"] as const) {
+					const value = layer.settings[key];
+					if (value === undefined) continue;
+					if (typeof value === "boolean") {
+						if (key === "sampling") sampling = value;
+						else if (key === "samplingAutoApprove") samplingAutoApprove = value;
+						else elicitation = value;
+					} else report(source, "invalid-capability", `$.settings.${key}`, "Capability setting must be boolean");
+				}
 			}
 		}
 	}
-	return { mcpServers, settings: { ui, directTools }, diagnostics };
+	return { mcpServers, settings: { ui, directTools, sampling, samplingAutoApprove, elicitation }, diagnostics };
 }

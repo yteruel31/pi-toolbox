@@ -71,6 +71,26 @@ async function protocolServer(delayMs = 0) {
 		mcp.registerPrompt("welcome", { description: "welcome prompt" }, async () => ({
 			messages: [{ role: "user", content: { type: "text", text: "prompt-text" } }],
 		}));
+		mcp.registerTool("client-features", {}, async () => {
+			const sampled = await mcp.server.createMessage({
+				messages: [{ role: "user", content: { type: "text", text: "sample this" } }],
+				maxTokens: 32,
+			});
+			const elicited = await mcp.server.elicitInput({
+				mode: "form",
+				message: "Your name",
+				requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+			});
+			return { content: [{ type: "text", text: JSON.stringify({ sampled, elicited }) }] };
+		});
+		mcp.registerTool("client-url-capability", {}, async () => {
+			try {
+				await mcp.server.elicitInput({ mode: "url", message: "Open", url: "https://example.test", elicitationId: "url-1" });
+				return { content: [{ type: "text", text: "unexpected-url-support" }] };
+			} catch {
+				return { content: [{ type: "text", text: "url-not-advertised" }] };
+			}
+		});
 		mcp.registerTool("slow", {}, async (extra) => new Promise((resolve) => {
 			resolveSlowStarted();
 			extra.signal.addEventListener("abort", () => {
@@ -271,6 +291,36 @@ test("real Streamable HTTP initializes, lists, calls all result forms, refreshes
 		await runtime.manager.close();
 		assert.equal(runtime.manager.get("real")?.state, "disconnected");
 		await runtime.manager.close();
+		await fixture.close();
+		await stop(fixture.http);
+	}
+});
+
+test("real SDK advertises and completes sampling plus form-only elicitation handlers", async () => {
+	const fixture = await protocolServer();
+	const calls: string[] = [];
+	const manager = new McpServerManager([{
+		name: "features", transport: "http", url: new URL(`http://127.0.0.1:${fixture.port}/mcp`), headers: {},
+	}], undefined, {
+		sampling: async (server, params, signal) => {
+			assert.equal(server, "features"); assert.equal(signal?.aborted, false); assert.equal(params.maxTokens, 32); calls.push("sampling");
+			return { role: "assistant", content: { type: "text", text: "sample-response" }, model: "test/model", stopReason: "endTurn" };
+		},
+		elicitation: async (server, params, signal) => {
+			assert.equal(server, "features"); assert.equal(signal?.aborted, false); assert.equal(params.mode, "form"); calls.push("elicitation");
+			return { action: "accept", content: { name: "Ada" } };
+		},
+	});
+	try {
+		await manager.connect("features");
+		const result = await manager.callFromModel("features", "client-features", {});
+		assert.match(JSON.stringify(result), /sample-response.*Ada/);
+		assert.deepEqual(calls, ["sampling", "elicitation"]);
+		const url = await manager.callFromModel("features", "client-url-capability", {});
+		assert.match(JSON.stringify(url), /url-not-advertised/);
+		assert.doesNotMatch(JSON.stringify(url), /unexpected-url-support/);
+	} finally {
+		await manager.close();
 		await fixture.close();
 		await stop(fixture.http);
 	}

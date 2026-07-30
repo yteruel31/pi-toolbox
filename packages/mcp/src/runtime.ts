@@ -1,4 +1,4 @@
-import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { DEFAULT_UI_SETTINGS, type McpConfig } from "./config.js";
 import { parseServerConfigs } from "./mcp/config.js";
@@ -10,6 +10,8 @@ import { GatewayClient } from "./gateway/client.js";
 import { TailscaleAdapter } from "./tailscale.js";
 import { McpAppController } from "./apps/controller.js";
 import { AppPublisher, type AppPublicationStatus } from "./apps/publisher.js";
+import { sample } from "./mcp/sampling.js";
+import { elicitForm } from "./mcp/elicitation.js";
 
 const Params = Type.Object({
 	server: Type.Optional(Type.String({ maxLength: 64 })),
@@ -123,9 +125,11 @@ export interface McpRuntimeOptions {
 	publishApps?: boolean;
 	tailscale?: TailscaleAdapter;
 	gateway?: GatewayClient;
+	context?: ExtensionContext;
 }
 
 export class McpRuntime {
+	private readonly clientRequestAbort = new AbortController();
 	readonly manager: McpServerManager;
 	readonly config: McpConfig;
 	readonly serverConfigs: ReturnType<typeof parseServerConfigs>["servers"];
@@ -152,9 +156,27 @@ export class McpRuntime {
 			return;
 		}
 		const store = new OAuthStore();
+		const context = options.context;
+		const autoApprove = config.settings.samplingAutoApprove === true;
+		const samplingEnabled = config.settings.sampling !== false && !!context && (context.hasUI || autoApprove);
+		const elicitationEnabled = config.settings.elicitation !== false && !!context?.hasUI;
+		let activeRequests = 0;
+		const requestSignal = (signal?: AbortSignal): AbortSignal => AbortSignal.any([
+			this.clientRequestAbort.signal,
+			...(context?.signal ? [context.signal] : []),
+			...(signal ? [signal] : []),
+		]);
+		const guarded = <T>(operation: () => Promise<T>): Promise<T> => {
+			if (this.clientRequestAbort.signal.aborted) return Promise.reject(new Error("MCP client request is unavailable"));
+			if (activeRequests >= 2) return Promise.reject(new Error("MCP client request capacity exceeded"));
+			activeRequests++; return operation().finally(() => { activeRequests--; });
+		};
 		this.manager = new McpServerManager(parsed.servers.values(), async (name) => {
 			const server = parsed.servers.get(name);
 			return server && server.transport !== "stdio" ? StoredOAuthProvider.passive(server.url.href, store) : undefined;
+		}, {
+			sampling: samplingEnabled ? (server, params, signal) => guarded(() => sample(server, params, context!, autoApprove, requestSignal(signal))) : undefined,
+			elicitation: elicitationEnabled ? (server, params, signal) => guarded(() => elicitForm(server, params, context!.ui, requestSignal(signal))) : undefined,
 		});
 		const settings = { ...DEFAULT_UI_SETTINGS, ...config.settings.ui };
 		const tailscale = options.tailscale ?? new TailscaleAdapter();
@@ -316,6 +338,7 @@ export class McpRuntime {
 	}
 
 	async close(): Promise<void> {
+		this.clientRequestAbort.abort();
 		await this.apps.close();
 		await this.publisher?.close();
 		await this.coordinator?.close();
