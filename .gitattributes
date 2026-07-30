@@ -1,0 +1,2 @@
+# Generated from the official ext-apps bundle; preserve byte-for-byte build output.
+packages/mcp/src/apps/generated/app-bridge.js -whitespace

@@ -3,7 +3,7 @@
   "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "A collection of packages, themes, and extensions for Pi.",
+  "description": "Pi extensions including a Phase-2 private Tailnet MCP client and Apps gateway.",
   "keywords": [
     "pi-package",
     "pi",
@@ -16,7 +16,8 @@
       "./packages/claude-context/src/index.ts",
       "./packages/claude-rules/src/index.ts",
       "./packages/pi-learning/src/index.ts",
-      "./packages/session-title/src/index.ts"
+      "./packages/session-title/src/index.ts",
+      "./packages/mcp/src/index.ts"
     ],
     "themes": [
       "./themes/*.json"
@@ -43,7 +44,20 @@
     }
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.81.1",
+    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "@earendil-works/pi-tui": "^0.81.1",
     "@semantic-release/git": "11.0.1",
-    "semantic-release": "25.0.8"
+    "@types/node": "^22.19.1",
+    "esbuild": "0.28.1",
+    "semantic-release": "25.0.8",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "tsx": "^4.21.0",
+    "zod": "^4.4.3"
   }
 }

@@ -1,0 +1,70 @@
+{
+  "name": "pi-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Phase-2 private Tailnet MCP client and Apps gateway for Pi.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "mcp",
+    "mcp-apps"
+  ],
+  "author": "Yoann Teruel",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "scripts",
+    "README.md",
+    "PARITY.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:app-bridge": "node scripts/build-mcp-app-bridge.mjs",
+    "check:app-bridge": "node scripts/build-mcp-app-bridge.mjs --check",
+    "check:conformance": "node scripts/check-conformance.mjs",
+    "check": "tsc --noEmit && npm run check:app-bridge && npm run check:conformance",
+    "pack:dry": "npm pack --dry-run",
+    "prepack": "npm run check:app-bridge"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "tsx": "^4.21.0",
+    "typebox": "^1.1.38",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.81.1",
+    "@earendil-works/pi-coding-agent": "0.81.1",
+    "@earendil-works/pi-tui": "0.81.1",
+    "@types/node": "^22.19.1",
+    "esbuild": "0.28.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
