@@ -18,6 +18,13 @@ async function listen(server: Server): Promise<number> {
 async function stop(server: Server): Promise<void> {
 	await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
+async function waitUntil(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!check()) {
+		if (Date.now() >= deadline) throw new Error("condition timed out");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
 function config(port: number, name = "real") {
 	return {
 		mcpServers: { [name]: { url: `http://127.0.0.1:${port}/mcp` } },
@@ -125,6 +132,11 @@ async function protocolServer(delayMs = 0) {
 		port,
 		cancelled: () => cancelled,
 		setUnauthorized: (value: boolean) => { unauthorized = value; },
+		disconnectCurrent: async () => { await current.mcp.close(); },
+		addDynamicTool: async (name: string) => {
+			current.mcp.registerTool(name, {}, async () => ({ content: [{ type: "text", text: `dynamic-${name}` }] }));
+			await current.mcp.server.sendToolListChanged();
+		},
 		waitForSlowStart: () => slowStarted,
 		close: async () => Promise.all(instances.map((instance) => instance.close())).then(() => undefined),
 	};
@@ -216,6 +228,7 @@ async function legacySseServer() {
 		streamStarts: () => streamStarts,
 		configuredHeaderRequests: () => configuredHeaderRequests,
 		activeSessions: () => sessions.size,
+		disconnectAll: async () => { await Promise.allSettled([...sessions.values()].map(({ mcp }) => mcp.close())); },
 		close: async () => {
 			await Promise.allSettled([...sessions.values()].map(({ mcp }) => mcp.close()));
 			await stop(http);
@@ -455,6 +468,57 @@ test("discovery pagination stops on repeated cursors, enforces metadata caps, an
 	await manager.close();
 });
 
+test("unexpected close marks only the live connection disconnected and the next operation reconnects", async () => {
+	const fixture = await legacySseServer();
+	const manager = new McpServerManager([{
+		name: "recover", transport: "sse", url: new URL(`http://127.0.0.1:${fixture.port}/mcp`), headers: {},
+	}]);
+	try {
+		await manager.connect("recover");
+		await fixture.disconnectAll();
+		await waitUntil(() => manager.get("recover")?.state === "disconnected");
+		const result = await manager.callFromModel("recover", "legacy", {});
+		assert.match(JSON.stringify(result), /sse-ok/);
+		assert.equal(manager.get("recover")?.state, "connected");
+		assert.equal(manager.diagnosticStatus("recover")[0]?.counters.reconnects, 1);
+	} finally {
+		await manager.close();
+		await fixture.close();
+	}
+});
+
+test("list-change storms coalesce, preserve metadata on failure, and stop safely at shutdown", async () => {
+	const fixture = await protocolServer();
+	const manager = new McpServerManager([{
+		name: "changed", transport: "http", url: new URL(`http://127.0.0.1:${fixture.port}/mcp`), headers: {},
+	}]);
+	try {
+		await manager.connect("changed");
+		await Promise.all([fixture.addDynamicTool("dynamic-one"), fixture.addDynamicTool("dynamic-two"), fixture.addDynamicTool("dynamic-three")]);
+		await waitUntil(() => manager.modelTool("changed", "dynamic-three") !== undefined);
+		const afterStorm = manager.diagnosticStatus("changed")[0]!;
+		assert.ok(afterStorm.counters.listNotifications >= 1);
+		assert.ok(afterStorm.counters.listRefreshes >= 1);
+		assert.ok(afterStorm.counters.listRefreshes <= afterStorm.counters.listNotifications);
+
+		fixture.setUnauthorized(true);
+		await fixture.addDynamicTool("hidden-during-failure");
+		await waitUntil(() => manager.diagnosticStatus("changed")[0]!.counters.listRefreshFailures >= 1);
+		assert.ok(manager.modelTool("changed", "dynamic-one"), "last good metadata survives a refresh failure");
+		assert.equal(manager.modelTool("changed", "hidden-during-failure"), undefined);
+		fixture.setUnauthorized(false);
+		await fixture.addDynamicTool("after-recovery");
+		await waitUntil(() => manager.modelTool("changed", "after-recovery") !== undefined);
+		await fixture.addDynamicTool("shutdown-race");
+		await manager.close();
+		assert.equal(manager.get("changed")?.state, "disconnected");
+	} finally {
+		await manager.close();
+		await fixture.close();
+		await stop(fixture.http);
+	}
+});
+
 test("initial discovery observes its caller AbortSignal and cleans the partial connection", async () => {
 	const fixture = await protocolServer(30);
 	const manager = new McpServerManager([{
@@ -492,6 +556,14 @@ test("close coordinates with an in-flight connection and leaves no connected sta
 		await fixture.close();
 		await stop(fixture.http);
 	}
+});
+
+test("diagnostics are global or per-server, bounded, and redact configured values", async () => {
+	const secret = "DIAGNOSTIC_SECRET_MARKER";
+	const manager = { diagnosticStatus: (name?: string) => [{ name: name ?? "safe", state: "disconnected", transport: "http", metadata: { tools: 1, resources: 0, resourceTemplates: 0, prompts: 0 }, cache: "fresh", counters: { reconnects: 1, listNotifications: 2, listRefreshes: 1, listRefreshFailures: 0 } }], close: async () => undefined };
+	const runtime = new McpRuntime({ mcpServers: { safe: { url: `https://example.invalid/${secret}`, headers: { Authorization: secret } } }, settings: { ui: {} }, diagnostics: [{ source: secret, code: "invalid-server", path: "mcpServers.bad", message: secret }] } as never, manager as never);
+	const global = await runtime.execute({ action: "diagnostics" }); const scoped = await runtime.execute({ action: "diagnostics", server: "safe" });
+	for (const result of [global, scoped]) { const output = JSON.stringify(result); assert.ok(Buffer.byteLength(output) <= 50 * 1024); assert.doesNotMatch(output, new RegExp(secret)); assert.match(output, /listRefreshes/); }
 });
 
 test("listing keeps serialized content and details within the aggregate budget", async () => {

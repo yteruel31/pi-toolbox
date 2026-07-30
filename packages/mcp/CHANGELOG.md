@@ -12,3 +12,4 @@
 - Lazy private publication of active Apps through a verified Tailscale Serve route, with an identity-gated dashboard, capability proxy, persistent Pi status link, and fail-closed gateway protocol v2.
 - Configurable global/per-server direct Pi tools for discovered model-visible MCP tools, with collision-safe aliases, shared bounded execution, and session/refresh lifecycle deactivation.
 - Consent-gated text-only MCP sampling and bounded interactive form elicitation, with accurate client capabilities, cancellation, and no automatic URL opening.
+- Resilient MCP reconnects and bounded list-change refreshes, private metadata caching for immediate direct tools, and value-free diagnostics.

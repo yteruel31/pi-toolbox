@@ -22,7 +22,7 @@ const Params = Type.Object({
 	action: Type.Optional(Type.Union([
 		Type.Literal("auth-start"), Type.Literal("auth-complete"),
 		Type.Literal("resources-list"), Type.Literal("resources-read"),
-		Type.Literal("prompts-list"), Type.Literal("prompts-get"),
+		Type.Literal("prompts-list"), Type.Literal("prompts-get"), Type.Literal("diagnostics"),
 	])),
 }, { additionalProperties: false });
 type Input = Static<typeof Params>;
@@ -203,8 +203,18 @@ export class McpRuntime {
 
 	async execute(input: Input, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
 		if (input.action) {
-			if (!input.server) throw new Error("MCP actions require server");
 			if (input.search !== undefined || input.connect !== undefined || input.tool !== undefined) throw new Error("MCP actions cannot be combined with another MCP operation");
+			if (input.action === "diagnostics") {
+				if (input.args !== undefined) throw new Error("diagnostics does not accept args");
+				if (input.server && !this.serverConfigs.has(input.server)) throw new Error("Unknown MCP server");
+				const servers = this.manager.diagnosticStatus(input.server);
+				const configDiagnostics = [
+					...this.config.diagnostics.map(({ code, path }) => ({ code, path: utf8Prefix(path, 512) })),
+					...this.diagnostics.filter((item) => !input.server || item.server === input.server).map(({ server, code }) => ({ code, path: `mcpServers.${utf8Prefix(server, 64)}` })),
+				].slice(0, 200);
+				return this.text(safeJson({ servers, configDiagnostics }), { action: "diagnostics", serverCount: servers.length, diagnosticCount: configDiagnostics.length });
+			}
+			if (!input.server) throw new Error("MCP actions require server");
 			if (input.action === "resources-list") {
 				if (input.args !== undefined) throw new Error("resources-list does not accept args");
 				const listed = await this.manager.listResources(input.server, signal);

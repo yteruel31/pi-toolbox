@@ -12,6 +12,7 @@ import { isToolVisibilityAppOnly, isToolVisibilityModelOnly } from "@modelcontex
 import { CreateMessageRequestSchema, ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { CallToolResult, GetPromptResult, Prompt, ReadResourceResult, Resource, ResourceTemplate, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig } from "./config.js";
+import { MetadataCache, type CacheStatus } from "./metadata-cache.js";
 
 export type ServerState = "disconnected" | "connecting" | "connected" | "auth-required" | "error";
 export interface ConnectedServer {
@@ -33,6 +34,14 @@ interface Entry extends ConnectedServer {
 	epoch: number;
 	authActive?: boolean;
 	authPending?: Promise<void>;
+	refreshPending?: Promise<void>;
+	refreshTimer?: NodeJS.Timeout;
+	refreshQueued: Set<"tools" | "resources" | "prompts">;
+	cacheStatus: CacheStatus;
+	reconnects: number;
+	listRefreshes: number;
+	listRefreshFailures: number;
+	listNotifications: number;
 }
 export type AuthProviderFactory = (server: string) => OAuthClientProvider | undefined | Promise<OAuthClientProvider | undefined>;
 export interface ClientRequestHandlers {
@@ -52,15 +61,22 @@ export class McpServerManager {
 	private closing?: Promise<void>;
 	private closed = false;
 
-	private metadataListener?: () => void;
+	private readonly metadataListeners = new Set<() => void>();
+	private readonly cacheWrites = new Set<Promise<void>>();
 
-	constructor(configs: Iterable<ServerConfig>, private readonly authProviderFactory?: AuthProviderFactory, private readonly requestHandlers: ClientRequestHandlers = {}) {
+	constructor(configs: Iterable<ServerConfig>, private readonly authProviderFactory?: AuthProviderFactory, private readonly requestHandlers: ClientRequestHandlers = {}, private readonly cache = new MetadataCache()) {
 		for (const config of configs) {
-			this.entries.set(config.name, { name: config.name, config, state: "disconnected", tools: [], resources: [], resourceTemplates: [], prompts: [], epoch: 0 });
+			const cached = cache.load(config);
+			this.entries.set(config.name, { name: config.name, config, state: "disconnected", tools: cached.status === "fresh" ? cached.metadata?.tools ?? [] : [], resources: [], resourceTemplates: [], prompts: cached.status === "fresh" ? cached.metadata?.prompts ?? [] : [], instructions: cached.status === "fresh" ? cached.metadata?.instructions : undefined, epoch: 0, refreshQueued: new Set(), cacheStatus: cached.status, reconnects: 0, listRefreshes: 0, listRefreshFailures: 0, listNotifications: 0 });
 		}
 	}
 
-	onMetadataChange(listener: () => void): void { this.metadataListener = listener; }
+	onMetadataChange(listener: () => void): () => void { this.metadataListeners.add(listener); return () => { this.metadataListeners.delete(listener); }; }
+	private emitMetadata(): void { for (const listener of this.metadataListeners) try { listener(); } catch { /* listeners are isolated from protocol work */ } }
+
+	diagnosticStatus(name?: string) {
+		return [...this.entries.values()].filter((entry) => !name || entry.name === name).map((entry) => ({ name: entry.name, state: entry.state, transport: entry.config.transport === "stdio" ? "stdio" : entry.config.transport === "sse" ? "sse" : "http", metadata: { tools: entry.tools.length, resources: entry.resources.length, resourceTemplates: entry.resourceTemplates.length, prompts: entry.prompts.length }, cache: entry.cacheStatus, counters: { reconnects: entry.reconnects, listNotifications: entry.listNotifications, listRefreshes: entry.listRefreshes, listRefreshFailures: entry.listRefreshFailures } }));
+	}
 
 	status(): ConnectedServer[] {
 		return [...this.entries.values()]
@@ -79,7 +95,9 @@ export class McpServerManager {
 		if (entry.authActive) throw new Error(`OAuth is active for MCP server ${name}`);
 		if (entry.pending) return entry.pending;
 		if (entry.state === "connected" && !refresh) return entry;
+		const wasDisconnected = entry.state === "disconnected" && entry.epoch > 0;
 		const epoch = entry.epoch;
+		if (wasDisconnected) entry.reconnects++;
 		const pending = this.open(entry, refresh, epoch, undefined, false, signal);
 		entry.pending = pending;
 		void pending.finally(() => {
@@ -111,7 +129,23 @@ export class McpServerManager {
 			...(this.requestHandlers.sampling ? { sampling: {} } : {}),
 			...(this.requestHandlers.elicitation ? { elicitation: { form: {} } } : {}),
 		};
-		const client = new Client({ name: "pi-mcp", version: "0.1.0" }, { capabilities });
+		let client!: Client;
+		const changed = (kind: "tools" | "resources" | "prompts") => { this.queueListRefresh(entry, client, epoch, kind); };
+		client = new Client({ name: "pi-mcp", version: "0.1.0" }, { capabilities, listChanged: {
+			tools: { autoRefresh: false, debounceMs: 100, onChanged: () => changed("tools") },
+			resources: { autoRefresh: false, debounceMs: 100, onChanged: () => changed("resources") },
+			prompts: { autoRefresh: false, debounceMs: 100, onChanged: () => changed("prompts") },
+		} });
+		const disconnected = (): void => {
+			if (this.closed || entry.client !== client || entry.epoch !== epoch || entry.state !== "connected") return;
+			const currentTransport = entry.transport;
+			entry.epoch++; entry.client = undefined; entry.transport = undefined; entry.authTransport = undefined; entry.state = "disconnected"; entry.refreshQueued.clear();
+			if (entry.refreshTimer) clearTimeout(entry.refreshTimer); entry.refreshTimer = undefined;
+			this.emitMetadata();
+			void currentTransport?.close().catch(() => undefined);
+		};
+		client.onclose = disconnected;
+		client.onerror = () => { if (entry.transport instanceof SSEClientTransport) disconnected(); };
 		// Server-initiated handlers must exist before initialize/connect.
 		if (this.requestHandlers.sampling) client.setRequestHandler(CreateMessageRequestSchema, (request, extra) => this.requestHandlers.sampling!(entry.name, request.params as Record<string, unknown>, extra.signal));
 		if (this.requestHandlers.elicitation) client.setRequestHandler(ElicitRequestSchema, (request, extra) => this.requestHandlers.elicitation!(entry.name, request.params as Record<string, unknown>, extra.signal));
@@ -146,7 +180,8 @@ export class McpServerManager {
 			entry.prompts.sort((a, b) => a.name.localeCompare(b.name));
 			entry.instructions = client.getInstructions();
 			entry.state = "connected";
-			this.metadataListener?.();
+			this.emitMetadata();
+			this.persist(entry);
 			return entry;
 		} catch (error) {
 			const interrupted = entry.epoch !== epoch;
@@ -241,6 +276,45 @@ export class McpServerManager {
 		return items;
 	}
 
+	private queueListRefresh(entry: Entry, client: Client, epoch: number, kind: "tools" | "resources" | "prompts"): void {
+		if (this.closed || entry.client !== client || entry.epoch !== epoch || entry.state !== "connected") return;
+		entry.listNotifications++; entry.refreshQueued.add(kind);
+		if (entry.refreshPending) return;
+		const pending = (async () => {
+			for (let pass = 0; pass < 2 && entry.refreshQueued.size; pass++) {
+				const kinds = new Set(entry.refreshQueued); entry.refreshQueued.clear();
+				try {
+					const updates: Partial<Pick<Entry, "tools" | "resources" | "resourceTemplates" | "prompts">> = {};
+					if (kinds.has("tools")) updates.tools = await this.paginate<Tool>((cursor) => client.listTools(cursor ? { cursor } : undefined), "tools");
+					if (kinds.has("resources")) { updates.resources = await this.paginate<Resource>((cursor) => client.listResources(cursor ? { cursor } : undefined), "resources"); updates.resourceTemplates = await this.paginate<ResourceTemplate>((cursor) => client.listResourceTemplates(cursor ? { cursor } : undefined), "resourceTemplates"); }
+					if (kinds.has("prompts")) updates.prompts = await this.paginate<Prompt>((cursor) => client.listPrompts(cursor ? { cursor } : undefined), "prompts");
+					if (this.closed || entry.client !== client || entry.epoch !== epoch) return;
+					for (const [key, value] of Object.entries(updates)) (entry as unknown as Record<string, unknown>)[key] = value;
+					entry.tools.sort((a, b) => a.name.localeCompare(b.name)); entry.resources.sort((a, b) => a.name.localeCompare(b.name)); entry.resourceTemplates.sort((a, b) => a.name.localeCompare(b.name)); entry.prompts.sort((a, b) => a.name.localeCompare(b.name));
+					entry.listRefreshes++; this.emitMetadata(); this.persist(entry);
+				} catch { if (entry.client === client && entry.epoch === epoch) entry.listRefreshFailures++; }
+			}
+		})();
+		const tracked = pending.finally(() => {
+			if (entry.refreshPending === tracked) entry.refreshPending = undefined;
+			if (this.closed || entry.client !== client || entry.epoch !== epoch || !entry.refreshQueued.size || entry.refreshTimer) return;
+			entry.refreshTimer = setTimeout(() => {
+				entry.refreshTimer = undefined;
+				const next = entry.refreshQueued.values().next().value;
+				if (next) this.queueListRefresh(entry, client, epoch, next);
+			}, 100);
+			entry.refreshTimer.unref();
+		});
+		entry.refreshPending = tracked;
+		void tracked.catch(() => undefined);
+	}
+
+	private persist(entry: Entry): void {
+		const write = this.cache.save(entry.config, { tools: entry.tools.filter((tool) => !isToolVisibilityAppOnly(tool)), prompts: entry.prompts, instructions: entry.instructions, counts: { tools: entry.tools.length, resources: entry.resources.length, resourceTemplates: entry.resourceTemplates.length, prompts: entry.prompts.length } }).then((saved) => { if (saved) entry.cacheStatus = "fresh"; });
+		this.cacheWrites.add(write);
+		void write.then(() => this.cacheWrites.delete(write), () => this.cacheWrites.delete(write));
+	}
+
 	async listResources(name: string, signal?: AbortSignal): Promise<{ resources: Resource[]; resourceTemplates: ResourceTemplate[] }> {
 		if (signal?.aborted) throw new Error(`MCP resource listing cancelled on ${name}`);
 		const entry = this.entries.get(name); if (!entry) throw new Error(`Unknown MCP server: ${name}`);
@@ -309,7 +383,9 @@ export class McpServerManager {
 		entry.client = undefined;
 		entry.transport = undefined;
 		entry.authTransport = undefined;
-		entry.tools = []; entry.resources = []; entry.resourceTemplates = []; entry.prompts = []; entry.instructions = undefined;
+		entry.refreshQueued.clear();
+		if (entry.refreshTimer) clearTimeout(entry.refreshTimer);
+		entry.refreshTimer = undefined;
 		try { await transport?.close(); } catch { /* close is best effort */ }
 	}
 
@@ -324,11 +400,12 @@ export class McpServerManager {
 				try { await entry.pending; } catch { /* expected for interrupted opens */ }
 				try { await entry.authPending; } catch { /* expected for interrupted auth */ }
 				await this.closeResources(entry);
+				try { await entry.refreshPending; } catch { /* refresh is best effort */ }
 				entry.state = "disconnected";
-				entry.tools = [];
-				entry.instructions = undefined;
 			}));
-			this.metadataListener?.();
+			await Promise.allSettled([...this.cacheWrites]);
+			this.emitMetadata();
+			this.metadataListeners.clear();
 		})();
 		return this.closing;
 	}

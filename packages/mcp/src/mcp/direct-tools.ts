@@ -35,13 +35,15 @@ export class DirectToolRegistry {
 	private generation = 0;
 	private readonly owned = new Set<string>();
 	private readonly fingerprints = new Map<string, string>();
+	private unsubscribe?: () => void;
 
 	constructor(private readonly pi: ExtensionAPI) {}
 
 	attach(runtime: McpRuntime): void {
 		this.runtime = runtime;
 		this.generation++;
-		runtime.manager.onMetadataChange(() => {
+		this.unsubscribe?.();
+		this.unsubscribe = runtime.manager.onMetadataChange(() => {
 			if (this.runtime !== runtime) return;
 			try { this.sync(); } catch { /* direct tool registration must not break MCP discovery */ }
 		});
@@ -51,6 +53,7 @@ export class DirectToolRegistry {
 	detach(runtime?: McpRuntime): void {
 		if (runtime && this.runtime !== runtime) return;
 		this.runtime = undefined;
+		this.unsubscribe?.(); this.unsubscribe = undefined;
 		this.generation++;
 		this.setActivation(new Set());
 	}
