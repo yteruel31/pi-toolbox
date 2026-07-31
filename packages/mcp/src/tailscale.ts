@@ -64,18 +64,21 @@ function selectedHandler(value: unknown, port: number, basePath: string): string
 	if (!value || typeof value !== "object") return undefined;
 	const web = (value as { Web?: unknown }).Web;
 	if (!web || typeof web !== "object") return undefined;
-	const route = `${basePath.replace(/\/+$/, "")}/`;
+	const normalizedRoute = basePath.replace(/\/+$/, "");
+	const routes = new Set([normalizedRoute, `${normalizedRoute}/`]);
 	const selected: string[] = [];
 	for (const [hostPort, server] of Object.entries(web)) {
 		if (!hostPort.endsWith(`:${port}`) || !server || typeof server !== "object") continue;
 		const handlers = (server as { Handlers?: unknown }).Handlers;
 		if (!handlers || typeof handlers !== "object") continue;
-		const handler = (handlers as Record<string, unknown>)[route];
-		if (handler === undefined) continue;
-		if (!handler || typeof handler !== "object") selected.push("<conflicting>");
-		else {
-			const proxy = (handler as { Proxy?: unknown }).Proxy;
-			selected.push(typeof proxy === "string" ? proxy : "<conflicting>");
+		for (const route of routes) {
+			const handler = (handlers as Record<string, unknown>)[route];
+			if (handler === undefined) continue;
+			if (!handler || typeof handler !== "object") selected.push("<conflicting>");
+			else {
+				const proxy = (handler as { Proxy?: unknown }).Proxy;
+				selected.push(typeof proxy === "string" ? proxy : "<conflicting>");
+			}
 		}
 	}
 	if (selected.length === 0) return undefined;
