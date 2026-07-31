@@ -10,7 +10,7 @@ function serveStatus(proxy?: string, extra: Record<string, unknown> = {}) {
 			"node.ts.net:8443": {
 				Handlers: {
 					"/nutritrack/": { Path: "/srv/nutritrack-builds" },
-					...(proxy === undefined ? {} : { "/mcp-ui/": { Proxy: proxy } }),
+					...(proxy === undefined ? {} : { "/mcp-ui": { Proxy: proxy } }),
 					...extra,
 				},
 			},
@@ -21,6 +21,19 @@ function serveStatus(proxy?: string, extra: Record<string, unknown> = {}) {
 test("realistic Serve status distinguishes absent, matching, and conflicting exact routes", async () => {
 	for (const [proxy, expected] of [[undefined, "absent"], ["http://127.0.0.1:19877", "matching"], ["http://127.0.0.1:9", "conflicting"]] as const) {
 		const adapter = new TailscaleAdapter(async () => ({ stdout: JSON.stringify(serveStatus(proxy)) }));
+		assert.equal((await adapter.status(settings)).state, expected);
+	}
+});
+
+test("normalized route forms must resolve to the same proxy target", async () => {
+	for (const [extra, expected] of [
+		[{ "/mcp-ui/": { Proxy: "http://127.0.0.1:19877" } }, "matching"],
+		[{ "/mcp-ui/": { Proxy: "http://127.0.0.1:9" } }, "conflicting"],
+		[{ "/mcp-ui/": { Path: "/srv/not-a-proxy" } }, "conflicting"],
+	] as const) {
+		const adapter = new TailscaleAdapter(async () => ({
+			stdout: JSON.stringify(serveStatus("http://127.0.0.1:19877", extra)),
+		}));
 		assert.equal((await adapter.status(settings)).state, expected);
 	}
 });
