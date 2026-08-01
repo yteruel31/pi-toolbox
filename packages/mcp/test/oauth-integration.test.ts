@@ -211,6 +211,7 @@ test("OAuth DCR/PKCE completes through the real gateway and stored tokens reconn
 		assert.equal(redirect.href, fixture.registeredRedirect());
 		fixture.setChallenge(authorization.searchParams.get("code_challenge")!);
 		const state = authorization.searchParams.get("state")!;
+		assert.match(state, /^[A-Za-z0-9_-]{24}$/);
 
 		const storedAttempt = [...gatewayServer.sessions.values()][0] as unknown as { backendOrigin: string };
 		const directCallback = new URL(storedAttempt.backendOrigin);

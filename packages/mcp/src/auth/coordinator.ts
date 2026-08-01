@@ -101,7 +101,9 @@ export class OAuthCoordinator {
 		if (this.closed) throw new Error("OAuth coordinator is closed");
 
 		const secret = randomBytes(32).toString("base64url");
-		const state = randomBytes(32).toString("base64url");
+		// Mobbin's Supabase OAuth server truncates state values longer than 25 characters.
+		// Eighteen random bytes retain 144 bits of entropy in 24 base64url characters.
+		const state = randomBytes(18).toString("base64url");
 		let attempt: Attempt | undefined;
 		const backend = createServer((request, response) => {
 			if (!attempt || request.method !== "GET" || (request.url?.length ?? 0) > 4_096) {
