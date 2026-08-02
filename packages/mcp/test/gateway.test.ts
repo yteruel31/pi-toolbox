@@ -104,8 +104,24 @@ test("capability dashboard is isolated, escaped, mounted/direct equivalent, and 
 	const gateway = await startGatewayServer({ settings, hostname: "tail.test", socketPath: client.socket });
 	try {
 		const session = await client.register({ label: "<unsafe>", backendOrigin: `http://127.0.0.1:${backendPort}`, backendSecret: "dashboard-secret" });
-		const direct = await http(settings.gatewayPort, `/s/${session.capability}/`);
-		const mounted = await http(settings.gatewayPort, `${settings.basePath}/s/${session.capability}/`);
+		const directPath = `/s/${session.capability}`;
+		const mountedPath = `${settings.basePath}${directPath}`;
+		const directRedirect = await http(settings.gatewayPort, `${directPath}?source=terminal&next=%2Fmcp-ui`);
+		const mountedRedirect = await http(settings.gatewayPort, `${mountedPath}?source=terminal&next=%2Fmcp-ui`, { method: "POST" });
+		for (const [redirect, location] of [
+			[directRedirect, `${directPath}/?source=terminal&next=%2Fmcp-ui`],
+			[mountedRedirect, `${mountedPath}/?source=terminal&next=%2Fmcp-ui`],
+		] as const) {
+			assert.equal(redirect.status, 308);
+			assert.equal(redirect.headers.location, location);
+			assert.equal(redirect.headers["cache-control"], "no-store");
+			assert.equal(redirect.headers["referrer-policy"], "no-referrer");
+			assert.equal(redirect.headers["x-content-type-options"], "nosniff");
+		}
+		const direct = await http(settings.gatewayPort, `${directPath}/`);
+		const mounted = await http(settings.gatewayPort, `${mountedPath}/`);
+		assert.equal(direct.status, 200);
+		assert.equal(mounted.status, 200);
 		assert.equal(direct.body, mounted.body);
 		assert.match(direct.body, /&lt;unsafe&gt; &amp; &quot;quoted&quot;/);
 		assert.match(direct.body, /href="proxy\/styles\.css"/);
@@ -115,9 +131,13 @@ test("capability dashboard is isolated, escaped, mounted/direct equivalent, and 
 		assert.equal(direct.headers["cache-control"], "no-store");
 		assert.equal(direct.headers["referrer-policy"], "no-referrer");
 		assert.equal(direct.headers["x-content-type-options"], "nosniff");
-		const unknown = await http(settings.gatewayPort, "/s/unknown/");
+		const unknown = await http(settings.gatewayPort, "/s/unknown");
+		const unknownMounted = await http(settings.gatewayPort, `${settings.basePath}/s/unknown`);
+		const missingIdentity = await http(settings.gatewayPort, directPath, { headers: { "tailscale-user-login": "" } });
 		const unrelated = await http(settings.gatewayPort, "/not-an-index");
-		assert.deepEqual({ status: unknown.status, body: unknown.body }, { status: unrelated.status, body: unrelated.body });
+		for (const hidden of [unknown, unknownMounted, missingIdentity]) {
+			assert.deepEqual({ status: hidden.status, body: hidden.body, location: hidden.headers.location }, { status: unrelated.status, body: unrelated.body, location: undefined });
+		}
 		await client.unregister(session);
 	} finally {
 		await gateway.close();
