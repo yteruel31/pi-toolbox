@@ -1,0 +1,28 @@
+@import "tailwindcss" source(none);
+@source "./**/*.ts";
+@source "../apps/**/*.ts";
+@source "../gateway/**/*.ts";
+
+@theme {
+	--color-pi-bg: #0b0d10;
+	--color-pi-surface: #14171c;
+	--color-pi-border: #303640;
+	--color-pi-text: #e6e9ef;
+	--color-pi-muted: #929aa8;
+	--color-pi-accent: #7dd3fc;
+	--font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+@layer base {
+	:root {
+		color-scheme: dark;
+		font-family: var(--font-mono);
+		background: var(--color-pi-bg);
+		color: var(--color-pi-text);
+	}
+
+	*, ::before, ::after { box-sizing: border-box; }
+	body { margin: 0; min-height: 100vh; background: var(--color-pi-bg); }
+	button, input, select, textarea { font: inherit; color: inherit; }
+	a { color: var(--color-pi-accent); }
+}

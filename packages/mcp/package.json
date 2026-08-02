@@ -27,11 +27,13 @@
   ],
   "scripts": {
     "build:app-bridge": "node scripts/build-mcp-app-bridge.mjs",
+    "build:ui-css": "node scripts/build-mcp-ui-css.mjs",
     "check:app-bridge": "node scripts/build-mcp-app-bridge.mjs --check",
+    "check:ui-css": "node scripts/build-mcp-ui-css.mjs --check",
     "check:conformance": "node scripts/check-conformance.mjs",
-    "check": "tsc --noEmit && npm run check:app-bridge && npm run check:conformance",
+    "check": "tsc --noEmit && npm run check:app-bridge && npm run check:ui-css && npm run check:conformance",
     "pack:dry": "npm pack --dry-run",
-    "prepack": "npm run check:app-bridge"
+    "prepack": "npm run build:app-bridge && npm run build:ui-css"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
@@ -60,8 +62,10 @@
     "@earendil-works/pi-ai": "0.81.1",
     "@earendil-works/pi-coding-agent": "0.81.1",
     "@earendil-works/pi-tui": "0.81.1",
+    "@tailwindcss/cli": "4.3.3",
     "@types/node": "^22.19.1",
     "esbuild": "0.28.1",
+    "tailwindcss": "4.3.3",
     "typescript": "^5.9.3"
   },
   "engines": {

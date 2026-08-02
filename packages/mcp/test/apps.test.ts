@@ -249,6 +249,17 @@ test("loopback host keeps SSE open, replays events, isolates Apps, and validates
 	const headers = { [backendHeader]: backend.secret, "content-type": "application/json" };
 
 	assert.equal((await fetch(`${backend.origin}/${first.route}`)).status, 404);
+	assert.equal((await fetch(`${backend.origin}/styles.css`)).status, 404);
+	assert.equal((await request(backend.origin, "styles.css", backend.secret, { method: "POST" })).status, 404);
+	assert.equal((await request(backend.origin, "unknown.css", backend.secret)).status, 404);
+	const stylesheet = await request(backend.origin, "styles.css", backend.secret);
+	assert.equal(stylesheet.status, 200);
+	assert.equal(stylesheet.headers.get("content-type"), "text/css; charset=utf-8");
+	assert.equal(stylesheet.headers.get("cache-control"), "no-store");
+	assert.equal(stylesheet.headers.get("referrer-policy"), "no-referrer");
+	assert.equal(stylesheet.headers.get("x-content-type-options"), "nosniff");
+	assert.equal(stylesheet.headers.get("content-security-policy"), "default-src 'none'");
+	assert.match(await stylesheet.text(), /color-scheme:dark/);
 	assert.equal((await request(backend.origin, `${first.route}?secret=${backend.secret}`, backend.secret)).status, 404);
 	assert.equal((await request(backend.origin, "apps", backend.secret)).status, 200);
 	const descriptors = await (await request(backend.origin, "apps", backend.secret)).json() as Array<Record<string, unknown>>;

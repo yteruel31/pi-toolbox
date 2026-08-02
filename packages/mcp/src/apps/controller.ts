@@ -14,6 +14,7 @@ import {
 } from "./security.js";
 
 const bridgeAsset = readFileSync(new URL("./generated/app-bridge.js", import.meta.url), "utf8");
+const uiStylesheet = readFileSync(new URL("../ui/generated/mcp-ui.css", import.meta.url), "utf8");
 const MAX_EVENTS = 64;
 const MAX_EVENT_BYTES = MAX_SESSION_DATA_BYTES + MAX_SESSION_MESSAGES_BYTES;
 const MAX_MESSAGES = 50;
@@ -395,6 +396,9 @@ export class McpAppController {
 		const url = request.url ?? "";
 		if (url === "/apps" && request.method === "GET") {
 			return this.send(response, 200, JSON.stringify(this.list()), "application/json");
+		}
+		if (url === "/styles.css" && request.method === "GET") {
+			return this.send(response, 200, uiStylesheet, "text/css; charset=utf-8");
 		}
 
 		const match = APP_ROUTE.exec(url);
