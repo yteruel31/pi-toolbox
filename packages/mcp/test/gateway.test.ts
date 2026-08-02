@@ -6,10 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { McpAppController } from "../src/apps/controller.js";
 import { DEFAULT_UI_SETTINGS } from "../src/config.js";
 import { GatewayClient, GatewayIncompatibleError } from "../src/gateway/client.js";
 import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, settingsSignature, type Session } from "../src/gateway/protocol.js";
 import { startGatewayServer } from "../src/gateway/server.js";
+import { renderDashboard } from "../src/ui/dashboard.js";
 
 interface HttpResult {
 	status: number;
@@ -63,10 +65,37 @@ function wrongLease(session: Session): Session {
 	return { ...session, leaseSecret: "wrong-lease" };
 }
 
+test("dashboard renderer handles empty, singular, multiple, hostile, and accessible cards", () => {
+	const empty = renderDashboard([]);
+	assert.match(empty, /0 active Apps/);
+	assert.match(empty, /No active Apps/);
+	assert.doesNotMatch(empty, /proxy\/apps\//);
+
+	const one = renderDashboard([{ id: "abcdefghijklmnopqrstuvwx", label: `<script> & "hostile" 'label'` }]);
+	assert.match(one, /1 active App</);
+	assert.match(one, /&lt;script&gt; &amp; &quot;hostile&quot; &#39;label&#39;/);
+	assert.match(one, /href="proxy\/apps\/abcdefghijklmnopqrstuvwx\/"/);
+	assert.match(one, /focus-visible:outline-2/);
+	assert.match(one, /aria-label="Active Apps"/);
+	assert.match(one, />Active</);
+	assert.match(one, />Open /);
+	assert.match(one, /href="proxy\/styles\.css"/);
+	assert.match(one, /name="viewport"/);
+	assert.match(one, /Pi \/ terminal/);
+	assert.doesNotMatch(one, /<script>|javascript:|backend|secret/i);
+
+	const multiple = renderDashboard([
+		{ id: "abcdefghijklmnopqrstuvwx", label: "First" },
+		{ id: "zyxwvutsrqponmlkjihgfedc", label: "Second" },
+	]);
+	assert.match(multiple, /2 active Apps/);
+	assert.equal((multiple.match(/class="group /g) ?? []).length, 2);
+});
+
 test("capability dashboard is isolated, escaped, mounted/direct equivalent, and secured", async () => {
 	const backend = createServer((request, response) => {
 		if (request.headers[INTERNAL_SECRET_HEADER] !== "dashboard-secret") return response.writeHead(404).end();
-		response.end(JSON.stringify([{ id: "abcdefghijklmnopqrstuvwx", label: "<unsafe>", route: "apps/abcdefghijklmnopqrstuvwx/", state: "active" }]));
+		response.end(JSON.stringify([{ id: "abcdefghijklmnopqrstuvwx", label: `<unsafe> & "quoted"`, route: "apps/abcdefghijklmnopqrstuvwx/", state: "active" }]));
 	});
 	const backendPort = await listen(backend);
 	const home = await mkdtemp(join(tmpdir(), "pi-mcp-"));
@@ -78,7 +107,11 @@ test("capability dashboard is isolated, escaped, mounted/direct equivalent, and 
 		const direct = await http(settings.gatewayPort, `/s/${session.capability}/`);
 		const mounted = await http(settings.gatewayPort, `${settings.basePath}/s/${session.capability}/`);
 		assert.equal(direct.body, mounted.body);
-		assert.match(direct.body, /&lt;unsafe&gt;/);
+		assert.match(direct.body, /&lt;unsafe&gt; &amp; &quot;quoted&quot;/);
+		assert.match(direct.body, /href="proxy\/styles\.css"/);
+		assert.match(direct.body, /href="proxy\/apps\/abcdefghijklmnopqrstuvwx\/"/);
+		assert.doesNotMatch(direct.body, new RegExp(`${backendPort}|dashboard-secret|${session.capability}`));
+		assert.equal(direct.headers["content-security-policy"], "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
 		assert.equal(direct.headers["cache-control"], "no-store");
 		assert.equal(direct.headers["referrer-policy"], "no-referrer");
 		assert.equal(direct.headers["x-content-type-options"], "nosniff");
@@ -203,6 +236,35 @@ test("a reachable previous-protocol gateway fails closed and is not replaced", a
 		assert.ok((await stat(client.socket)).isSocket());
 	} finally {
 		await new Promise<void>((resolve) => incompatible.close(() => resolve()));
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("real gateway proxy serves the App viewer stylesheet in direct and mounted forms", async () => {
+	const apps = new McpAppController({
+		readResource: async () => ({ contents: [{ uri: "ui://test/app", mimeType: "text/html", text: "<p>App</p>" }] }),
+	} as never);
+	const opened = await apps.open("test", {
+		name: "test", title: "Test", inputSchema: { type: "object" }, _meta: { ui: { resourceUri: "ui://test/app" } },
+	}, {}, { content: [{ type: "text", text: "ok" }] });
+	assert.ok(opened);
+	const appBackend = apps.backend()!;
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-app-styles-"));
+	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
+	const client = new GatewayClient({ settings, hostnameResolver: async () => "tail.test", homeDir: home });
+	const gateway = await startGatewayServer({ settings, hostname: "tail.test", socketPath: client.socket });
+	try {
+		const session = await client.register({ label: "styles", backendOrigin: appBackend.origin, backendSecret: appBackend.secret });
+		const direct = await http(settings.gatewayPort, `/s/${session.capability}/proxy/styles.css`);
+		const mounted = await http(settings.gatewayPort, `${settings.basePath}/s/${session.capability}/proxy/styles.css`);
+		assert.equal(direct.status, 200);
+		assert.equal(direct.body, mounted.body);
+		assert.equal(direct.headers["content-type"], "text/css; charset=utf-8");
+		assert.match(direct.body, /color-scheme:dark/);
+		assert.doesNotMatch(direct.body, new RegExp(`${appBackend.secret}|${session.capability}`));
+	} finally {
+		await gateway.close();
+		await apps.close();
 		await rm(home, { recursive: true, force: true });
 	}
 });

@@ -16,10 +16,21 @@ test("package ships runtime and conformance surfaces but excludes tests", () => 
 		"README.md",
 		"PARITY.md",
 		"scripts/check-conformance.mjs",
+		"scripts/build-mcp-ui-css.mjs",
 		"src/index.ts",
 		"src/mcp/manager.ts",
+		"src/ui/mcp-ui.css",
+		"src/ui/generated/mcp-ui.css",
 	]) assert.ok(paths.includes(required), `package is missing ${required}`);
 	assert.equal(paths.some((path) => path === "test" || path.startsWith("test/")), false);
 	assert.ok(files.length < 100, `package file count is unexpectedly large: ${files.length}`);
 	assert.ok(files.reduce((total, file) => total + file.size, 0) < 2_000_000, "package exceeds 2 MB unpacked");
+});
+
+test("committed MCP UI stylesheet is reproducible and fresh", () => {
+	const checked = spawnSync("npm", ["run", "check:ui-css"], {
+		cwd: new URL("..", import.meta.url),
+		encoding: "utf8",
+	});
+	assert.equal(checked.status, 0, checked.stderr || checked.stdout);
 });
