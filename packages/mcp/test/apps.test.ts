@@ -155,16 +155,33 @@ test("canonical CSP wins over legacy metadata and only safe origins and permissi
 	}
 });
 
-test("host template escapes labels, keeps the iframe opaque, and wires bridge before src", () => {
+test("host template renders a secure full-viewport dark shell and wires lifecycle UX", () => {
 	const html = hostHtml(`</title><script>alert(1)</script>`, "microphone");
 	assert.doesNotMatch(html, /<script>alert/);
 	assert.match(html, /&lt;\/title&gt;/);
+	assert.match(html, /name="viewport" content="width=device-width, initial-scale=1"/);
+	assert.match(html, /href="\.\.\/\.\.\/styles\.css"/);
+	assert.match(html, /href="\.\.\/\.\.\/\.\.\/"/);
+	assert.match(html, /Pi \/ terminal/);
+	assert.match(html, /aria-live="polite"/);
+	assert.match(html, /id="loading"[^>]*aria-label="Loading App"/);
+	assert.match(html, /h-dvh min-h-screen overflow-hidden/);
+	assert.match(html, /id="app" class="min-h-0 w-full flex-1 border-0 bg-pi-bg" hidden/);
 	assert.match(html, /referrerpolicy="no-referrer"/);
 	assert.match(html, /sandbox="(?![^"]*allow-same-origin)/);
 	assert.match(html, /allow="microphone"/);
+	assert.doesNotMatch(html, /style=|https?:\/\//);
 
 	const script = hostScript();
 	assert.ok(script.indexOf("await bridge.connect") < script.indexOf("frame.src = './view'"));
+	assert.match(script, /theme: 'dark'/);
+	assert.match(script, /loading\.remove\(\)/);
+	assert.match(script, /setStatus\('connecting', 'Connecting'\)/);
+	assert.match(script, /setStatus\('connected', 'Connected'\)/);
+	assert.match(script, /setStatus\('reconnecting', 'Reconnecting'\)/);
+	assert.match(script, /setStatus\('ended', 'Ended'\)/);
+	assert.match(script, /bridge\.onsizechange = \(\) => \{\}/);
+	assert.doesNotMatch(script, /frame\.style|\.width \+|\.height \+/);
 	assert.match(script, /window\.confirm/);
 	assert.match(script, /bridge\.oncalltool/);
 	assert.match(script, /extra\.signal/);
@@ -270,6 +287,7 @@ test("loopback host keeps SSE open, replays events, isolates Apps, and validates
 	assert.equal(host.status, 200);
 	assert.equal(host.headers.get("cache-control"), "no-store");
 	assert.equal(host.headers.get("referrer-policy"), "no-referrer");
+	assert.equal(host.headers.get("content-security-policy"), "default-src 'none'; script-src 'self'; style-src 'self'; frame-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'");
 	assert.match(await host.text(), /&lt;Weather &amp; first&gt;/);
 	assert.equal(await (await request(backend.origin, `${first.route}view`, backend.secret)).text(), "<b>view</b>");
 

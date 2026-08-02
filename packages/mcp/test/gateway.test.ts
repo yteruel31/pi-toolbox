@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { McpAppController } from "../src/apps/controller.js";
 import { DEFAULT_UI_SETTINGS } from "../src/config.js";
 import { GatewayClient, GatewayIncompatibleError } from "../src/gateway/client.js";
 import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, settingsSignature, type Session } from "../src/gateway/protocol.js";
@@ -235,6 +236,35 @@ test("a reachable previous-protocol gateway fails closed and is not replaced", a
 		assert.ok((await stat(client.socket)).isSocket());
 	} finally {
 		await new Promise<void>((resolve) => incompatible.close(() => resolve()));
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("real gateway proxy serves the App viewer stylesheet in direct and mounted forms", async () => {
+	const apps = new McpAppController({
+		readResource: async () => ({ contents: [{ uri: "ui://test/app", mimeType: "text/html", text: "<p>App</p>" }] }),
+	} as never);
+	const opened = await apps.open("test", {
+		name: "test", title: "Test", inputSchema: { type: "object" }, _meta: { ui: { resourceUri: "ui://test/app" } },
+	}, {}, { content: [{ type: "text", text: "ok" }] });
+	assert.ok(opened);
+	const appBackend = apps.backend()!;
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-app-styles-"));
+	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
+	const client = new GatewayClient({ settings, hostnameResolver: async () => "tail.test", homeDir: home });
+	const gateway = await startGatewayServer({ settings, hostname: "tail.test", socketPath: client.socket });
+	try {
+		const session = await client.register({ label: "styles", backendOrigin: appBackend.origin, backendSecret: appBackend.secret });
+		const direct = await http(settings.gatewayPort, `/s/${session.capability}/proxy/styles.css`);
+		const mounted = await http(settings.gatewayPort, `${settings.basePath}/s/${session.capability}/proxy/styles.css`);
+		assert.equal(direct.status, 200);
+		assert.equal(direct.body, mounted.body);
+		assert.equal(direct.headers["content-type"], "text/css; charset=utf-8");
+		assert.match(direct.body, /color-scheme:dark/);
+		assert.doesNotMatch(direct.body, new RegExp(`${appBackend.secret}|${session.capability}`));
+	} finally {
+		await gateway.close();
+		await apps.close();
 		await rm(home, { recursive: true, force: true });
 	}
 });

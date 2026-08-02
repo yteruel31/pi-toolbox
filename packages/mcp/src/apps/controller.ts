@@ -412,7 +412,7 @@ export class McpAppController {
 				200,
 				hostHtml(session.label, session.meta.allow),
 				"text/html; charset=utf-8",
-				"default-src 'none'; script-src 'self'; frame-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'",
+				"default-src 'none'; script-src 'self'; style-src 'self'; frame-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'",
 			);
 		}
 		if (request.method === "GET" && route === "view") {
