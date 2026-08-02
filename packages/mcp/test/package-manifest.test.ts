@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+test("tsx remains a root and MCP runtime dependency", async () => {
+	const root = new URL("../../..", import.meta.url);
+	const manifest = JSON.parse(await readFile(new URL("package.json", root), "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+	const mcpManifest = JSON.parse(await readFile(new URL("packages/mcp/package.json", root), "utf8")) as { dependencies?: Record<string, string> };
+	const lock = JSON.parse(await readFile(new URL("package-lock.json", root), "utf8")) as { packages?: Record<string, { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; dev?: boolean }> };
+	assert.ok(manifest.dependencies?.tsx, "root package must declare tsx as a runtime dependency");
+	assert.equal(manifest.devDependencies?.tsx, undefined, "root package must not duplicate tsx as a dev dependency");
+	assert.ok(mcpManifest.dependencies?.tsx, "MCP package must declare tsx as a runtime dependency");
+	assert.ok(lock.packages?.[""]?.dependencies?.tsx, "lock root must record tsx as a runtime dependency");
+	assert.equal(lock.packages?.[""]?.devDependencies?.tsx, undefined, "lock root must not record tsx as a dev dependency");
+	assert.equal(lock.packages?.["node_modules/tsx"]?.dev, undefined, "locked tsx package must not be dev-only");
+});
 
 test("package ships runtime and conformance surfaces but excludes tests", () => {
 	const packed = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {

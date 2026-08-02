@@ -103,9 +103,14 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		const mounted = parsed.pathname.startsWith(`${options.settings.basePath}/s/`);
 		if (options.settings.requireTailscaleIdentity && !validIdentity(request.headers[IDENTITY_HEADER])) return notFound(response);
 		const route = mounted ? parsed.pathname.slice(options.settings.basePath.length) : parsed.pathname;
-		const match = route.match(/^\/s\/([^/]+)\/(.*)$/);
+		const match = route.match(/^\/s\/([^/]+)(?:\/(.*))?$/);
 		const stored = match ? capabilities.get(match[1]) : undefined;
 		if (!stored) return notFound(response);
+		if (match![2] === undefined) {
+			response.writeHead(308, { ...SECURITY_HEADERS, location: `${parsed.pathname}/${parsed.search}` });
+			response.end();
+			return;
+		}
 		if (match![2] === "") return dashboard(response, stored);
 		if (!match![2].startsWith("proxy/")) return notFound(response);
 		const rawPath = rawProxyPath(request.url ?? "", mounted, options.settings.basePath, stored.capability);
