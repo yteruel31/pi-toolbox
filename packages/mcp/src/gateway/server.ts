@@ -3,6 +3,7 @@ import { stat, chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname } from "node:path";
 import type { McpUiSettings } from "../config.js";
+import { renderDashboard } from "../ui/dashboard.js";
 import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, isLoopbackOrigin, settingsSignature, type Registration, type Session } from "./protocol.js";
 
 interface StoredSession extends Session {
@@ -17,7 +18,7 @@ const SECURITY_HEADERS = {
 	"referrer-policy": "no-referrer",
 	"x-content-type-options": "nosniff",
 };
-const DASHBOARD_CSP = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+const DASHBOARD_CSP = "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 const MAX_DESCRIPTORS_BYTES = 64 * 1024;
 const IDENTITY_HEADER = "tailscale-user-login";
 const HOP_HEADERS = new Set(["connection", "proxy-connection", "keep-alive", "transfer-encoding", "upgrade", "trailer", "te"]);
@@ -27,10 +28,6 @@ const equalSecret = (left: string, right: string): boolean => {
 	const b = Buffer.from(right);
 	return a.length === b.length && timingSafeEqual(a, b);
 };
-const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (character) => ({
-	"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-})[character]!);
-
 export interface GatewayServerOptions {
 	settings: McpUiSettings;
 	hostname: string;
@@ -162,9 +159,8 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 			if (!validDescriptors(descriptors)) throw new Error("invalid descriptors");
 		} catch { return gatewayError(response); }
 		const apps = descriptors as Array<{ id: string; label: string; route: string }>;
-		const links = apps.map((app) => `<li><a href="proxy/apps/${app.id}/">${escapeHtml(app.label)}</a></li>`).join("");
 		response.writeHead(200, { ...SECURITY_HEADERS, "content-type": "text/html; charset=utf-8", "content-security-policy": DASHBOARD_CSP });
-		response.end(`<!doctype html><meta charset="utf-8"><title>Pi MCP Apps</title><h1>Pi MCP Apps (${apps.length})</h1><ul>${links}</ul>`);
+		response.end(renderDashboard(apps));
 	}
 
 	function backendJson(session: StoredSession, path: string): Promise<unknown> {
