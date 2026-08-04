@@ -22,6 +22,10 @@ const DASHBOARD_CSP = "default-src 'none'; style-src 'self'; frame-ancestors 'no
 const MAX_DESCRIPTORS_BYTES = 64 * 1024;
 const IDENTITY_HEADER = "tailscale-user-login";
 const HOP_HEADERS = new Set(["connection", "proxy-connection", "keep-alive", "transfer-encoding", "upgrade", "trailer", "te"]);
+class UpstreamStatusError extends Error {
+	constructor(readonly status: number) { super(`Upstream status ${status}`); }
+}
+
 const token = (): string => randomBytes(32).toString("base64url");
 const equalSecret = (left: string, right: string): boolean => {
 	const a = Buffer.from(left);
@@ -160,10 +164,16 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 	async function dashboard(response: ServerResponse, session: StoredSession): Promise<void> {
 		let descriptors: unknown;
 		try {
-			descriptors = await backendJson(session, "/apps");
-			if (!validDescriptors(descriptors)) throw new Error("invalid descriptors");
+			try {
+				descriptors = await backendJson(session, "/apps/v2");
+				if (!validDescriptors(descriptors, true)) throw new Error("invalid descriptors");
+			} catch (error) {
+				if (!(error instanceof UpstreamStatusError) || error.status !== 404) throw error;
+				descriptors = await backendJson(session, "/apps");
+				if (!validDescriptors(descriptors, false)) throw new Error("invalid descriptors");
+			}
 		} catch { return gatewayError(response); }
-		const apps = descriptors as Array<{ id: string; label: string; route: string }>;
+		const apps = descriptors as Array<{ id: string; label: string; route: string; server?: string }>;
 		response.writeHead(200, { ...SECURITY_HEADERS, "content-type": "text/html; charset=utf-8", "content-security-policy": DASHBOARD_CSP });
 		response.end(renderDashboard(apps));
 	}
@@ -180,7 +190,7 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 			const outgoing = httpRequest(new URL(path, `${session.backendOrigin}/`), { headers: { [INTERNAL_SECRET_HEADER]: session.backendSecret } }, (upstream) => {
 				if (upstream.statusCode !== 200) {
 					upstream.resume();
-					return finish(new Error("upstream"));
+					return finish(new UpstreamStatusError(upstream.statusCode ?? 0));
 				}
 				const chunks: Buffer[] = [];
 				let size = 0;
@@ -265,13 +275,15 @@ function applySecurity(response: ServerResponse): void { for (const [name, value
 function notFound(response: ServerResponse): void { response.writeHead(404, { ...SECURITY_HEADERS, "content-security-policy": "default-src 'none'" }); response.end("Not found"); }
 function gatewayError(response: ServerResponse): void { if (!response.headersSent) response.writeHead(502, { ...SECURITY_HEADERS, "content-security-policy": "default-src 'none'" }); response.end("Gateway error"); }
 function validIdentity(value: string | string[] | undefined): boolean { return typeof value === "string" && value.length > 0 && value.length <= 256 && /^[\x20-\x7e]+$/.test(value); }
-function validDescriptors(value: unknown): boolean {
+function validDescriptors(value: unknown, enriched: boolean): boolean {
+	const keys = enriched ? "id,label,route,server,state" : "id,label,route,state";
 	return Array.isArray(value) && value.length <= 16 && value.every((item) => {
-		if (!item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).sort().join(",") !== "id,label,route,state") return false;
+		if (!item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).sort().join(",") !== keys) return false;
 		const app = item as Record<string, unknown>;
 		return typeof app.id === "string" && /^[A-Za-z0-9_-]{24}$/.test(app.id) && typeof app.label === "string" &&
 			app.label.length > 0 && Buffer.byteLength(app.label, "utf8") <= 512 && !/[\u0000-\u001f\u007f]/u.test(app.label) &&
-			app.route === `apps/${app.id}/` && app.state === "active";
+			app.route === `apps/${app.id}/` && app.state === "active" &&
+			(!enriched || (typeof app.server === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(app.server)));
 	});
 }
 function rawProxyPath(url: string, mounted: boolean, basePath: string, capability: string): string | undefined {

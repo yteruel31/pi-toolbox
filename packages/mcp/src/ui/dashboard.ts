@@ -1,6 +1,7 @@
 export interface DashboardApp {
 	id: string;
 	label: string;
+	server?: string;
 }
 
 const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (character) => ({
@@ -12,7 +13,7 @@ export function renderDashboard(apps: readonly DashboardApp[]): string {
 	const cards = apps.map((app) => `
 		<li>
 			<a class="group flex min-h-32 items-center justify-between gap-6 rounded-xl border border-pi-border bg-pi-surface p-5 text-pi-text no-underline transition-colors hover:border-pi-accent focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-pi-accent" href="proxy/apps/${app.id}/">
-				<span class="min-w-0"><span class="mb-2 block truncate text-base font-semibold">${escapeHtml(app.label)}</span><span class="inline-flex items-center gap-2 text-sm text-pi-muted"><span class="h-2 w-2 rounded-full bg-emerald-400" aria-hidden="true"></span>Active</span></span>
+				<span class="min-w-0"><span class="mb-2 block truncate text-base font-semibold">${escapeHtml(app.label)}</span>${app.server === undefined ? "" : `<span class="mb-2 inline-flex rounded-md border border-pi-border px-2 py-1 text-xs font-semibold text-pi-muted">MCP · ${escapeHtml(app.server)}</span>`}<span class="flex items-center gap-2 text-sm text-pi-muted"><span class="h-2 w-2 rounded-full bg-emerald-400" aria-hidden="true"></span>Active</span></span>
 				<span class="shrink-0 text-sm font-semibold text-pi-accent" aria-hidden="true">Open <span class="transition-transform group-hover:translate-x-1">→</span></span>
 			</a>
 		</li>`).join("");

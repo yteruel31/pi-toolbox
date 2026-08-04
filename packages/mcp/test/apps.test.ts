@@ -494,7 +494,12 @@ test("real SDK tool metadata and resources/read open an App while preserving the
 		assert.doesNotMatch(JSON.stringify(output.details), /apps\/|127\.0\.0\.1|secret/);
 		assert.equal(runtime.apps.count, 1);
 		const descriptor = runtime.apps.list()[0]!;
+		assert.equal(descriptor.server, "real");
 		const backend = runtime.apps.backend()!;
+		const legacy = await request(backend.origin, "apps", backend.secret);
+		assert.deepEqual(await legacy.json(), [{ id: descriptor.id, label: descriptor.label, route: descriptor.route, state: "active" }]);
+		const enriched = await request(backend.origin, "apps/v2", backend.secret);
+		assert.deepEqual(await enriched.json(), [descriptor]);
 		const view = await request(backend.origin, `${descriptor.route}view`, backend.secret);
 		assert.equal(await view.text(), "<!doctype html><h1>SDK App</h1>");
 		assert.match(view.headers.get("content-security-policy") ?? "", /https:\/\/api\.example/);
