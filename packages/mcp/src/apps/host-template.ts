@@ -58,5 +58,5 @@ const transport = new PostMessageTransport(frame.contentWindow, frame.contentWin
 setStatus('connecting', 'Connecting');
 await bridge.connect(transport);
 frame.src = './view';
-addEventListener('pagehide', () => void teardown(true), { once: true });`;
+addEventListener('pagehide', () => void teardown(false), { once: true });`;
 }

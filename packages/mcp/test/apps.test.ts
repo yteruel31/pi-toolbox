@@ -195,6 +195,22 @@ test("host template renders a secure full-viewport dark shell and wires lifecycl
 	assert.doesNotMatch(script, /https?:\/\//);
 });
 
+test("host lifecycle detaches locally on pagehide and only explicitly completes once", () => {
+	const script = hostScript();
+	assert.match(script, /bridge\.onrequestteardown = \(\) => void teardown\(true\);/);
+	assert.match(script, /events\.addEventListener\('cancelled', \(\) => teardown\(false\)\);/);
+	assert.match(script, /events\.addEventListener\('complete', \(\) => teardown\(false\)\);/);
+	assert.match(script, /addEventListener\('pagehide', \(\) => void teardown\(false\), \{ once: true \}\);/);
+
+	const teardown = script.match(/async function teardown\(notify\) \{([^}]|\}(?!\n))*\}/)?.[0];
+	assert.ok(teardown, "generated host script must contain the teardown implementation");
+	assert.match(teardown, /if \(done\) return; done = true;/, "teardown must claim completion before awaiting");
+	assert.equal((teardown.match(/post\('\.\/complete'\)/g) ?? []).length, 1);
+	assert.match(teardown, /events\.close\(\); clearInterval\(heartbeat\);/);
+	assert.match(teardown, /bridge\.teardownResource\(\{\}\)/);
+	assert.match(teardown, /transport\.close\(\)/);
+});
+
 test("official App and AppBridge complete a postMessage handshake and same-server tool call", async (context) => {
 	context.mock.method(console, "log", () => undefined);
 	context.mock.method(console, "debug", () => undefined);
