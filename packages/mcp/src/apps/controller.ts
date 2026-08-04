@@ -56,6 +56,7 @@ export interface LocalAppDescriptor {
 	id: string;
 	label: string;
 	route: string;
+	server: string;
 	state: "active";
 }
 
@@ -98,6 +99,7 @@ export class McpAppController {
 			id: session.id,
 			label: session.label,
 			route: `apps/${session.id}/`,
+			server: session.server,
 			state: "active",
 		}));
 	}
@@ -395,6 +397,10 @@ export class McpAppController {
 		if (!this.authorized(request)) return this.send(response, 404);
 		const url = request.url ?? "";
 		if (url === "/apps" && request.method === "GET") {
+			const legacy = this.list().map(({ server: _server, ...descriptor }) => descriptor);
+			return this.send(response, 200, JSON.stringify(legacy), "application/json");
+		}
+		if (url === "/apps/v2" && request.method === "GET") {
 			return this.send(response, 200, JSON.stringify(this.list()), "application/json");
 		}
 		if (url === "/styles.css" && request.method === "GET") {

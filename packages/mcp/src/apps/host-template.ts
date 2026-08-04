@@ -2,7 +2,7 @@ import { escapeHtml } from "./security.js";
 
 export function hostHtml(label: string, allow: string): string {
 	const safeLabel = escapeHtml(label);
-	return `<!doctype html><html class="h-full bg-pi-bg"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${safeLabel}</title><link rel="stylesheet" href="../../styles.css"></head><body class="h-dvh min-h-screen overflow-hidden bg-pi-bg text-pi-text antialiased"><main class="flex h-full min-h-0 flex-col"><header class="flex shrink-0 items-center gap-3 border-b border-pi-border bg-pi-surface px-3 py-2 sm:px-4"><a class="shrink-0 text-xs font-semibold tracking-wide text-pi-accent no-underline hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pi-accent" href="../../../" aria-label="Back to Pi Apps">Pi / terminal</a><span class="text-pi-muted" aria-hidden="true">/</span><h1 class="min-w-0 flex-1 truncate text-sm font-medium text-pi-text">${safeLabel}</h1><p id="connection-status" class="shrink-0 text-xs text-pi-muted" role="status" aria-live="polite" data-state="connecting">Connecting</p></header><section id="loading" class="flex min-h-0 flex-1 items-center justify-center bg-pi-bg px-6 text-center" aria-label="Loading App"><div><p class="text-sm font-medium text-pi-text">Loading App</p><p class="mt-2 text-xs text-pi-muted">Establishing a secure connection…</p></div></section><iframe id="app" class="min-h-0 w-full flex-1 border-0 bg-pi-bg" hidden title="${safeLabel}" referrerpolicy="no-referrer" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"${allow ? ` allow="${escapeHtml(allow)}"` : ""}></iframe></main><script type="module" src="./bridge.js"></script></body></html>`;
+	return `<!doctype html><html class="h-full bg-pi-bg"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>${safeLabel}</title><link rel="stylesheet" href="../../styles.css"></head><body class="h-dvh min-h-screen overflow-hidden bg-pi-bg text-pi-text antialiased"><main><iframe id="app" class="fixed inset-0 h-dvh w-screen border-0 bg-pi-bg" hidden title="${safeLabel}" referrerpolicy="no-referrer" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"${allow ? ` allow="${escapeHtml(allow)}"` : ""}></iframe><section id="loading" class="fixed inset-0 flex h-dvh w-screen items-center justify-center bg-pi-bg px-6 text-center" aria-label="Loading App"><div><p class="text-sm font-medium text-pi-text">Loading App</p><p class="mt-2 text-xs text-pi-muted">Establishing a secure connection…</p></div></section><header class="fixed inset-x-3 top-[max(0.75rem,env(safe-area-inset-top))] z-10 flex items-center gap-2 rounded-lg border border-pi-border bg-pi-surface/95 px-3 py-2 shadow-lg sm:inset-x-auto sm:left-3 sm:max-w-[min(32rem,calc(100vw-1.5rem))]" aria-label="Pi App navigation"><a class="shrink-0 text-xs font-semibold tracking-wide text-pi-accent no-underline hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pi-accent" href="../../../" aria-label="Back to Pi Apps">Pi / terminal</a><span class="text-pi-muted" aria-hidden="true">/</span><h1 class="min-w-0 flex-1 truncate text-sm font-medium text-pi-text">${safeLabel}</h1><p id="connection-status" class="shrink-0 text-xs text-pi-muted" role="status" aria-live="polite" data-state="connecting">Connecting</p></header></main><script type="module" src="./bridge.js"></script></body></html>`;
 }
 
 export function hostScript(): string {
@@ -12,11 +12,26 @@ const loading = document.querySelector('#loading');
 const status = document.querySelector('#connection-status');
 const setStatus = (state, label) => { status.dataset.state = state; status.textContent = label; };
 const post = (path, value = {}, signal) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value), signal });
+const hostContext = () => ({
+  theme: 'dark',
+  displayMode: 'fullscreen',
+  availableDisplayModes: ['fullscreen'],
+  containerDimensions: {
+    width: Math.max(1, Math.round(window.visualViewport?.width ?? document.documentElement.clientWidth ?? window.innerWidth)),
+    height: Math.max(1, Math.round(window.visualViewport?.height ?? document.documentElement.clientHeight ?? window.innerHeight))
+  }
+});
 const bridge = new AppBridge(null, { name: 'Pi', version: '0.1.0' }, {
   serverTools: {}, openLinks: {}, logging: {}, updateModelContext: {}, message: {}
-}, { hostContext: { theme: 'dark', displayMode: 'inline', availableDisplayModes: ['inline', 'fullscreen'] } });
+}, { hostContext: hostContext() });
 let approved = false;
 let initialized = false;
+let resizeFrame;
+const updateHostContext = () => { resizeFrame = undefined; if (!initialized || done) return; bridge.setHostContext(hostContext()); };
+const scheduleHostContext = () => { if (!initialized || done || resizeFrame !== undefined) return; resizeFrame = requestAnimationFrame(updateHostContext); };
+addEventListener('resize', scheduleHostContext);
+addEventListener('orientationchange', scheduleHostContext);
+window.visualViewport?.addEventListener('resize', scheduleHostContext);
 let pendingInput;
 let pendingResult;
 const flush = () => {
@@ -24,7 +39,7 @@ const flush = () => {
   if (pendingInput !== undefined) { bridge.sendToolInput(pendingInput); pendingInput = undefined; }
   if (pendingResult !== undefined) { bridge.sendToolResult(pendingResult); pendingResult = undefined; }
 };
-bridge.oninitialized = () => { initialized = true; frame.hidden = false; loading.remove(); setStatus('connected', 'Connected'); flush(); };
+bridge.oninitialized = () => { initialized = true; bridge.setHostContext(hostContext()); frame.hidden = false; loading.remove(); setStatus('connected', 'Connected'); flush(); };
 bridge.oncalltool = async ({ name, arguments: args = {} }, extra) => {
   if (!approved && !window.confirm('Allow this App to call tools on its MCP server?')) return { isError: true, content: [{ type: 'text', text: 'Tool call denied by user.' }] };
   approved = true;
@@ -34,7 +49,7 @@ bridge.oncalltool = async ({ name, arguments: args = {} }, extra) => {
 };
 bridge.onmessage = async params => { const response = await post('./message', params); return response.ok ? {} : { isError: true }; };
 bridge.onupdatemodelcontext = async params => { await post('./context', params); return {}; };
-bridge.onrequestdisplaymode = async ({ mode }) => { if (!['inline', 'fullscreen'].includes(mode)) return { mode: 'inline' }; await post('./display-mode', { mode }); return { mode }; };
+bridge.onrequestdisplaymode = async ({ mode }) => { if (mode !== 'fullscreen') return { mode: 'fullscreen' }; await post('./display-mode', { mode: 'fullscreen' }); return { mode: 'fullscreen' }; };
 bridge.onopenlink = async ({ url }) => { const response = await post('./open-link', { url }); if (response.ok) window.open(url, '_blank', 'noopener,noreferrer'); return { accepted: response.ok }; };
 bridge.onrequestteardown = () => void teardown(true);
 bridge.onsizechange = () => {};
@@ -52,7 +67,7 @@ events.addEventListener('result', event => { pendingResult = JSON.parse(event.da
 events.addEventListener('cancelled', () => teardown(false));
 events.addEventListener('complete', () => teardown(false));
 let done = false;
-async function teardown(notify) { if (done) return; done = true; setStatus('ended', 'Ended'); events.close(); clearInterval(heartbeat); if (notify) await post('./complete').catch(() => {}); await bridge.teardownResource({}).catch(() => {}); await transport.close(); }
+async function teardown(notify) { if (done) return; done = true; setStatus('ended', 'Ended'); events.close(); clearInterval(heartbeat); removeEventListener('resize', scheduleHostContext); removeEventListener('orientationchange', scheduleHostContext); window.visualViewport?.removeEventListener('resize', scheduleHostContext); if (resizeFrame !== undefined) { cancelAnimationFrame(resizeFrame); resizeFrame = undefined; } if (notify) await post('./complete').catch(() => {}); await bridge.teardownResource({}).catch(() => {}); await transport.close(); }
 const heartbeat = setInterval(() => void post('./heartbeat'), 15000);
 const transport = new PostMessageTransport(frame.contentWindow, frame.contentWindow);
 setStatus('connecting', 'Connecting');

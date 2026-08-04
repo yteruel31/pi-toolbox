@@ -18,6 +18,7 @@ const app = (id = "abcdefghijklmnopqrstuvwx", label = "Example") => ({
 	id,
 	label,
 	route: `apps/${id}/`,
+	server: "example-server",
 	state: "active" as const,
 });
 const sleep = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));

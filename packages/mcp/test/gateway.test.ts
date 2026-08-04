@@ -71,12 +71,13 @@ test("dashboard renderer handles empty, singular, multiple, hostile, and accessi
 	assert.match(empty, /No active Apps/);
 	assert.doesNotMatch(empty, /proxy\/apps\//);
 
-	const one = renderDashboard([{ id: "abcdefghijklmnopqrstuvwx", label: `<script> & "hostile" 'label'` }]);
+	const one = renderDashboard([{ id: "abcdefghijklmnopqrstuvwx", label: `<script> & "hostile" 'label'`, server: "safe.server" }]);
 	assert.match(one, /1 active App</);
 	assert.match(one, /&lt;script&gt; &amp; &quot;hostile&quot; &#39;label&#39;/);
 	assert.match(one, /href="proxy\/apps\/abcdefghijklmnopqrstuvwx\/"/);
 	assert.match(one, /focus-visible:outline-2/);
 	assert.match(one, /aria-label="Active Apps"/);
+	assert.match(one, /MCP · safe\.server/);
 	assert.match(one, />Active</);
 	assert.match(one, />Open /);
 	assert.match(one, /href="proxy\/styles\.css"/);
@@ -85,16 +86,22 @@ test("dashboard renderer handles empty, singular, multiple, hostile, and accessi
 	assert.doesNotMatch(one, /<script>|javascript:|backend|secret/i);
 
 	const multiple = renderDashboard([
-		{ id: "abcdefghijklmnopqrstuvwx", label: "First" },
-		{ id: "zyxwvutsrqponmlkjihgfedc", label: "Second" },
+		{ id: "abcdefghijklmnopqrstuvwx", label: "First", server: "alpha" },
+		{ id: "zyxwvutsrqponmlkjihgfedc", label: "Second", server: `hostile<&"'` },
 	]);
 	assert.match(multiple, /2 active Apps/);
+	assert.match(multiple, /MCP · alpha/);
+	assert.match(multiple, /MCP · hostile&lt;&amp;&quot;&#39;/);
 	assert.equal((multiple.match(/class="group /g) ?? []).length, 2);
 });
 
 test("capability dashboard is isolated, escaped, mounted/direct equivalent, and secured", async () => {
+	const requested: string[] = [];
+	let enrichedStatus = 404;
 	const backend = createServer((request, response) => {
 		if (request.headers[INTERNAL_SECRET_HEADER] !== "dashboard-secret") return response.writeHead(404).end();
+		requested.push(request.url ?? "");
+		if (request.url === "/apps/v2") return response.writeHead(enrichedStatus).end();
 		response.end(JSON.stringify([{ id: "abcdefghijklmnopqrstuvwx", label: `<unsafe> & "quoted"`, route: "apps/abcdefghijklmnopqrstuvwx/", state: "active" }]));
 	});
 	const backendPort = await listen(backend);
@@ -126,6 +133,12 @@ test("capability dashboard is isolated, escaped, mounted/direct equivalent, and 
 		assert.match(direct.body, /&lt;unsafe&gt; &amp; &quot;quoted&quot;/);
 		assert.match(direct.body, /href="proxy\/styles\.css"/);
 		assert.match(direct.body, /href="proxy\/apps\/abcdefghijklmnopqrstuvwx\/"/);
+		assert.doesNotMatch(direct.body, /MCP ·/);
+		assert.deepEqual(requested.slice(0, 2), ["/apps/v2", "/apps"]);
+		enrichedStatus = 500;
+		const beforeFailure = requested.length;
+		assert.equal((await http(settings.gatewayPort, `${directPath}/`)).status, 502);
+		assert.deepEqual(requested.slice(beforeFailure), ["/apps/v2"]);
 		assert.doesNotMatch(direct.body, new RegExp(`${backendPort}|dashboard-secret|${session.capability}`));
 		assert.equal(direct.headers["content-security-policy"], "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
 		assert.equal(direct.headers["cache-control"], "no-store");
@@ -157,8 +170,17 @@ test("dashboard rejects oversized or malformed backend descriptors", async () =>
 	try {
 		const session = await client.register({ label: "bounded", backendOrigin: `http://127.0.0.1:${backendPort}` });
 		assert.equal((await http(settings.gatewayPort, `/s/${session.capability}/`)).status, 502);
-		payload = JSON.stringify([{ id: "abcdefghijklmnopqrstuvwx", label: "bad\nlabel", route: "apps/abcdefghijklmnopqrstuvwx/", state: "active" }]);
-		assert.equal((await http(settings.gatewayPort, `/s/${session.capability}/`)).status, 502);
+		const base = { id: "abcdefghijklmnopqrstuvwx", label: "Valid", route: "apps/abcdefghijklmnopqrstuvwx/", state: "active" };
+		for (const invalid of [
+			{ ...base, label: "bad\nlabel", server: "valid" },
+			base,
+			{ ...base, server: "<hostile>" },
+			{ ...base, server: "a".repeat(65) },
+			{ ...base, server: "valid", extra: true },
+		]) {
+			payload = JSON.stringify([invalid]);
+			assert.equal((await http(settings.gatewayPort, `/s/${session.capability}/`)).status, 502);
+		}
 	} finally {
 		await gateway.close();
 		await new Promise<void>((resolve) => backend.close(() => resolve()));
@@ -275,6 +297,9 @@ test("real gateway proxy serves the App viewer stylesheet in direct and mounted 
 	const gateway = await startGatewayServer({ settings, hostname: "tail.test", socketPath: client.socket });
 	try {
 		const session = await client.register({ label: "styles", backendOrigin: appBackend.origin, backendSecret: appBackend.secret });
+		const dashboard = await http(settings.gatewayPort, `/s/${session.capability}/`);
+		assert.equal(dashboard.status, 200);
+		assert.match(dashboard.body, /MCP · test/);
 		const direct = await http(settings.gatewayPort, `/s/${session.capability}/proxy/styles.css`);
 		const mounted = await http(settings.gatewayPort, `${settings.basePath}/s/${session.capability}/proxy/styles.css`);
 		assert.equal(direct.status, 200);
