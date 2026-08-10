@@ -133,6 +133,7 @@ export class McpRuntime {
 	readonly manager: McpServerManager;
 	readonly config: McpConfig;
 	readonly serverConfigs: ReturnType<typeof parseServerConfigs>["servers"];
+	readonly disabledServers: ReturnType<typeof parseServerConfigs>["disabled"];
 	readonly coordinator?: OAuthCoordinator;
 	readonly apps: McpAppController;
 	readonly publisher?: AppPublisher;
@@ -147,6 +148,7 @@ export class McpRuntime {
 		this.config = config;
 		const parsed = parseServerConfigs(config);
 		this.serverConfigs = parsed.servers;
+		this.disabledServers = parsed.disabled;
 		this.diagnostics = parsed.diagnostics;
 		if (manager) {
 			this.manager = manager;

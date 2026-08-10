@@ -3,6 +3,7 @@ import test from "node:test";
 import { registerGatewayCommand, type GatewayProbe, type GatewayTailscale } from "../src/commands.js";
 import { DEFAULT_UI_SETTINGS, type McpConfig } from "../src/config.js";
 import { GatewayIncompatibleError, GatewayUnavailableError } from "../src/gateway/client.js";
+import { safeAuthorizationUrl } from "../src/auth/coordinator.js";
 
 interface Notification {
 	message: string;
@@ -80,6 +81,14 @@ function harness(options: {
 		},
 	};
 }
+
+test("OAuth authorization URLs allow HTTPS and loopback HTTP only", () => {
+	assert.equal(safeAuthorizationUrl("https://auth.example/authorize?client_id=pi"), "https://auth.example/authorize?client_id=pi");
+	assert.equal(safeAuthorizationUrl("http://127.0.0.1:1234/authorize"), "http://127.0.0.1:1234/authorize");
+	for (const value of ["javascript:alert(1)", "http://remote.example/authorize", "https://user:pass@auth.example/", "https://auth.example/#token"]) {
+		assert.throws(() => safeAuthorizationUrl(value), /unsafe/);
+	}
+});
 
 test("setup resolves the hostname, starts the gateway, and configures Serve", async () => {
 	const subject = harness();

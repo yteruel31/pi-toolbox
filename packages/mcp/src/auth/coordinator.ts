@@ -44,6 +44,17 @@ const SECURITY_HEADERS = {
 	connection: "close",
 };
 
+export function safeAuthorizationUrl(value: string): string {
+	if (!value || value.length > 4_096 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error("OAuth authorization URL is unsafe");
+	let url: URL;
+	try { url = new URL(value); } catch { throw new Error("OAuth authorization URL is unsafe"); }
+	const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
+	if (url.username || url.password || url.hash || (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))) {
+		throw new Error("OAuth authorization URL is unsafe");
+	}
+	return url.href;
+}
+
 function equal(left: string, right: string): boolean {
 	const first = Buffer.from(left);
 	const second = Buffer.from(right);
@@ -163,7 +174,7 @@ export class OAuthCoordinator {
 			const authorization = provider.takeAuthorizationUrl();
 			if (!authorization) throw new Error("OAuth server did not provide an authorization URL");
 			if (this.closed) throw new Error("OAuth coordinator is closed");
-			attempt.authorization = authorization.href;
+			attempt.authorization = safeAuthorizationUrl(authorization.href);
 			return { authorizationUrl: attempt.authorization };
 		} catch {
 			await this.cleanup(name, backend);

@@ -34,6 +34,17 @@ test("server directTools overrides are carried and malformed selection does not 
 	assert.equal(parsed.diagnostics.length, 1);
 });
 
+test("disabled servers remain configured but are excluded from runtime transports", () => {
+	const parsed = parseServerConfigs({ mcpServers: {
+		disabled: { url: "https://safe.test", disabled: true, directTools: true },
+		enabled: { command: "node", disabled: false },
+		invalid: { url: "https://safe.test", disabled: "yes" },
+	} } as never);
+	assert.deepEqual([...parsed.servers.keys()], ["enabled"]);
+	assert.deepEqual([...parsed.disabled], ["disabled"]);
+	assert.equal(parsed.diagnostics.length, 1);
+});
+
 test("parser accepts stdio and SSE while isolating malformed or ambiguous siblings", () => {
 	const parsed = parseServerConfigs({ mcpServers: {
 		stdio: { command: "node", args: ["fixture.js"], env: { TOKEN: "MARKER" }, cwd: "/tmp", transport: "stdio" },

@@ -12,6 +12,10 @@ export interface McpUiSettings {
 }
 
 export type DirectToolsSetting = boolean | readonly string[];
+export interface McpServerControls {
+	disabled?: boolean;
+	directTools?: DirectToolsSetting;
+}
 export type McpServerDefinition = Record<string, unknown>;
 export interface ConfigDiagnostic {
 	source: string;
@@ -35,6 +39,7 @@ export const DEFAULT_UI_SETTINGS: Readonly<McpUiSettings> = Object.freeze({
 });
 
 const UNSAFE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+const CONTROL_KEYS = new Set(["disabled", "directTools"]);
 const UI_KEYS = new Set(Object.keys(DEFAULT_UI_SETTINGS));
 const MIN_IDLE_TIMEOUT_MS = 15_000;
 const MAX_IDLE_TIMEOUT_MS = 86_400_000;
@@ -52,6 +57,11 @@ function unsafePath(value: unknown, path = "$"): string | undefined {
 		if (nested) return nested;
 	}
 	return undefined;
+}
+
+function isControlOverlay(value: Record<string, unknown>): boolean {
+	const keys = Object.keys(value);
+	return keys.length > 0 && keys.every((key) => CONTROL_KEYS.has(key));
 }
 
 function normalizeBasePath(value: unknown): string | undefined {
@@ -120,7 +130,11 @@ export function loadMcpConfig(options: { homeDir?: string; paths?: readonly stri
 				const unsafe = UNSAFE_KEYS.has(name) ? `$.mcpServers.${name}` : unsafePath(server, `$.mcpServers.${name}`);
 				if (unsafe) { report(source, "unsafe-key", unsafe, "Unsafe server key was rejected"); continue; }
 				if (!isPlainObject(server)) { report(source, "invalid-server", `$.mcpServers.${name}`, "Server definition must be an object"); continue; }
-				mcpServers[name] = server;
+				// A higher layer may manage an existing server without copying its transport or credentials.
+				// Definitions containing url/command keep the documented whole-entry replacement behavior.
+				mcpServers[name] = mcpServers[name] && isControlOverlay(server)
+					? { ...mcpServers[name], ...server }
+					: server;
 			}
 		}
 		if (layer.settings !== undefined) {

@@ -4,12 +4,16 @@ Private Tailnet MCP client and Apps gateway for Pi. Phase 2 is implemented for t
 
 ## Configuration contract
 
-Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/mcp.json`. Server entries are merged by name; the Pi layer replaces matching entries. Its valid UI fields augment the lower layer. Missing and invalid files fail safely with structured, value-free diagnostics.
+Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/mcp.json`. Server entries are merged by name. A Pi entry containing `url` or `command` replaces the matching definition; an entry containing only `disabled` and/or `directTools` is a targeted control overlay, so the panel never needs to copy a lower-layer transport, headers, environment, or credentials. Valid UI fields augment the lower layer. Missing and invalid files fail safely with structured, value-free diagnostics.
 
 ```json
 {
   "mcpServers": {
-    "example": { "url": "https://example.invalid/mcp", "directTools": ["search", "read"] }
+    "example": {
+      "url": "https://example.invalid/mcp",
+      "disabled": false,
+      "directTools": ["search", "read"]
+    }
   },
   "settings": {
     "directTools": false,
@@ -28,7 +32,7 @@ Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/
 }
 ```
 
-URL definitions may explicitly select `streamable-http` or legacy `sse`; when omitted, Pi tries Streamable HTTP and falls back to SSE only when the modern endpoint is unsupported. Stdio definitions use `{ "command": "executable", "args": [], "env": {}, "cwd": "..." }`. Commands are spawned directly without a shell. Configured stdio commands execute trusted local code with the user's privileges; only configure commands you trust. Configuration values and child stderr are never exposed in model-visible errors. `idleTimeoutMs` must be between 15 seconds and 24 hours so capability heartbeats and bounded gateway operations can complete before lease expiry.
+URL definitions may explicitly select `streamable-http` or legacy `sse`; when omitted, Pi tries Streamable HTTP and falls back to SSE only when the modern endpoint is unsupported. Stdio definitions use `{ "command": "executable", "args": [], "env": {}, "cwd": "..." }`. Add `disabled: true` to keep a server configured while preventing connection, discovery, and direct-tool registration. Commands are spawned directly without a shell. Configured stdio commands execute trusted local code with the user's privileges; only configure commands you trust. Configuration values and child stderr are never exposed in model-visible errors. `idleTimeoutMs` must be between 15 seconds and 24 hours so capability heartbeats and bounded gateway operations can complete before lease expiry.
 
 ## Development
 
@@ -40,6 +44,14 @@ npm run pack:dry
 ```
 
 `check:conformance` verifies that the named Phase-2 scenarios remain present and runs real current MCP SDK protocol/transport, OAuth, Apps, gateway, cache, lifecycle, and package-manifest tests. It uses loopback and temporary files only. The normal `check` command includes it.
+
+## MCP management panel
+
+Run `/mcp` in TUI mode to open the server panel. It shows live connection, OAuth, transport, and cached/discovered capability state; expands model-visible tools; searches servers and tools; reconnects servers; starts OAuth without opening a browser automatically; enables or disables servers; and stages per-server direct-tool selections. `Ctrl+S` writes only changed `disabled` and `directTools` fields to the Pi-owned global file `~/.pi/agent/mcp.json`, preserving unknown data and existing file permissions, then reloads Pi. Writes use a private lock plus optimistic change detection, retrying rather than silently replacing a concurrent update. An orphaned `mcp.json.lock` fails closed; remove it only after confirming that no Pi process is editing the configuration. `Esc` cancels without writing.
+
+The footer uses the separate `mcp-status` slot to show a compact connected/enabled count and authentication or error totals. It updates on lifecycle transitions without connecting merely to calculate status. The existing `mcp-ui` slot remains reserved for the private MCP Apps publication link.
+
+Panel keys: `↑/↓` navigate, `Enter` expand, `Space` toggle a direct tool, `d` enable/disable, `r` reconnect, `a` authenticate, `/` search, `Ctrl+S` save, and `Esc` cancel.
 
 ## Private gateway (U2)
 

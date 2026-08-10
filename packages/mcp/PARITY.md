@@ -6,7 +6,7 @@ This document compares this Phase-2 package with the current local `pi-mcp-adapt
 
 | Area | pi-mcp Phase 2 | Compared with pi-mcp-adapter 2.15 |
 |---|---|---|
-| Configuration sources | Merges `~/.config/mcp/mcp.json`, then `~/.pi/agent/mcp.json`, by server name | **Supported, design difference:** deliberately limited, validated two-layer contract |
+| Configuration sources | Merges `~/.config/mcp/mcp.json`, then `~/.pi/agent/mcp.json`, by server name; Pi control-only entries overlay `disabled`/`directTools` without copying credentials | **Supported, design difference:** deliberately limited, validated two-layer contract |
 | Transports | Streamable HTTP, explicit/automatic-fallback legacy SSE, and directly spawned stdio | **Supported** for the approved servers |
 | OAuth | Authorization code, DCR, PKCE, remote/manual callback, refresh, private-file persistence | **Supported, design difference:** explicit flow and gateway setup; no browser auto-open |
 | Tools / direct tools | Lazy multiplexed `mcp` tool plus global/per-server bounded direct-tool selection | **Supported, design difference:** aliases and opt-in exposure are intentionally conservative |
@@ -15,7 +15,7 @@ This document compares this Phase-2 package with the current local `pi-mcp-adapt
 | MCP Apps / remote access | Official AppBridge, isolated loopback host, private identity-gated Tailscale Serve gateway | **Supported for approved Tailnet use, design difference:** no public host and no automatic UI opening |
 | Metadata / cache / reconnect | Bounded pagination, list-change refresh, private cache, reconnect, value-free diagnostics | **Supported** |
 | Lifecycle / timeouts | Lazy startup, cancellation, bounded operations, stdio termination, coordinated shutdown | **Supported, design difference:** fixed safety bounds rather than adapter-wide tuning parity |
-| UI panel / commands | Persistent status link; `/mcp-gateway setup`, `doctor`, and `remove` | **Partial:** no adapter-equivalent general MCP management panel |
+| UI panel / commands | `/mcp` management panel, compact live MCP footer, persistent Apps status link, and `/mcp-gateway setup`, `doctor`, and `remove` | **Supported subset:** server/tool search, enable/disable, direct-tool selection, reconnect, and OAuth start are supported; adapter setup/import/provenance, trace, logout, and keyring UI remain deferred |
 | Secret storage | Mode `0700` directories and atomic mode `0600` files | **Intentional difference:** no OS keyring integration |
 | Output guard | Bounded/redacted MCP and App output | **Supported in purpose, not byte-for-byte adapter behavior** |
 | Trace | Bounded diagnostics and lifecycle counters | **Unsupported/deferred:** no adapter-compatible protocol trace facility |
@@ -26,7 +26,7 @@ This document compares this Phase-2 package with the current local `pi-mcp-adapt
 | Prompt slash commands | Prompts available through qualified `mcp` operations | **Unsupported/deferred:** no generated slash commands |
 | Tasks | No MCP Tasks support | **Unsupported/deferred** |
 
-The missing management panel, keyring, trace compatibility, broad host discovery, `rmcp-mux`, interpolation, general filters, prompt slash commands, and Tasks mean **pi-mcp is not a universal drop-in replacement** for pi-mcp-adapter. They do **not** block the approved Mobbin/Tailnet setup, which uses the documented JSON route, HTTP OAuth, normal/direct tools, resources/prompts, and private MCP Apps publication. Re-evaluate this statement if that setup begins relying on any deferred feature.
+The missing adapter setup/import/provenance flows, keyring UI, trace compatibility, broad host discovery, `rmcp-mux`, interpolation, general filters, prompt slash commands, and Tasks mean **pi-mcp is not a universal drop-in replacement** for pi-mcp-adapter. They do **not** block the approved Mobbin/Tailnet setup, which uses the documented JSON route, HTTP OAuth, normal/direct tools, resources/prompts, and private MCP Apps publication. Re-evaluate this statement if that setup begins relying on any deferred feature.
 
 ## Executable conformance
 
