@@ -42,6 +42,20 @@ test("merges server maps and lets Pi replace matching names and augment UI", () 
 	assert.equal(result.settings.ui.gatewayPort, 20000);
 });
 
+test("merges control-only Pi entries without copying lower transport definitions", () => {
+	const home = homeWith(
+		{ mcpServers: { shared: { url: "https://lower", headers: { Authorization: "secret" } } } },
+		{ mcpServers: { shared: { disabled: true, directTools: ["read"] } } },
+	);
+	const result = loadMcpConfig({ homeDir: home });
+	assert.deepEqual(result.mcpServers.shared, {
+		url: "https://lower",
+		headers: { Authorization: "secret" },
+		disabled: true,
+		directTools: ["read"],
+	});
+});
+
 test("parses direct tool settings independently and fail-soft", () => {
 	const home = homeWith(
 		{ settings: { directTools: true, ui: { hostname: "safe.example" } }, mcpServers: { one: { command: "x", directTools: ["read", "write"] } } },

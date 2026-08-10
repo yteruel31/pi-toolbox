@@ -24,7 +24,7 @@ export interface ServerConfigDiagnostic {
 	code: "unsafe-name" | "invalid-definition" | "unsupported-transport" | "unsafe-url" | "unsafe-header";
 	message: string;
 }
-export interface ParsedServerConfigs { servers: Map<string, ServerConfig>; diagnostics: ServerConfigDiagnostic[]; }
+export interface ParsedServerConfigs { servers: Map<string, ServerConfig>; disabled: Set<string>; diagnostics: ServerConfigDiagnostic[]; }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
@@ -39,6 +39,7 @@ const onlyFields = (value: Record<string, unknown>, allowed: Set<string>) => Obj
 /** Parses each opaque server independently. Diagnostics never include configured values. */
 export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): ParsedServerConfigs {
 	const servers = new Map<string, ServerConfig>();
+	const disabled = new Set<string>();
 	const diagnostics: ServerConfigDiagnostic[] = [];
 	for (const [name, value] of Object.entries(config.mcpServers)) {
 		if (!NAME.test(name)) { diagnostics.push(report("<invalid>", "unsafe-name", "Server name was rejected")); continue; }
@@ -46,6 +47,9 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 		const hasUrl = "url" in value;
 		const hasCommand = "command" in value;
 		if (hasUrl === hasCommand) { diagnostics.push(report(name, "invalid-definition", "Exactly one transport source is required")); continue; }
+		if (value.disabled !== undefined && typeof value.disabled !== "boolean") {
+			diagnostics.push(report(name, "invalid-definition", "Disabled setting was rejected")); continue;
+		}
 		const marker = value.type ?? value.transport;
 		let directTools = value.directTools === undefined ? undefined : parseDirectTools(value.directTools);
 		if (value.directTools !== undefined && directTools === undefined) {
@@ -53,7 +57,7 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 			directTools = false;
 		}
 		if (hasCommand) {
-			if (!onlyFields(value, new Set(["command", "args", "env", "cwd", "type", "transport", "directTools"])) ||
+			if (!onlyFields(value, new Set(["command", "args", "env", "cwd", "type", "transport", "directTools", "disabled"])) ||
 				marker !== undefined && (typeof marker !== "string" || marker.toLowerCase() !== "stdio") ||
 				typeof value.command !== "string" || value.command.length === 0 ||
 				value.args !== undefined && (!Array.isArray(value.args) || !value.args.every((arg) => typeof arg === "string")) ||
@@ -61,11 +65,12 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 				value.env !== undefined && (!isObject(value.env) || !Object.values(value.env).every((item) => typeof item === "string"))) {
 				diagnostics.push(report(name, "invalid-definition", "Stdio definition was rejected")); continue;
 			}
+			if (value.disabled === true) { disabled.add(name); continue; }
 			servers.set(name, { name, transport: "stdio", command: value.command, args: value.args as string[] | undefined,
 				env: value.env as Record<string, string> | undefined, cwd: value.cwd as string | undefined, directTools });
 			continue;
 		}
-		if (!onlyFields(value, new Set(["url", "headers", "type", "transport", "directTools"])) || typeof value.url !== "string") {
+		if (!onlyFields(value, new Set(["url", "headers", "type", "transport", "directTools", "disabled"])) || typeof value.url !== "string") {
 			diagnostics.push(report(name, "invalid-definition", "URL definition was rejected")); continue;
 		}
 		let transport: UrlServerConfig["transport"] = "auto";
@@ -89,8 +94,9 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 			seen.add(normalized); headers[key] = item;
 		}
 		if (invalid) { diagnostics.push(report(name, "unsafe-header", "Headers were rejected")); continue; }
+		if (value.disabled === true) { disabled.add(name); continue; }
 		servers.set(name, { name, transport, url, headers: Object.freeze(headers), directTools });
 	}
-	return { servers, diagnostics };
+	return { servers, disabled, diagnostics };
 }
 export const parseHttpServerConfigs = parseServerConfigs;
