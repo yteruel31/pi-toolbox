@@ -5,6 +5,8 @@
 Phase 2 is implemented for the approved Mobbin/Tailnet scope. This release does not claim universal `pi-mcp-adapter` parity; see `PARITY.md` for gaps and migration guidance.
 
 ### Added
+- `/mcp` TUI management panel with live server/tool search, enable/disable, direct-tool selection, reconnect, OAuth start, safe global config persistence, and a compact below-editor MCP status indicator.
+- Control-only `disabled`/`directTools` server overlays in `~/.pi/agent/mcp.json`, avoiding transport or credential duplication from the lower config layer.
 - Initial lifecycle-idle Pi extension package.
 - Typed, fail-soft configuration loading and validation for the future MCP Apps gateway.
 - On-demand private singleton gateway foundation and non-destructive Tailscale Serve setup, doctor, and confirmed removal commands.

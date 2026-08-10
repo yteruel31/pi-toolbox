@@ -61,7 +61,7 @@ export class McpServerManager {
 	private closing?: Promise<void>;
 	private closed = false;
 
-	private readonly metadataListeners = new Set<() => void>();
+	private readonly changeListeners = new Set<() => void>();
 	private readonly cacheWrites = new Set<Promise<void>>();
 
 	constructor(configs: Iterable<ServerConfig>, private readonly authProviderFactory?: AuthProviderFactory, private readonly requestHandlers: ClientRequestHandlers = {}, private readonly cache = new MetadataCache()) {
@@ -71,8 +71,10 @@ export class McpServerManager {
 		}
 	}
 
-	onMetadataChange(listener: () => void): () => void { this.metadataListeners.add(listener); return () => { this.metadataListeners.delete(listener); }; }
-	private emitMetadata(): void { for (const listener of this.metadataListeners) try { listener(); } catch { /* listeners are isolated from protocol work */ } }
+	onChange(listener: () => void): () => void { this.changeListeners.add(listener); return () => { this.changeListeners.delete(listener); }; }
+	/** Compatibility alias retained for existing registry consumers. */
+	onMetadataChange(listener: () => void): () => void { return this.onChange(listener); }
+	private emitChange(): void { for (const listener of this.changeListeners) try { listener(); } catch { /* listeners are isolated from protocol work */ } }
 
 	diagnosticStatus(name?: string) {
 		return [...this.entries.values()].filter((entry) => !name || entry.name === name).map((entry) => ({ name: entry.name, state: entry.state, transport: entry.config.transport === "stdio" ? "stdio" : entry.config.transport === "sse" ? "sse" : "http", metadata: { tools: entry.tools.length, resources: entry.resources.length, resourceTemplates: entry.resourceTemplates.length, prompts: entry.prompts.length }, cache: entry.cacheStatus, counters: { reconnects: entry.reconnects, listNotifications: entry.listNotifications, listRefreshes: entry.listRefreshes, listRefreshFailures: entry.listRefreshFailures } }));
@@ -123,6 +125,7 @@ export class McpServerManager {
 	private async open(entry: Entry, refresh: boolean, epoch: number, provider?: OAuthClientProvider, retainAuth = false, signal?: AbortSignal): Promise<ConnectedServer> {
 		if (refresh) await this.closeResources(entry);
 		entry.state = "connecting";
+		this.emitChange();
 		if (provider && entry.config.transport === "stdio") throw new Error(`OAuth is unavailable for MCP server ${entry.name}`);
 		const authProvider = entry.config.transport === "stdio" ? undefined : provider ?? await this.authProviderFactory?.(entry.name);
 		const capabilities = {
@@ -141,7 +144,7 @@ export class McpServerManager {
 			const currentTransport = entry.transport;
 			entry.epoch++; entry.client = undefined; entry.transport = undefined; entry.authTransport = undefined; entry.state = "disconnected"; entry.refreshQueued.clear();
 			if (entry.refreshTimer) clearTimeout(entry.refreshTimer); entry.refreshTimer = undefined;
-			this.emitMetadata();
+			this.emitChange();
 			void currentTransport?.close().catch(() => undefined);
 		};
 		client.onclose = disconnected;
@@ -180,7 +183,7 @@ export class McpServerManager {
 			entry.prompts.sort((a, b) => a.name.localeCompare(b.name));
 			entry.instructions = client.getInstructions();
 			entry.state = "connected";
-			this.emitMetadata();
+			this.emitChange();
 			this.persist(entry);
 			return entry;
 		} catch (error) {
@@ -189,6 +192,7 @@ export class McpServerManager {
 			const authFailure = isAuthFailure(error);
 			if (!interrupted) entry.state = cancelled ? "disconnected" : authFailure ? "auth-required" : "error";
 			if (!(retainAuth && authFailure && !interrupted)) await this.closeResources(entry);
+			if (!interrupted) this.emitChange();
 			if (interrupted) throw new Error("MCP connection was closed during startup");
 			if (cancelled) throw new Error(`MCP connection cancelled on ${entry.name}`);
 			throw new Error(isAuthFailure(error)
@@ -230,7 +234,7 @@ export class McpServerManager {
 		if (this.closed) throw new Error("MCP manager is closed");
 		const entry = this.entries.get(name); if (!entry?.authActive || !entry.authTransport || entry.state !== "auth-required") throw new Error("No active OAuth attempt");
 		try { await entry.authTransport.finishAuth(code); }
-		catch { entry.authActive = false; await this.closeResources(entry); entry.state = "error"; throw new Error(`OAuth could not complete for MCP server ${name}`); }
+		catch { entry.authActive = false; await this.closeResources(entry); entry.state = "error"; this.emitChange(); throw new Error(`OAuth could not complete for MCP server ${name}`); }
 		entry.authActive = false;
 		await this.closeResources(entry);
 		return this.connect(name, true);
@@ -245,6 +249,7 @@ export class McpServerManager {
 		try { await entry.authPending; } catch { /* cancellation interrupts startup */ }
 		await this.closeResources(entry);
 		entry.state = "disconnected";
+		this.emitChange();
 	}
 
 	tool(name: string, tool: string): Tool | undefined {
@@ -291,8 +296,8 @@ export class McpServerManager {
 					if (this.closed || entry.client !== client || entry.epoch !== epoch) return;
 					for (const [key, value] of Object.entries(updates)) (entry as unknown as Record<string, unknown>)[key] = value;
 					entry.tools.sort((a, b) => a.name.localeCompare(b.name)); entry.resources.sort((a, b) => a.name.localeCompare(b.name)); entry.resourceTemplates.sort((a, b) => a.name.localeCompare(b.name)); entry.prompts.sort((a, b) => a.name.localeCompare(b.name));
-					entry.listRefreshes++; this.emitMetadata(); this.persist(entry);
-				} catch { if (entry.client === client && entry.epoch === epoch) entry.listRefreshFailures++; }
+					entry.listRefreshes++; this.emitChange(); this.persist(entry);
+				} catch { if (entry.client === client && entry.epoch === epoch) { entry.listRefreshFailures++; this.emitChange(); } }
 			}
 		})();
 		const tracked = pending.finally(() => {
@@ -334,14 +339,14 @@ export class McpServerManager {
 		await this.connect(name, false, signal);
 		if (!entry.prompts.some((candidate) => candidate.name === prompt)) throw new Error("Unknown MCP prompt");
 		try { return await entry.client!.getPrompt({ name: prompt, arguments: args }, { signal }); }
-		catch (error) { if (isAuthFailure(error)) entry.state = "auth-required"; throw new Error(signal?.aborted ? `MCP prompt request cancelled on ${name}` : isAuthFailure(error) ? `Authentication required for MCP server ${name}` : `MCP prompt request failed on ${name}`); }
+		catch (error) { if (isAuthFailure(error)) { entry.state = "auth-required"; this.emitChange(); } throw new Error(signal?.aborted ? `MCP prompt request cancelled on ${name}` : isAuthFailure(error) ? `Authentication required for MCP server ${name}` : `MCP prompt request failed on ${name}`); }
 	}
 
 	async readResource(name: string, uri: string, signal?: AbortSignal): Promise<ReadResourceResult> {
 		const entry = this.entries.get(name); if (!entry) throw new Error(`Unknown MCP server: ${name}`);
 		await this.connect(name, false, signal);
 		try { return await entry.client!.readResource({ uri }, { signal }); }
-		catch (error) { if (isAuthFailure(error)) entry.state = "auth-required"; throw new Error(signal?.aborted ? `MCP resource read cancelled on ${name}` : isAuthFailure(error) ? `Authentication required for MCP server ${name}` : `MCP resource read failed on ${name}`); }
+		catch (error) { if (isAuthFailure(error)) { entry.state = "auth-required"; this.emitChange(); } throw new Error(signal?.aborted ? `MCP resource read cancelled on ${name}` : isAuthFailure(error) ? `Authentication required for MCP server ${name}` : `MCP resource read failed on ${name}`); }
 	}
 
 	/** App calls are deliberately scoped by the owning session's server name. */
@@ -370,7 +375,7 @@ export class McpServerManager {
 				{ name: tool, arguments: args }, undefined, { signal },
 			) as CallToolResult;
 		} catch (error) {
-			if (isAuthFailure(error)) entry.state = "auth-required";
+			if (isAuthFailure(error)) { entry.state = "auth-required"; this.emitChange(); }
 			if (signal?.aborted) throw new Error(`MCP tool call cancelled on ${name}`);
 			throw new Error(isAuthFailure(error)
 				? `Authentication required for MCP server ${name}`
@@ -404,8 +409,8 @@ export class McpServerManager {
 				entry.state = "disconnected";
 			}));
 			await Promise.allSettled([...this.cacheWrites]);
-			this.emitMetadata();
-			this.metadataListeners.clear();
+			this.emitChange();
+			this.changeListeners.clear();
 		})();
 		return this.closing;
 	}

@@ -30,6 +30,10 @@ function schemaFingerprint(tool: Tool): string | undefined {
 	} catch { return undefined; }
 }
 
+export function isDirectToolCandidate(server: string, tool: Tool): boolean {
+	return SAFE_DIRECT_NAME.test(`${server}_${tool.name}`) && schemaFingerprint(tool) !== undefined;
+}
+
 export class DirectToolRegistry {
 	private runtime?: McpRuntime;
 	private generation = 0;
@@ -79,7 +83,7 @@ export class DirectToolRegistry {
 				if (!selected(setting, runtime.config.settings.directTools ?? false, tool.name)) continue;
 				const name = `${server.name}_${tool.name}`;
 				const schema = schemaFingerprint(tool);
-				if (!schema || !SAFE_DIRECT_NAME.test(name) || name === "mcp") continue;
+				if (!schema || !isDirectToolCandidate(server.name, tool) || name === "mcp") continue;
 				if (existing.has(name) && !this.owned.has(name)) continue;
 				desired.add(name);
 				const fingerprint = `${this.generation}\0${server.name}\0${tool.name}\0${schema}`;
