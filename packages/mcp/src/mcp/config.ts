@@ -32,6 +32,7 @@ const FORBIDDEN_HEADERS = new Set(["connection", "content-length", "cookie", "ho
 const HTTP_MARKERS = new Set(["http", "streamable-http", "streamable_http", "streamablehttp"]);
 const SSE_MARKERS = new Set(["sse", "legacy-sse", "legacy_sse"]);
 const SENSITIVE_QUERY = /^(?:token|secret|password|credential|signature|auth|api[-_]?key)$/i;
+const COMMON_FIELDS = ["type", "transport", "directTools", "disabled", "lifecycle"];
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const report = (server: string, code: ServerConfigDiagnostic["code"], message: string): ServerConfigDiagnostic => ({ server, code, message });
 const onlyFields = (value: Record<string, unknown>, allowed: Set<string>) => Object.keys(value).every((key) => allowed.has(key));
@@ -50,6 +51,11 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 		if (value.disabled !== undefined && typeof value.disabled !== "boolean") {
 			diagnostics.push(report(name, "invalid-definition", "Disabled setting was rejected")); continue;
 		}
+		// pi-mcp is always lazy. Accept the adapter's equivalent marker without
+		// silently changing the semantics of eager or keep-alive configurations.
+		if (value.lifecycle !== undefined && value.lifecycle !== "lazy") {
+			diagnostics.push(report(name, "invalid-definition", "Lifecycle setting is unsupported")); continue;
+		}
 		const marker = value.type ?? value.transport;
 		let directTools = value.directTools === undefined ? undefined : parseDirectTools(value.directTools);
 		if (value.directTools !== undefined && directTools === undefined) {
@@ -57,7 +63,7 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 			directTools = false;
 		}
 		if (hasCommand) {
-			if (!onlyFields(value, new Set(["command", "args", "env", "cwd", "type", "transport", "directTools", "disabled"])) ||
+			if (!onlyFields(value, new Set(["command", "args", "env", "cwd", ...COMMON_FIELDS])) ||
 				marker !== undefined && (typeof marker !== "string" || marker.toLowerCase() !== "stdio") ||
 				typeof value.command !== "string" || value.command.length === 0 ||
 				value.args !== undefined && (!Array.isArray(value.args) || !value.args.every((arg) => typeof arg === "string")) ||
@@ -70,8 +76,13 @@ export function parseServerConfigs(config: Pick<McpConfig, "mcpServers">): Parse
 				env: value.env as Record<string, string> | undefined, cwd: value.cwd as string | undefined, directTools });
 			continue;
 		}
-		if (!onlyFields(value, new Set(["url", "headers", "type", "transport", "directTools", "disabled"])) || typeof value.url !== "string") {
+		if (!onlyFields(value, new Set(["url", "headers", "auth", ...COMMON_FIELDS])) || typeof value.url !== "string") {
 			diagnostics.push(report(name, "invalid-definition", "URL definition was rejected")); continue;
+		}
+		// OAuth is already discovered and coordinated by this runtime. Bearer and
+		// disabled-auth adapter modes need different semantics and remain rejected.
+		if (value.auth !== undefined && value.auth !== "oauth") {
+			diagnostics.push(report(name, "invalid-definition", "Authentication setting is unsupported")); continue;
 		}
 		let transport: UrlServerConfig["transport"] = "auto";
 		if (marker !== undefined) {

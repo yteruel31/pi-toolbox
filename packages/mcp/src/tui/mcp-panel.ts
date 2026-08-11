@@ -146,7 +146,12 @@ export class McpPanel implements Component {
 	}
 	private async action(kind: "reconnect" | "auth"): Promise<void> {
 		const server = this.selectedServer();
-		if (!server || this.busy || this.disabled.get(server.name) || server.state === "invalid") return;
+		if (!server || this.busy || this.disabled.get(server.name)) return;
+		if (server.state === "invalid") {
+			this.message = { text: `${terminalText(server.name, 128)} has an invalid MCP configuration.`, error: true };
+			this.redraw();
+			return;
+		}
 		if (server.state === "disabled") {
 			this.message = { text: `Save and reload before connecting ${server.name}.`, error: true };
 			this.redraw();

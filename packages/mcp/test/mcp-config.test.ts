@@ -62,6 +62,19 @@ test("parser accepts stdio and SSE while isolating malformed or ambiguous siblin
 	assert.doesNotMatch(JSON.stringify(parsed.diagnostics), /MARKER|node|fixture|\/tmp/);
 });
 
+test("parser accepts compatible lazy OAuth metadata without weakening unsupported modes", () => {
+	const parsed = parseServerConfigs({ mcpServers: {
+		mobbin: { url: "https://api.mobbin.com/mcp", type: "http", auth: "oauth", lifecycle: "lazy" },
+		stdio: { command: "node", lifecycle: "lazy" },
+		bearer: { url: "https://safe.test", auth: "bearer" },
+		eager: { url: "https://safe.test", auth: "oauth", lifecycle: "eager" },
+		stdioAuth: { command: "node", auth: "oauth", lifecycle: "lazy" },
+	} } as never);
+	assert.deepEqual([...parsed.servers.keys()], ["mobbin", "stdio"]);
+	assert.equal(parsed.servers.get("mobbin")?.transport, "http");
+	assert.equal(parsed.diagnostics.length, 3);
+});
+
 test("server parser rejects URL credentials, fragments and unsafe names", () => {
 	const parsed = parseServerConfigs({
 		mcpServers: {

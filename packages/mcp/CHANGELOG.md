@@ -4,6 +4,9 @@
 
 Phase 2 is implemented for the approved Mobbin/Tailnet scope. This release does not claim universal `pi-mcp-adapter` parity; see `PARITY.md` for gaps and migration guidance.
 
+### Fixed
+- Adapter-compatible OAuth/lazy server definitions remain valid in `/mcp`, while actions on unsupported definitions now explain why they cannot run.
+
 ### Added
 - `/mcp` TUI management panel with live server/tool search, enable/disable, direct-tool selection, reconnect, OAuth start, safe global config persistence, and a compact below-editor MCP status indicator.
 - Control-only `disabled`/`directTools` server overlays in `~/.pi/agent/mcp.json`, avoiding transport or credential duplication from the lower config layer.
