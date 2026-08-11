@@ -74,6 +74,32 @@ test("panel search filters tool rows and every rendered line respects width", ()
 	assert.ok(lines.every((line) => visibleWidth(line) <= 42));
 });
 
+test("panel explains why connection actions cannot run for invalid servers", () => {
+	let authCalls = 0;
+	const invalid: McpStatusServer[] = [{ ...servers[0]!, state: "invalid" }];
+	const subject = new McpPanel({
+		theme,
+		servers: invalid,
+		onRender: () => undefined,
+		onDone: () => undefined,
+		onReconnect: async () => undefined,
+		onAuthenticate: async () => { authCalls++; return "copied"; },
+	});
+	subject.handleInput("a");
+	assert.equal(authCalls, 0);
+	assert.match(subject.render(100).join("\n"), /linear has an invalid MCP configuration\./);
+});
+
+test("invalid-server feedback strips terminal control sequences from configured names", () => {
+	const hostileName = "bad\u001b]52;c;VEVTVA==\u0007\u202ename";
+	const invalid: McpStatusServer[] = [{ ...servers[0]!, name: hostileName, state: "invalid" }];
+	const subject = new McpPanel({ theme, servers: invalid, onRender: () => undefined, onDone: () => undefined, onReconnect: async () => undefined, onAuthenticate: async () => "copied" });
+	subject.handleInput("a");
+	const output = subject.render(100).join("\n");
+	assert.match(output, /has an invalid MCP configuration\./);
+	assert.doesNotMatch(output, /\u001b\]52|\u0007|\u202e/);
+});
+
 test("panel strips terminal control sequences from remote metadata", () => {
 	const hostile: McpStatusServer[] = [{ ...servers[0]!, tools: [{ name: "read\u001b[2J", description: "safe\u001b]8;;https://evil.test\u0007link", selected: false }] }];
 	const subject = new McpPanel({ theme, servers: hostile, onRender: () => undefined, onDone: () => undefined, onReconnect: async () => undefined, onAuthenticate: async () => "copied" });
