@@ -5,6 +5,7 @@
 Phase 2 is implemented for the approved Mobbin/Tailnet scope. This release does not claim universal `pi-mcp-adapter` parity; see `PARITY.md` for gaps and migration guidance.
 
 ### Fixed
+- `/mcp-gateway setup` verifies that Tailscale installed the Serve route instead of reporting success when Serve/HTTPS is disabled.
 - Adapter-compatible OAuth/lazy server definitions remain valid in `/mcp`, while actions on unsupported definitions now explain why they cannot run.
 
 ### Added

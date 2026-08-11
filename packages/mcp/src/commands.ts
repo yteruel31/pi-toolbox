@@ -65,7 +65,9 @@ export function registerGatewayCommand(
 				}
 			} catch {
 				const operation = action === "setup" || action === "doctor" || action === "remove" ? action : "command";
-				const guidance = operation === "doctor" ? "Check Tailscale and the gateway configuration." : "Run /mcp-gateway doctor.";
+				const guidance = operation === "setup"
+					? "Check gateway access and enable Tailscale Serve/HTTPS before retrying."
+					: operation === "doctor" ? "Check Tailscale and the gateway configuration." : "Run /mcp-gateway doctor.";
 				context.ui.notify(`MCP gateway ${operation} failed. ${guidance}`, "error");
 			}
 		},

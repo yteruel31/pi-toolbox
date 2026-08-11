@@ -55,7 +55,7 @@ Panel keys: `↑/↓` navigate, `Enter` expand, `Space` toggle a direct tool, `d
 
 ## Private gateway (U2)
 
-`/mcp-gateway setup` persistently adds only the configured Tailscale Serve HTTPS path; existing Serve routes are retained. `/mcp-gateway doctor` reports local gateway/config, hostname, and route state. `/mcp-gateway remove [--yes]` removes only an exactly matching route and asks for confirmation unless `--yes` is supplied. The gateway starts on demand, binds its public listener to `127.0.0.1`, and uses private capability URLs; loading the extension starts no service.
+`/mcp-gateway setup` persistently adds only the configured Tailscale Serve HTTPS path, retains existing Serve routes, and verifies that Tailscale actually installed the route before reporting success. `/mcp-gateway doctor` reports local gateway/config, hostname, and route state. `/mcp-gateway remove [--yes]` removes only an exactly matching route and asks for confirmation unless `--yes` is supplied. The gateway starts on demand, binds its public listener to `127.0.0.1`, and uses private capability URLs; loading the extension starts no service.
 
 ## MCP transports and tools (U3a/U5)
 

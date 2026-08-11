@@ -132,6 +132,7 @@ test("command failures are action-specific and never echo arbitrary error text",
 	const setup = harness({ probeError: new Error(secret) });
 	await setup.run("setup");
 	assert.match(setup.notifications[0]?.message ?? "", /setup failed/);
+	assert.match(setup.notifications[0]?.message ?? "", /enable Tailscale Serve\/HTTPS/);
 	assert.doesNotMatch(JSON.stringify(setup.notifications), new RegExp(secret));
 
 	const doctor = harness({ tailscaleError: new Error(secret) });

@@ -43,8 +43,12 @@ export class TailscaleAdapter {
 	async setup(settings: McpUiSettings): Promise<RouteState> {
 		const status = await this.status(settings);
 		if (status.state === "conflicting") throw new Error("Tailscale Serve route is owned by another target");
-		if (status.state === "absent") await this.safeRun(["serve", "--bg", `--https=${settings.httpsPort}`, `--set-path=${settings.basePath}`, status.target]);
-		return status.state;
+		if (status.state === "matching") return status.state;
+		await this.safeRun(["serve", "--bg", `--https=${settings.httpsPort}`, `--set-path=${settings.basePath}`, status.target]);
+		const verified = await this.status(settings);
+		if (verified.state === "conflicting") throw new Error("Tailscale Serve route is owned by another target");
+		if (verified.state !== "matching") throw new Error("Tailscale Serve route was not configured");
+		return verified.state;
 	}
 
 	async remove(settings: McpUiSettings): Promise<RouteState> {
