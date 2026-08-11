@@ -51,18 +51,41 @@ test("duplicate handlers on the selected HTTPS port cannot hide a conflict", asy
 	assert.equal((await adapter.status(settings)).state, "conflicting");
 });
 
-test("setup preserves unrelated handlers and uses exact non-destructive argv", async () => {
+test("setup preserves unrelated handlers, uses exact argv, and verifies the resulting route", async () => {
 	const calls: string[][] = [];
+	let configured = false;
 	const adapter = new TailscaleAdapter(async (args) => {
 		calls.push([...args]);
-		return { stdout: JSON.stringify(serveStatus()) };
+		if (args[1] === "status") return { stdout: JSON.stringify(serveStatus(configured ? "http://127.0.0.1:19877" : undefined)) };
+		configured = true;
+		return { stdout: "" };
 	});
-	assert.equal(await adapter.setup(settings), "absent");
+	assert.equal(await adapter.setup(settings), "matching");
 	assert.deepEqual(calls, [
 		["serve", "status", "--json"],
 		["serve", "--bg", "--https=8443", "--set-path=/mcp-ui", "http://127.0.0.1:19877"],
+		["serve", "status", "--json"],
 	]);
 	assert.ok(calls.flat().every((argument) => !["reset", "clear", "funnel"].includes(argument)));
+});
+
+test("setup fails when Tailscale exits successfully without installing the route", async () => {
+	const marker = "SENSITIVE_TAILSCALE_OUTPUT";
+	const calls: string[][] = [];
+	const adapter = new TailscaleAdapter(async (args) => {
+		calls.push([...args]);
+		return args[1] === "status" ? { stdout: JSON.stringify(serveStatus()) } : { stdout: marker };
+	});
+	await assert.rejects(adapter.setup(settings), (error: Error) => {
+		assert.match(error.message, /route was not configured/);
+		assert.doesNotMatch(error.message, new RegExp(marker));
+		return true;
+	});
+	assert.deepEqual(calls, [
+		["serve", "status", "--json"],
+		["serve", "--bg", "--https=8443", "--set-path=/mcp-ui", "http://127.0.0.1:19877"],
+		["serve", "status", "--json"],
+	]);
 });
 
 test("matching setup is idempotent and exact removal uses off", async () => {
