@@ -32,7 +32,7 @@ function config(port: number, name = "real") {
 	} as never;
 }
 
-async function protocolServer(delayMs = 0) {
+async function protocolServer(delayMs = 0, omitResourceTemplates = false) {
 	let cancelled = false;
 	let unauthorized = false;
 	let resolveSlowStarted!: () => void;
@@ -105,6 +105,7 @@ async function protocolServer(delayMs = 0) {
 				resolve({ content: [{ type: "text", text: "cancelled" }] });
 			}, { once: true });
 		}));
+		if (omitResourceTemplates) mcp.server.removeRequestHandler("resources/templates/list");
 		await mcp.connect(transport);
 		instances.push(mcp);
 		return { transport, mcp };
@@ -137,6 +138,7 @@ async function protocolServer(delayMs = 0) {
 			current.mcp.registerTool(name, {}, async () => ({ content: [{ type: "text", text: `dynamic-${name}` }] }));
 			await current.mcp.server.sendToolListChanged();
 		},
+		notifyResourceListChanged: () => current.mcp.server.sendResourceListChanged(),
 		waitForSlowStart: () => slowStarted,
 		close: async () => Promise.all(instances.map((instance) => instance.close())).then(() => undefined),
 	};
@@ -304,6 +306,31 @@ test("real Streamable HTTP initializes, lists, calls all result forms, refreshes
 		await runtime.manager.close();
 		assert.equal(runtime.manager.get("real")?.state, "disconnected");
 		await runtime.manager.close();
+		await fixture.close();
+		await stop(fixture.http);
+	}
+});
+
+test("resource servers without template listing remain connected during discovery and refresh", async () => {
+	const fixture = await protocolServer(0, true);
+	const manager = new McpServerManager([{
+		name: "concrete-only", transport: "http", url: new URL(`http://127.0.0.1:${fixture.port}/mcp`), headers: {},
+	}]);
+	try {
+		const connected = await manager.connect("concrete-only");
+		assert.equal(connected.state, "connected");
+		assert.ok(connected.resources.some((resource) => resource.uri === "test://guide"));
+		assert.deepEqual(connected.resourceTemplates, []);
+
+		await fixture.notifyResourceListChanged();
+		await waitUntil(() => manager.diagnosticStatus("concrete-only")[0]?.counters.listRefreshes === 1);
+		const refreshed = manager.get("concrete-only");
+		assert.equal(refreshed?.state, "connected");
+		assert.ok(refreshed?.resources.some((resource) => resource.uri === "test://guide"));
+		assert.deepEqual(refreshed?.resourceTemplates, []);
+		assert.equal(manager.diagnosticStatus("concrete-only")[0]?.counters.listRefreshFailures, 0);
+	} finally {
+		await manager.close();
 		await fixture.close();
 		await stop(fixture.http);
 	}

@@ -56,6 +56,11 @@ function isAuthFailure(error: unknown): boolean {
 		(typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === 401);
 }
 
+function isMethodNotFound(error: unknown): boolean {
+	return typeof error === "object" && error !== null && "code" in error &&
+		(error as { code?: unknown }).code === -32601;
+}
+
 export class McpServerManager {
 	private readonly entries = new Map<string, Entry>();
 	private closing?: Promise<void>;
@@ -171,7 +176,7 @@ export class McpServerManager {
 			const capabilities = client.getServerCapabilities();
 			entry.tools = capabilities?.tools ? await this.paginate<Tool>((cursor) => client.listTools(cursor ? { cursor } : undefined, { signal }), "tools", signal) : [];
 			entry.resources = capabilities?.resources ? await this.paginate<Resource>((cursor) => client.listResources(cursor ? { cursor } : undefined, { signal }), "resources", signal) : [];
-			entry.resourceTemplates = capabilities?.resources ? await this.paginate<ResourceTemplate>((cursor) => client.listResourceTemplates(cursor ? { cursor } : undefined, { signal }), "resourceTemplates", signal) : [];
+			entry.resourceTemplates = capabilities?.resources ? await this.listResourceTemplates(client, signal) : [];
 			entry.prompts = capabilities?.prompts ? await this.paginate<Prompt>((cursor) => client.listPrompts(cursor ? { cursor } : undefined, { signal }), "prompts", signal) : [];
 			if (entry.epoch !== epoch) {
 				await transport.close().catch(() => undefined);
@@ -281,6 +286,16 @@ export class McpServerManager {
 		return items;
 	}
 
+	private async listResourceTemplates(client: Client, signal?: AbortSignal): Promise<ResourceTemplate[]> {
+		try {
+			return await this.paginate<ResourceTemplate>((cursor) => client.listResourceTemplates(cursor ? { cursor } : undefined, { signal }), "resourceTemplates", signal);
+		} catch (error) {
+			// Some servers advertise resources but implement only concrete resource listing.
+			if (isMethodNotFound(error)) return [];
+			throw error;
+		}
+	}
+
 	private queueListRefresh(entry: Entry, client: Client, epoch: number, kind: "tools" | "resources" | "prompts"): void {
 		if (this.closed || entry.client !== client || entry.epoch !== epoch || entry.state !== "connected") return;
 		entry.listNotifications++; entry.refreshQueued.add(kind);
@@ -291,7 +306,7 @@ export class McpServerManager {
 				try {
 					const updates: Partial<Pick<Entry, "tools" | "resources" | "resourceTemplates" | "prompts">> = {};
 					if (kinds.has("tools")) updates.tools = await this.paginate<Tool>((cursor) => client.listTools(cursor ? { cursor } : undefined), "tools");
-					if (kinds.has("resources")) { updates.resources = await this.paginate<Resource>((cursor) => client.listResources(cursor ? { cursor } : undefined), "resources"); updates.resourceTemplates = await this.paginate<ResourceTemplate>((cursor) => client.listResourceTemplates(cursor ? { cursor } : undefined), "resourceTemplates"); }
+					if (kinds.has("resources")) { updates.resources = await this.paginate<Resource>((cursor) => client.listResources(cursor ? { cursor } : undefined), "resources"); updates.resourceTemplates = await this.listResourceTemplates(client); }
 					if (kinds.has("prompts")) updates.prompts = await this.paginate<Prompt>((cursor) => client.listPrompts(cursor ? { cursor } : undefined), "prompts");
 					if (this.closed || entry.client !== client || entry.epoch !== epoch) return;
 					for (const [key, value] of Object.entries(updates)) (entry as unknown as Record<string, unknown>)[key] = value;
