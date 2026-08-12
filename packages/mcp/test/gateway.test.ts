@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +10,7 @@ import test from "node:test";
 import { McpAppController } from "../src/apps/controller.js";
 import { DEFAULT_UI_SETTINGS } from "../src/config.js";
 import { GatewayClient, GatewayIncompatibleError } from "../src/gateway/client.js";
-import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, settingsSignature, type Session } from "../src/gateway/protocol.js";
+import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, settingsSignature, type GatewayDaemonSettings, type Session } from "../src/gateway/protocol.js";
 import { startGatewayServer } from "../src/gateway/server.js";
 import { renderDashboard } from "../src/ui/dashboard.js";
 
@@ -570,6 +571,192 @@ test("the real daemon handles SIGTERM with owned socket and PID cleanup", async 
 	} finally {
 		if (child.exitCode === null) child.kill("SIGKILL");
 		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("custom gateway external URLs support root/path mounts and configurable listeners without trusting identity headers", async () => {
+	for (const externalUrl of ["https://mcp.example.test", "https://mcp.example.test/custom/path"] as const) {
+		const home = await mkdtemp(join(tmpdir(), "pi-mcp-custom-"));
+		const gatewayPort = await freePort();
+		const basePath = new URL(externalUrl).pathname;
+		const settings: GatewayDaemonSettings = { externalUrl, listenAddress: "127.0.0.1", gatewayPort, basePath, requireTailscaleIdentity: false, idleTimeoutMs: 10_000 };
+		const client = new GatewayClient({ settings: { ...DEFAULT_UI_SETTINGS, gatewayPort, basePath, requireTailscaleIdentity: false, idleTimeoutMs: 10_000 }, externalUrlResolver: async () => externalUrl, listenAddress: "127.0.0.1", homeDir: home });
+		const gateway = await startGatewayServer({ settings, socketPath: client.socket });
+		const backend = createServer((_request, response) => response.end("ok"));
+		const backendPort = await listen(backend);
+		try {
+			const session = await client.register({ label: "custom", backendOrigin: `http://127.0.0.1:${backendPort}` });
+			assert.equal(session.externalUrl, `${externalUrl}/s/${session.capability}/`);
+			const path = `${new URL(session.externalUrl).pathname}proxy/test`;
+			assert.equal((await http(gatewayPort, path, { headers: { "tailscale-user-login": "forged@example.test" } })).status, 200);
+			assert.equal((await http(gatewayPort, path, { headers: { "tailscale-user-login": "" } })).status, 200);
+		} finally {
+			await gateway.close();
+			await new Promise<void>((resolve) => backend.close(() => resolve()));
+			await rm(home, { recursive: true, force: true });
+		}
+	}
+});
+
+test("client external challenge uses the capability proxy and always cleans its lease", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-probe-"));
+	const gatewayPort = await freePort();
+	const externalUrl = "https://mcp.example.test/private";
+	const daemon: GatewayDaemonSettings = { externalUrl, listenAddress: "127.0.0.1", gatewayPort, basePath: "/private", requireTailscaleIdentity: false, idleTimeoutMs: 10_000 };
+	const ui = { ...DEFAULT_UI_SETTINGS, gatewayPort, basePath: "/private", requireTailscaleIdentity: false, idleTimeoutMs: 10_000 };
+	const client = new GatewayClient({ settings: ui, externalUrlResolver: async () => externalUrl, homeDir: home });
+	const gateway = await startGatewayServer({ settings: daemon, socketPath: client.socket });
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+		const url = new URL(input instanceof Request ? input.url : input.toString());
+		return originalFetch(`http://127.0.0.1:${gatewayPort}${url.pathname}${url.search}`, init);
+	}) as typeof fetch;
+	try {
+		await client.verify();
+		assert.equal(gateway.sessions.size, 0);
+		globalThis.fetch = (async () => new Response("x".repeat(2_000), { status: 200 })) as typeof fetch;
+		await assert.rejects(client.verify(), /validation failed/);
+		assert.equal(gateway.sessions.size, 0);
+		globalThis.fetch = (async () => Response.redirect("https://elsewhere.invalid", 302)) as typeof fetch;
+		await assert.rejects(client.verify(), /validation failed/);
+		assert.equal(gateway.sessions.size, 0);
+	} finally {
+		globalThis.fetch = originalFetch;
+		await gateway.close();
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("same-protocol shutdown waits for active leases, ignores signature mismatch, and refuses older protocols", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-shutdown-"));
+	const first = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
+	const owner = new GatewayClient({ settings: first, hostnameResolver: async () => "one.ts.net", homeDir: home });
+	const gateway = await startGatewayServer({ settings: first, hostname: "one.ts.net", socketPath: owner.socket });
+	const replacement = new GatewayClient({ settings: { ...first, basePath: "/different" }, hostnameResolver: async () => "two.ts.net", homeDir: home });
+	const active = await owner.register({ label: "other process", backendOrigin: "http://127.0.0.1:1" });
+	await assert.rejects(replacement.shutdown(), /active sessions/);
+	assert.equal(gateway.sessions.size, 1);
+	await owner.unregister(active);
+	await replacement.shutdown();
+	await gateway.closed;
+
+	await mkdir(join(home, "older"), { recursive: true });
+	const oldClient = new GatewayClient({ settings: first, hostnameResolver: async () => "one.ts.net", homeDir: join(home, "older") });
+	await mkdir(oldClient.dir, { recursive: true });
+	const old = createServer((_request, response) => response.end(JSON.stringify({ protocol: PROTOCOL_VERSION - 1, signature: "old" })));
+	await new Promise<void>((resolve, reject) => old.once("error", reject).listen(oldClient.socket, resolve));
+	try { await assert.rejects(oldClient.shutdown(), GatewayIncompatibleError); }
+	finally {
+		await new Promise<void>((resolve) => old.close(() => resolve()));
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("accepted shutdown rejects pipelined registration before closing", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-shutdown-race-"));
+	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
+	const client = new GatewayClient({ settings, hostnameResolver: async () => "node.ts.net", homeDir: home });
+	const gateway = await startGatewayServer({ settings, hostname: "node.ts.net", socketPath: client.socket });
+	try {
+		const registration = JSON.stringify({ label: "too late", backendOrigin: "http://127.0.0.1:1" });
+		const socket = createConnection(client.socket);
+		let raw = "";
+		const complete = new Promise<void>((resolve, reject) => {
+			socket.on("data", (chunk) => { raw += chunk.toString(); });
+			socket.once("error", reject);
+			socket.once("close", () => resolve());
+		});
+		await new Promise<void>((resolve) => socket.once("connect", resolve));
+		socket.end(
+			"POST /shutdown HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\n{}" +
+			`POST /register HTTP/1.1\r\nHost: localhost\r\nContent-Length: ${Buffer.byteLength(registration)}\r\nConnection: close\r\n\r\n${registration}`,
+		);
+		await complete;
+		await gateway.closed;
+		assert.match(raw, /^HTTP\/1\.1 202 /);
+		assert.match(raw, /HTTP\/1\.1 503 /);
+		assert.doesNotMatch(raw, /HTTP\/1\.1 201 /);
+		assert.equal(gateway.sessions.size, 0);
+	} finally {
+		await gateway.close();
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("custom listeners reject oversized proxy requests even after an early upstream response", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-request-limit-"));
+	const gatewayPort = await freePort();
+	const settings: GatewayDaemonSettings = { externalUrl: "https://mcp.example.test", listenAddress: "127.0.0.1", gatewayPort, basePath: "/", requireTailscaleIdentity: false, idleTimeoutMs: 10_000 };
+	const client = new GatewayClient({ settings: { ...DEFAULT_UI_SETTINGS, gatewayPort, basePath: "/", requireTailscaleIdentity: false, idleTimeoutMs: 10_000 }, externalUrlResolver: async () => settings.externalUrl, homeDir: home });
+	const gateway = await startGatewayServer({ settings, socketPath: client.socket });
+	let earlyBytes = 0;
+	const backend = createServer((request, response) => {
+		if (request.url === "/early") {
+			request.on("data", (chunk: Buffer) => { earlyBytes += chunk.length; });
+			response.end("early");
+			return;
+		}
+		request.resume();
+		request.once("end", () => response.end("ok"));
+	});
+	const backendPort = await listen(backend);
+	try {
+		const session = await client.register({ label: "request limit", backendOrigin: `http://127.0.0.1:${backendPort}` });
+		const path = `${new URL(session.externalUrl).pathname}proxy/test`;
+		assert.equal((await http(gatewayPort, path, { method: "POST", body: "x".repeat(1024 * 1024 + 1) })).status, 413);
+		assert.equal((await http(gatewayPort, path)).status, 200);
+
+		const earlyPath = `${new URL(session.externalUrl).pathname}proxy/early`;
+		const socket = createConnection({ host: "127.0.0.1", port: gatewayPort });
+		socket.on("error", () => undefined);
+		const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+		await new Promise<void>((resolve) => socket.once("connect", resolve));
+		socket.write(`POST ${earlyPath} HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n1\r\nx\r\n`);
+		const responseHead = await new Promise<string>((resolve, reject) => {
+			let raw = "";
+			const timeout = setTimeout(() => reject(new Error("early proxy response timed out")), 2_000);
+			socket.on("data", (chunk) => {
+				raw += chunk.toString();
+				if (!raw.includes("\r\n\r\n")) return;
+				clearTimeout(timeout);
+				resolve(raw);
+			});
+		});
+		assert.match(responseHead, /^HTTP\/1\.1 200 /);
+		const chunk = Buffer.alloc(64 * 1024, 120);
+		const frame = Buffer.concat([Buffer.from(`${chunk.length.toString(16)}\r\n`), chunk, Buffer.from("\r\n")]);
+		for (let index = 0; index < 32 && !socket.destroyed; index++) {
+			const wrote = await new Promise<boolean>((resolve) => socket.write(frame, (error) => resolve(!error)));
+			if (!wrote) break;
+		}
+		if (!socket.destroyed) socket.end("0\r\n\r\n");
+		await new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error("early upload socket remained open")), 5_000);
+			closed.then(() => { clearTimeout(timeout); resolve(); }, reject);
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.ok(earlyBytes <= 1024 * 1024 + chunk.length, `backend received ${earlyBytes} bytes after its early response`);
+		await client.unregister(session);
+	} finally {
+		await gateway.close();
+		const backendClosed = new Promise<void>((resolve) => backend.close(() => resolve()));
+		backend.closeAllConnections();
+		await backendClosed;
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("control client rejects oversized socket responses", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-mcp-control-limit-"));
+	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort() };
+	const client = new GatewayClient({ settings, hostnameResolver: async () => "node.ts.net", homeDir: home });
+	await mkdir(client.dir, { recursive: true });
+	const oversized = createServer((_request, response) => response.end("x".repeat(70 * 1024)));
+	await new Promise<void>((resolve, reject) => oversized.once("error", reject).listen(client.socket, resolve));
+	try { await assert.rejects(client.shutdown(), /too large/); }
+	finally {
+		await new Promise<void>((resolve) => oversized.close(() => resolve()));
+		await rm(home, { recursive: true, force: true });
 	}
 });
 

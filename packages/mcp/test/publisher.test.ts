@@ -61,7 +61,7 @@ test("publisher verifies route, owns one lease, updates and unregisters", async 
 	const publisher = new AppPublisher({
 		settings: { ...DEFAULT_UI_SETTINGS },
 		heartbeatMs: 100_000,
-		tailscale: { status: async () => { calls.push("status"); return { state: "matching", target: "loopback" }; } },
+		exposure: { verify: async () => { calls.push("verify"); } },
 		gateway: {
 			register: async (value) => { calls.push(`register:${value.label}`); return session; },
 			update: async (_session, label) => { calls.push(`update:${label}`); return session; },
@@ -77,7 +77,7 @@ test("publisher verifies route, owns one lease, updates and unregisters", async 
 	await publisher.reconcile([]);
 	await publisher.close();
 	assert.equal(calls.filter((call) => call.startsWith("register:")).length, 1);
-	assert.deepEqual(calls.map((call) => call.split(":")[0]), ["status", "register", "update", "unregister"]);
+	assert.deepEqual(calls.map((call) => call.split(":")[0]), ["verify", "register", "update", "unregister"]);
 	assert.ok(statuses.includes(session.externalUrl));
 	assert.equal(statuses.at(-1), undefined);
 });
@@ -185,6 +185,23 @@ test("close racing registration revokes the newly created capability", async () 
 	assert.equal((await opening).state, "unavailable");
 	await closing;
 	assert.equal(unregisters, 1);
+});
+
+test("runtime close attempts every cleanup before surfacing failures", async () => {
+	const calls: string[] = [];
+	const manager = { close: async () => { calls.push("manager"); throw new Error("manager failed"); } } as unknown as McpServerManager;
+	const coordinator = { close: async () => { calls.push("coordinator"); } };
+	const apps = { close: async () => { calls.push("apps"); throw new Error("apps failed"); } };
+	const publisher = { close: async () => { calls.push("publisher"); } };
+	const runtime = new McpRuntime(
+		{ mcpServers: {}, settings: { ui: { ...DEFAULT_UI_SETTINGS } }, diagnostics: [] } as never,
+		manager,
+		coordinator as never,
+		apps as never,
+		{ publisher: publisher as never },
+	);
+	await assert.rejects(runtime.close(), /cleanup failed/);
+	assert.deepEqual(new Set(calls), new Set(["apps", "publisher", "coordinator", "manager"]));
 });
 
 test("status text emits safe OSC 8 and plain fallbacks", () => {

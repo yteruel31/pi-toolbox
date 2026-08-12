@@ -1,5 +1,6 @@
 import type { McpUiSettings } from "../config.js";
 import type { GatewayClient } from "../gateway/client.js";
+import type { GatewayExposure } from "../gateway/exposure.js";
 import type { Session } from "../gateway/protocol.js";
 import type { TailscaleAdapter } from "../tailscale.js";
 import type { LocalAppDescriptor } from "./controller.js";
@@ -13,7 +14,9 @@ export interface AppPublicationStatus {
 export interface AppPublisherOptions {
 	settings: McpUiSettings;
 	gateway: Pick<GatewayClient, "register" | "update" | "heartbeat" | "unregister">;
-	tailscale: Pick<TailscaleAdapter, "status">;
+	exposure?: GatewayExposure;
+	/** @deprecated Compatibility seam for existing embedders. */
+	tailscale?: Pick<TailscaleAdapter, "status">;
 	backend: () => { origin: string; secret: string } | undefined;
 	onStatus?: (status?: AppPublicationStatus) => void;
 	heartbeatMs?: number;
@@ -85,8 +88,11 @@ export class AppPublisher {
 
 		try {
 			if (!this.session) {
-				const route = await this.operation(() => this.options.tailscale.status(this.options.settings));
-				if (route.state !== "matching") throw new Error("route unavailable");
+				if (this.options.exposure) await this.operation(() => this.options.exposure!.verify());
+				else {
+					const route = await this.operation(() => this.options.tailscale!.status(this.options.settings));
+					if (route.state !== "matching") throw new Error("route unavailable");
+				}
 				const backend = this.options.backend();
 				if (!backend) throw new Error("backend unavailable");
 				if (this.closed || !this.apps.length) return { state: "unavailable", count: this.apps.length };

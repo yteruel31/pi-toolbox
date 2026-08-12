@@ -4,7 +4,7 @@ import { createServer, request as httpRequest, type IncomingHttpHeaders, type In
 import { dirname } from "node:path";
 import type { McpUiSettings } from "../config.js";
 import { renderDashboard } from "../ui/dashboard.js";
-import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, isLoopbackOrigin, settingsSignature, type Registration, type Session } from "./protocol.js";
+import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, isLoopbackOrigin, settingsSignature, type GatewayDaemonSettings, type Registration, type Session } from "./protocol.js";
 
 interface StoredSession extends Session {
 	label: string;
@@ -20,6 +20,11 @@ const SECURITY_HEADERS = {
 };
 const DASHBOARD_CSP = "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 const MAX_DESCRIPTORS_BYTES = 64 * 1024;
+const MAX_PROXY_REQUEST_BYTES = 1024 * 1024;
+const PUBLIC_REQUEST_TIMEOUT_MS = 30_000;
+const PUBLIC_HEADERS_TIMEOUT_MS = 10_000;
+const PUBLIC_KEEP_ALIVE_TIMEOUT_MS = 1_000;
+const PUBLIC_MAX_CONNECTIONS = 64;
 const IDENTITY_HEADER = "tailscale-user-login";
 const HOP_HEADERS = new Set(["connection", "proxy-connection", "keep-alive", "transfer-encoding", "upgrade", "trailer", "te"]);
 class UpstreamStatusError extends Error {
@@ -33,8 +38,10 @@ const equalSecret = (left: string, right: string): boolean => {
 	return a.length === b.length && timingSafeEqual(a, b);
 };
 export interface GatewayServerOptions {
-	settings: McpUiSettings;
-	hostname: string;
+	settings: McpUiSettings | GatewayDaemonSettings;
+	hostname?: string;
+	externalUrl?: string;
+	listenAddress?: string;
 	socketPath: string;
 	pidPath?: string;
 	now?: () => number;
@@ -42,6 +49,7 @@ export interface GatewayServerOptions {
 }
 
 export async function startGatewayServer(options: GatewayServerOptions) {
+	const settings = resolveServerSettings(options);
 	const sessions = new Map<string, StoredSession>();
 	const capabilities = new Map<string, StoredSession>();
 	const now = options.now ?? Date.now;
@@ -53,6 +61,7 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		rejectClosed = reject;
 	});
 	let idleSince: number | undefined = now();
+	let stopping = false;
 
 	const controlServer = createServer((request, response) => void handleControl(request, response));
 	const publicServer = createServer((request, response) => void handlePublic(request, response).catch(() => gatewayError(response)));
@@ -64,15 +73,23 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		};
 		try {
 			const body = await readJson(request);
-			if (request.url === "/hello") return reply(200, { protocol: PROTOCOL_VERSION, signature: settingsSignature(options.settings) });
+			if (request.url === "/hello") return reply(200, { protocol: PROTOCOL_VERSION, signature: settingsSignature(settings) });
+			if (request.url === "/shutdown" && request.method === "POST") {
+				if (sessions.size > 0) return reply(409, { error: "Gateway has active sessions" });
+				stopping = true;
+				reply(202, { stopping: true });
+				setImmediate(() => { void close(); });
+				return;
+			}
 			if (request.url === "/register" && request.method === "POST") {
+				if (stopping) return reply(503, { error: "Gateway is stopping" });
 				const registration = body as Registration;
 				if (!validRegistration(registration)) return reply(400, { error: "invalid registration" });
 				const capability = token();
 				const stored: StoredSession = {
 					sessionId: token(), capability, leaseSecret: token(), label: registration.label,
 					backendOrigin: registration.backendOrigin, backendSecret: registration.backendSecret ?? token(), touchedAt: now(),
-					externalUrl: `https://${options.hostname}:${options.settings.httpsPort}${options.settings.basePath}/s/${capability}/`,
+					externalUrl: `${settings.externalUrl}/s/${capability}/`,
 				};
 				sessions.set(stored.sessionId, stored);
 				capabilities.set(capability, stored);
@@ -103,22 +120,22 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 	async function handlePublic(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		applySecurity(response);
 		let parsed: URL;
-		try { parsed = new URL(request.url ?? "/", "http://127.0.0.1"); } catch { return notFound(response); }
-		const mounted = parsed.pathname.startsWith(`${options.settings.basePath}/s/`);
-		if (options.settings.requireTailscaleIdentity && !validIdentity(request.headers[IDENTITY_HEADER])) return notFound(response);
-		const route = mounted ? parsed.pathname.slice(options.settings.basePath.length) : parsed.pathname;
+		try { parsed = new URL(request.url ?? "/", "http://127.0.0.1"); } catch { return notFound(request, response); }
+		const mounted = settings.basePath !== "/" && parsed.pathname.startsWith(`${settings.basePath}/s/`);
+		if (settings.requireTailscaleIdentity && !validIdentity(request.headers[IDENTITY_HEADER])) return notFound(request, response);
+		const route = mounted ? parsed.pathname.slice(settings.basePath.length) : parsed.pathname;
 		const match = route.match(/^\/s\/([^/]+)(?:\/(.*))?$/);
 		const stored = match ? capabilities.get(match[1]) : undefined;
-		if (!stored) return notFound(response);
+		if (!stored) return notFound(request, response);
 		if (match![2] === undefined) {
 			response.writeHead(308, { ...SECURITY_HEADERS, location: `${parsed.pathname}/${parsed.search}` });
 			response.end();
 			return;
 		}
 		if (match![2] === "") return dashboard(response, stored);
-		if (!match![2].startsWith("proxy/")) return notFound(response);
-		const rawPath = rawProxyPath(request.url ?? "", mounted, options.settings.basePath, stored.capability);
-		if (!rawPath) return notFound(response);
+		if (!match![2].startsWith("proxy/")) return notFound(request, response);
+		const rawPath = rawProxyPath(request.url ?? "", mounted, settings.basePath, stored.capability);
+		if (!rawPath) return notFound(request, response);
 		proxy(request, response, stored, rawPath);
 	}
 
@@ -132,6 +149,7 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		headers[INTERNAL_SECRET_HEADER] = session.backendSecret;
 		let upstream: IncomingMessage | undefined;
 		let completed = false;
+		let requestBytes = 0;
 		const abort = (): void => {
 			if (completed) return;
 			outgoing.destroy();
@@ -155,6 +173,25 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 			received.pipe(response);
 		});
 		outgoing.on("error", fail);
+		incoming.on("data", (chunk: Buffer) => {
+			requestBytes += chunk.length;
+			if (requestBytes <= MAX_PROXY_REQUEST_BYTES) return;
+			const responseCompleted = completed;
+			completed = true;
+			outgoing.destroy();
+			upstream?.destroy();
+			if (responseCompleted) {
+				incoming.destroy();
+				return;
+			}
+			if (response.headersSent) {
+				response.destroy();
+				incoming.destroy();
+			} else {
+				response.writeHead(413, { ...SECURITY_HEADERS, connection: "close" });
+				response.end("Request too large", () => incoming.destroy());
+			}
+		});
 		incoming.on("aborted", abort);
 		incoming.on("error", abort);
 		response.on("close", abort);
@@ -217,21 +254,28 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		});
 	}
 
+	publicServer.maxConnections = PUBLIC_MAX_CONNECTIONS;
+	publicServer.maxHeadersCount = 100;
+	publicServer.requestTimeout = PUBLIC_REQUEST_TIMEOUT_MS;
+	publicServer.headersTimeout = PUBLIC_HEADERS_TIMEOUT_MS;
+	publicServer.keepAliveTimeout = PUBLIC_KEEP_ALIVE_TIMEOUT_MS;
+	publicServer.maxRequestsPerSocket = 100;
+
 	const sweep = setInterval(() => {
 		const time = now();
 		for (const [id, session] of sessions) {
-			if (time - session.touchedAt >= options.settings.idleTimeoutMs) {
+			if (time - session.touchedAt >= settings.idleTimeoutMs) {
 				sessions.delete(id);
 				capabilities.delete(session.capability);
 			}
 		}
 		if (sessions.size === 0) {
 			idleSince ??= time;
-			if (time - idleSince >= options.settings.idleTimeoutMs) {
+			if (time - idleSince >= settings.idleTimeoutMs) {
 				void close().then(() => options.onIdle?.()).catch(() => undefined);
 			}
 		} else idleSince = undefined;
-	}, Math.min(250, options.settings.idleTimeoutMs)).unref();
+	}, Math.min(250, settings.idleTimeoutMs)).unref();
 
 	await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
 	await chmod(dirname(options.socketPath), 0o700);
@@ -239,7 +283,7 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 	await chmod(options.socketPath, 0o600);
 	const ownedSocket = await stat(options.socketPath);
 	try {
-		await new Promise<void>((resolve, reject) => publicServer.once("error", reject).listen(options.settings.gatewayPort, "127.0.0.1", resolve));
+		await new Promise<void>((resolve, reject) => publicServer.once("error", reject).listen(settings.gatewayPort, settings.listenAddress, resolve));
 		if (options.pidPath) await writeFile(options.pidPath, String(process.pid), { mode: 0o600 });
 	} catch (error) {
 		controlServer.close();
@@ -264,6 +308,20 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 	return { close, closed, sessions };
 }
 
+function resolveServerSettings(options: GatewayServerOptions): GatewayDaemonSettings {
+	if ("externalUrl" in options.settings) return { ...options.settings };
+	const hostname = options.hostname;
+	if (!hostname) throw new Error("Missing gateway hostname");
+	const basePath = options.settings.basePath;
+	return {
+		externalUrl: options.externalUrl?.replace(/\/+$/, "") ?? `https://${hostname}:${options.settings.httpsPort}${basePath === "/" ? "" : basePath}`,
+		listenAddress: options.listenAddress ?? "127.0.0.1",
+		gatewayPort: options.settings.gatewayPort,
+		basePath,
+		requireTailscaleIdentity: options.settings.requireTailscaleIdentity,
+		idleTimeoutMs: options.settings.idleTimeoutMs,
+	};
+}
 function validLabel(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/.test(value); }
 function validRegistration(value: unknown): value is Registration {
 	return !!value && typeof value === "object" && validLabel((value as Registration).label) &&
@@ -272,7 +330,10 @@ function validRegistration(value: unknown): value is Registration {
 }
 function publicSession({ sessionId, capability, leaseSecret, externalUrl }: StoredSession): Session { return { sessionId, capability, leaseSecret, externalUrl }; }
 function applySecurity(response: ServerResponse): void { for (const [name, value] of Object.entries(SECURITY_HEADERS)) response.setHeader(name, value); }
-function notFound(response: ServerResponse): void { response.writeHead(404, { ...SECURITY_HEADERS, "content-security-policy": "default-src 'none'" }); response.end("Not found"); }
+function notFound(request: IncomingMessage, response: ServerResponse): void {
+	response.writeHead(404, { ...SECURITY_HEADERS, "content-security-policy": "default-src 'none'", connection: "close" });
+	response.end("Not found", () => request.destroy());
+}
 function gatewayError(response: ServerResponse): void { if (!response.headersSent) response.writeHead(502, { ...SECURITY_HEADERS, "content-security-policy": "default-src 'none'" }); response.end("Gateway error"); }
 function validIdentity(value: string | string[] | undefined): boolean { return typeof value === "string" && value.length > 0 && value.length <= 256 && /^[\x20-\x7e]+$/.test(value); }
 function validDescriptors(value: unknown, enriched: boolean): boolean {

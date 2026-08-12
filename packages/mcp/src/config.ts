@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +12,10 @@ export interface McpUiSettings {
 	idleTimeoutMs: number;
 }
 
+export type McpGatewaySettings =
+	| { mode: "tailscale" }
+	| { mode: "custom"; externalUrl: string; listenAddress: string };
+
 export type DirectToolsSetting = boolean | readonly string[];
 export interface McpServerControls {
 	disabled?: boolean;
@@ -19,13 +24,13 @@ export interface McpServerControls {
 export type McpServerDefinition = Record<string, unknown>;
 export interface ConfigDiagnostic {
 	source: string;
-	code: "invalid-json" | "invalid-top-level" | "unsafe-key" | "invalid-ui" | "invalid-direct-tools" | "invalid-capability" | "invalid-server" | "read-error";
+	code: "invalid-json" | "invalid-top-level" | "unsafe-key" | "invalid-ui" | "invalid-gateway" | "invalid-direct-tools" | "invalid-capability" | "invalid-server" | "read-error";
 	path: string;
 	message: string;
 }
 export interface McpConfig {
 	mcpServers: Record<string, McpServerDefinition>;
-	settings: { ui: McpUiSettings; directTools?: boolean; sampling?: boolean; samplingAutoApprove?: boolean; elicitation?: boolean };
+	settings: { ui: McpUiSettings; gateway?: McpGatewaySettings; directTools?: boolean; sampling?: boolean; samplingAutoApprove?: boolean; elicitation?: boolean };
 	diagnostics: ConfigDiagnostic[];
 }
 
@@ -64,9 +69,10 @@ function isControlOverlay(value: Record<string, unknown>): boolean {
 	return keys.length > 0 && keys.every((key) => CONTROL_KEYS.has(key));
 }
 
-function normalizeBasePath(value: unknown): string | undefined {
+export function normalizeBasePath(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
 	const normalized = value.length > 1 ? value.replace(/\/+$/, "") : value;
+	if (normalized === "/") return normalized;
 	if (!/^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/.test(normalized)) return undefined;
 	if (normalized.split("/").some((segment) => segment === "." || segment === "..")) return undefined;
 	return normalized;
@@ -77,6 +83,26 @@ function validHostname(value: unknown): value is string {
 	return value.split(".").every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label));
 }
 const validPort = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 65_535;
+
+export function parseGatewaySettings(value: unknown): McpGatewaySettings | undefined {
+	if (!isPlainObject(value) || unsafePath(value)) return undefined;
+	if (value.mode === "tailscale") {
+		return Object.keys(value).length === 1 ? { mode: "tailscale" } : undefined;
+	}
+	if (value.mode !== "custom" || Object.keys(value).some((key) => !["mode", "externalUrl", "listenAddress"].includes(key)) ||
+		typeof value.externalUrl !== "string" || value.externalUrl.length > 2_048 ||
+		typeof value.listenAddress !== "string" || isIP(value.listenAddress) === 0) return undefined;
+	let parsed: URL;
+	try { parsed = new URL(value.externalUrl); } catch { return undefined; }
+	if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) return undefined;
+	const basePath = normalizeBasePath(parsed.pathname);
+	if (!basePath) return undefined;
+	return {
+		mode: "custom",
+		externalUrl: `${parsed.origin}${basePath === "/" ? "" : basePath}`,
+		listenAddress: value.listenAddress,
+	};
+}
 
 export function parseDirectTools(value: unknown): DirectToolsSetting | undefined {
 	if (typeof value === "boolean") return value;
@@ -102,6 +128,7 @@ export function loadMcpConfig(options: { homeDir?: string; paths?: readonly stri
 	const diagnostics: ConfigDiagnostic[] = [];
 	const mcpServers: Record<string, McpServerDefinition> = Object.create(null) as Record<string, McpServerDefinition>;
 	let ui = { ...DEFAULT_UI_SETTINGS };
+	let gateway: McpGatewaySettings | undefined;
 	let directTools = false;
 	let sampling: boolean | undefined;
 	let samplingAutoApprove: boolean | undefined;
@@ -111,7 +138,7 @@ export function loadMcpConfig(options: { homeDir?: string; paths?: readonly stri
 		diagnostics.push({ source, code, path, message });
 	};
 
-	for (const source of paths) {
+	for (const [sourceIndex, source] of paths.entries()) {
 		let text: string;
 		try { text = readFileSync(source, "utf8"); }
 		catch (error) {
@@ -145,6 +172,14 @@ export function loadMcpConfig(options: { homeDir?: string; paths?: readonly stri
 					if (parsed) ui = parsed;
 					else report(source, "invalid-ui", "$.settings.ui", "UI settings layer was rejected");
 				}
+				if (layer.settings.gateway !== undefined) {
+					if (sourceIndex !== paths.length - 1) report(source, "invalid-gateway", "$.settings.gateway", "Gateway settings are accepted only from the Pi-owned configuration layer");
+					else {
+						const parsed = parseGatewaySettings(layer.settings.gateway);
+						if (parsed) gateway = parsed;
+						else report(source, "invalid-gateway", "$.settings.gateway", "Gateway settings layer was rejected");
+					}
+				}
 				if (layer.settings.directTools !== undefined) {
 					const parsed = parseDirectTools(layer.settings.directTools);
 					if (typeof parsed === "boolean") directTools = parsed;
@@ -162,5 +197,5 @@ export function loadMcpConfig(options: { homeDir?: string; paths?: readonly stri
 			}
 		}
 	}
-	return { mcpServers, settings: { ui, directTools, sampling, samplingAutoApprove, elicitation }, diagnostics };
+	return { mcpServers, settings: { ui, gateway, directTools, sampling, samplingAutoApprove, elicitation }, diagnostics };
 }

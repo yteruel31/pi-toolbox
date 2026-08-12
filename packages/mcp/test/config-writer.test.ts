@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test, { afterEach } from "node:test";
-import { writeMcpServerControls } from "../src/config-writer.js";
+import { writeMcpGatewaySettings, writeMcpServerControls } from "../src/config-writer.js";
 
 const execFileAsync = promisify(execFile);
 const child = fileURLToPath(new URL("./fixtures/config-writer-child.ts", import.meta.url));
@@ -25,6 +25,37 @@ test("writer preserves unknown data and existing permissions while changing only
 		mcpServers: { local: { command: "node", args: ["server.js"], unknown: "keep", disabled: true, directTools: ["read"] } },
 	});
 	assert.equal(statSync(path).mode & 0o777, 0o640);
+});
+
+test("gateway writer narrowly replaces and removes settings.gateway", async () => {
+	const home = temporaryHome();
+	const path = join(home, ".pi", "agent", "mcp.json");
+	mkdirSync(join(path, ".."), { recursive: true });
+	writeFileSync(path, JSON.stringify({ keep: { value: true }, settings: { directTools: true, unknown: "keep", gateway: { mode: "tailscale" } }, mcpServers: { local: { command: "node" } } }), { mode: 0o640 });
+	await writeMcpGatewaySettings({ mode: "custom", externalUrl: "https://mcp.example.test/apps", listenAddress: "127.0.0.1" }, { path });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+		keep: { value: true },
+		settings: { directTools: true, unknown: "keep", gateway: { mode: "custom", externalUrl: "https://mcp.example.test/apps", listenAddress: "127.0.0.1" } },
+		mcpServers: { local: { command: "node" } },
+	});
+	assert.equal(statSync(path).mode & 0o777, 0o640);
+	await writeMcpGatewaySettings({ externalUrl: "https://mcp.example.test/canonical/", listenAddress: "127.0.0.1", mode: "custom" } as never, { path });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).settings.gateway, {
+		mode: "custom", externalUrl: "https://mcp.example.test/canonical", listenAddress: "127.0.0.1",
+	});
+	await writeMcpGatewaySettings(undefined, { path });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).settings, { directTools: true, unknown: "keep" });
+});
+
+test("gateway writer validates candidates and composes with queued server updates", async () => {
+	const home = temporaryHome();
+	const path = join(home, ".pi", "agent", "mcp.json");
+	await assert.rejects(writeMcpGatewaySettings({ mode: "custom", externalUrl: "http://unsafe.test", listenAddress: "127.0.0.1" } as never, { path }), /invalid/);
+	await Promise.all([
+		writeMcpGatewaySettings({ mode: "tailscale" }, { path }),
+		writeMcpServerControls({ one: { disabled: true } }, { path }),
+	]);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { settings: { gateway: { mode: "tailscale" } }, mcpServers: { one: { disabled: true } } });
 });
 
 test("writer creates bounded control-only overlays in private mode", async () => {
@@ -74,6 +105,13 @@ test("writer refuses symlink targets and parent directories", async () => {
 	symlinkSync(realAgent, join(symlinkedHome, ".pi", "agent"));
 	await assert.rejects(writeMcpServerControls({ shared: { disabled: true } }, { homeDir: symlinkedHome }), /directory is unsafe/);
 	assert.equal(existsSync(join(realAgent, "agent")), false, "rejected symlink must not create directories in its target");
+
+	const symlinkedPiHome = temporaryHome();
+	const realPi = join(symlinkedPiHome, "real-pi");
+	mkdirSync(join(realPi, "agent"), { recursive: true });
+	symlinkSync(realPi, join(symlinkedPiHome, ".pi"));
+	await assert.rejects(writeMcpServerControls({ shared: { disabled: true } }, { homeDir: symlinkedPiHome }), /directory is unsafe/);
+	assert.equal(existsSync(join(realPi, "agent", "mcp.json")), false, "a symlinked ancestor must not receive the configuration file");
 });
 
 test("non-cooperating writes are detected and merged on retry", async () => {

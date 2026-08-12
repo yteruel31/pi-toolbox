@@ -4,6 +4,7 @@ import type { McpUiSettings } from "../config.js";
 import { INTERNAL_SECRET_HEADER, type Registration, type Session } from "../gateway/protocol.js";
 import type { ServerConfig } from "../mcp/config.js";
 import { McpServerManager } from "../mcp/manager.js";
+import type { GatewayExposure } from "../gateway/exposure.js";
 import type { RouteState } from "../tailscale.js";
 import { StoredOAuthProvider } from "./provider.js";
 import { OAuthStore } from "./store.js";
@@ -14,7 +15,7 @@ interface OAuthGateway {
 	unregister(session: Session): Promise<unknown>;
 }
 
-interface OAuthTailscale {
+interface LegacyOAuthTailscale {
 	status(settings: McpUiSettings): Promise<{ state: RouteState; target: string }>;
 }
 
@@ -74,7 +75,7 @@ export class OAuthCoordinator {
 		private readonly servers: Map<string, ServerConfig>,
 		private readonly settings: McpUiSettings,
 		private readonly gateway: OAuthGateway,
-		private readonly tailscale: OAuthTailscale,
+		private readonly exposure: GatewayExposure | LegacyOAuthTailscale,
 		private readonly store = new OAuthStore(),
 		options: OAuthCoordinatorOptions = {},
 	) {
@@ -106,9 +107,8 @@ export class OAuthCoordinator {
 		const config = this.servers.get(name);
 		if (!config) throw new Error(`Unknown MCP server: ${name}`);
 		if (config.transport === "stdio") throw new Error(`OAuth is unavailable for MCP server ${name}`);
-		if ((await this.tailscale.status(this.settings)).state !== "matching") {
-			throw new Error("Tailscale gateway route is not configured; run /mcp-gateway setup");
-		}
+		if ("verify" in this.exposure) await this.exposure.verify();
+		else if ((await this.exposure.status(this.settings)).state !== "matching") throw new Error("MCP gateway is not configured");
 		if (this.closed) throw new Error("OAuth coordinator is closed");
 
 		const secret = randomBytes(32).toString("base64url");
@@ -256,12 +256,14 @@ export class OAuthCoordinator {
 		clearInterval(attempt.heartbeat);
 		clearTimeout(attempt.timeout);
 		attempt.secret = "";
-		await this.manager.cancelAuth(name);
-		await Promise.allSettled([
+		const cleanup = await Promise.allSettled([
+			this.manager.cancelAuth(name),
 			this.gateway.unregister(attempt.session),
 			this.closeServer(attempt.server),
 			attempt.provider.clearFlowMaterial(),
 		]);
+		const failures = cleanup.filter((result) => result.status === "rejected");
+		if (failures.length) throw new AggregateError(failures.map((result) => (result as PromiseRejectedResult).reason), "OAuth cleanup failed");
 	}
 
 	async close(): Promise<void> {
@@ -269,7 +271,9 @@ export class OAuthCoordinator {
 		this.closed = true;
 		this.closePromise = (async () => {
 			await Promise.allSettled([...this.starts.values()]);
-			await Promise.all([...this.attempts.keys()].map((name) => this.cleanup(name)));
+			const cleanup = await Promise.allSettled([...this.attempts.keys()].map((name) => this.cleanup(name)));
+			const failures = cleanup.filter((result) => result.status === "rejected");
+			if (failures.length) throw new AggregateError(failures.map((result) => (result as PromiseRejectedResult).reason), "OAuth coordinator cleanup failed");
 		})();
 		return this.closePromise;
 	}

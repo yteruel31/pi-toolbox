@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { getMcpConfigPaths, parseDirectTools, type McpServerControls } from "./config.js";
+import { getMcpConfigPaths, parseDirectTools, parseGatewaySettings, type McpGatewaySettings, type McpServerControls } from "./config.js";
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const JSON_NUMBER = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/;
@@ -101,22 +101,22 @@ function sameRevision(left: Revision, right: Revision): boolean {
 }
 
 async function prepareSafeParent(path: string): Promise<void> {
-	const missing: string[] = [];
+	const directories: string[] = [];
 	let current = dirname(path);
 	for (;;) {
+		directories.push(current);
+		const parent = dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
+	for (const directory of directories.reverse()) {
 		try {
-			const info = await lstat(current);
+			const info = await lstat(directory);
 			if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Pi MCP configuration directory is unsafe");
-			break;
+			continue;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			missing.push(current);
-			const parent = dirname(current);
-			if (parent === current) throw new Error("Pi MCP configuration directory is unavailable");
-			current = parent;
 		}
-	}
-	for (const directory of missing.reverse()) {
 		try { await mkdir(directory, { mode: 0o700 }); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
 		const info = await lstat(directory);
@@ -170,6 +170,12 @@ async function acquireLock(path: string): Promise<{ close(): Promise<void> }> {
 	throw new Error("Pi MCP configuration is busy; remove its .lock file only if no Pi process is editing it");
 }
 
+function encodeRoot(root: Record<string, unknown>): string {
+	const encoded = `${JSON.stringify(root, null, 2)}\n`;
+	if (Buffer.byteLength(encoded) > MAX_CONFIG_BYTES) throw new Error("Pi MCP configuration is too large");
+	return encoded;
+}
+
 function applyUpdates(root: Record<string, unknown>, updates: Readonly<Record<string, McpServerControls>>): string {
 	const existingServers = root.mcpServers;
 	if (existingServers !== undefined && (!isPlainObject(existingServers) || hasUnsafeValue(existingServers))) {
@@ -182,18 +188,28 @@ function applyUpdates(root: Record<string, unknown>, updates: Readonly<Record<st
 		servers[name] = { ...(current ?? {}), ...controls };
 	}
 	root.mcpServers = servers;
-	const encoded = `${JSON.stringify(root, null, 2)}\n`;
-	if (Buffer.byteLength(encoded) > MAX_CONFIG_BYTES) throw new Error("Pi MCP configuration is too large");
-	return encoded;
+	return encodeRoot(root);
 }
 
-/** Atomically updates only panel-managed fields in the Pi-owned global MCP config. */
-export async function writeMcpServerControls(
-	updates: Readonly<Record<string, McpServerControls>>,
-	options: { homeDir?: string; path?: string } = {},
+function applyGateway(root: Record<string, unknown>, gateway: McpGatewaySettings | undefined): string {
+	const existing = root.settings;
+	if (existing !== undefined && (!isPlainObject(existing) || hasUnsafeValue(existing))) throw new Error("Pi MCP settings configuration is unsafe");
+	if (gateway === undefined) {
+		if (isPlainObject(existing)) delete existing.gateway;
+	} else {
+		const parsed = parseGatewaySettings(gateway);
+		if (!parsed) throw new Error("MCP gateway settings are invalid");
+		const settings = existing ?? {};
+		settings.gateway = { ...parsed };
+		root.settings = settings;
+	}
+	return encodeRoot(root);
+}
+
+async function writeMcpConfig(
+	mutate: (root: Record<string, unknown>) => string,
+	options: { homeDir?: string; path?: string },
 ): Promise<string> {
-	for (const [name, controls] of Object.entries(updates)) validateControls(name, controls);
-	if (!Object.keys(updates).length) throw new Error("No MCP server updates were provided");
 	const path = options.path ?? getMcpConfigPaths(options.homeDir ?? homedir())[1];
 	return withFileMutationQueue(path, async () => {
 		await prepareSafeParent(path);
@@ -201,7 +217,7 @@ export async function writeMcpServerControls(
 		try {
 			for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
 				const { root, revision } = await readRoot(path);
-				const encoded = applyUpdates(root, updates);
+				const encoded = mutate(root);
 				const encodedHash = createHash("sha256").update(encoded).digest("hex");
 				const temporary = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
 				try {
@@ -220,4 +236,23 @@ export async function writeMcpServerControls(
 			throw new Error("Pi MCP configuration changed concurrently; retry the save");
 		} finally { await lock.close(); }
 	});
+}
+
+/** Atomically updates only panel-managed fields in the Pi-owned global MCP config. */
+export async function writeMcpServerControls(
+	updates: Readonly<Record<string, McpServerControls>>,
+	options: { homeDir?: string; path?: string } = {},
+): Promise<string> {
+	for (const [name, controls] of Object.entries(updates)) validateControls(name, controls);
+	if (!Object.keys(updates).length) throw new Error("No MCP server updates were provided");
+	return writeMcpConfig((root) => applyUpdates(root, updates), options);
+}
+
+/** Atomically replaces or removes only settings.gateway in the Pi-owned global MCP config. */
+export async function writeMcpGatewaySettings(
+	gateway: McpGatewaySettings | undefined,
+	options: { homeDir?: string; path?: string } = {},
+): Promise<string> {
+	if (gateway !== undefined && !parseGatewaySettings(gateway)) throw new Error("MCP gateway settings are invalid");
+	return writeMcpConfig((root) => applyGateway(root, gateway), options);
 }
