@@ -100,6 +100,21 @@ test("invalid-server feedback strips terminal control sequences from configured 
 	assert.doesNotMatch(output, /\u001b\]52|\u0007|\u202e/);
 });
 
+test("unconfigured OAuth offers a non-nested gateway panel handoff", () => {
+	let result: McpPanelResult | null | undefined;
+	let authCalls = 0;
+	const subject = new McpPanel({
+		theme, servers, gatewayConfigured: false, onRender: () => undefined, onDone: (value) => { result = value; },
+		onReconnect: async () => undefined,
+		onAuthenticate: async () => { authCalls++; return "copied"; },
+	});
+	subject.handleInput("a");
+	assert.equal(authCalls, 0);
+	assert.match(subject.render(100).join("\n"), /Gateway not configured; press g/);
+	subject.handleInput("g");
+	assert.deepEqual(result, { openGateway: true });
+});
+
 test("panel strips terminal control sequences from remote metadata", () => {
 	const hostile: McpStatusServer[] = [{ ...servers[0]!, tools: [{ name: "read\u001b[2J", description: "safe\u001b]8;;https://evil.test\u0007link", selected: false }] }];
 	const subject = new McpPanel({ theme, servers: hostile, onRender: () => undefined, onDone: () => undefined, onReconnect: async () => undefined, onAuthenticate: async () => "copied" });

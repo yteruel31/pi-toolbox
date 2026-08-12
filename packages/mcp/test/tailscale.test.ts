@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_UI_SETTINGS } from "../src/config.js";
-import { TailscaleAdapter } from "../src/tailscale.js";
+import { TailscaleAdapter, TailscaleMutationError } from "../src/tailscale.js";
 
 const settings = { ...DEFAULT_UI_SETTINGS };
 function serveStatus(proxy?: string, extra: Record<string, unknown> = {}) {
@@ -60,7 +60,7 @@ test("setup preserves unrelated handlers, uses exact argv, and verifies the resu
 		configured = true;
 		return { stdout: "" };
 	});
-	assert.equal(await adapter.setup(settings), "matching");
+	assert.deepEqual(await adapter.setup(settings), { state: "matching", changed: true });
 	assert.deepEqual(calls, [
 		["serve", "status", "--json"],
 		["serve", "--bg", "--https=8443", "--set-path=/mcp-ui", "http://127.0.0.1:19877"],
@@ -77,7 +77,9 @@ test("setup fails when Tailscale exits successfully without installing the route
 		return args[1] === "status" ? { stdout: JSON.stringify(serveStatus()) } : { stdout: marker };
 	});
 	await assert.rejects(adapter.setup(settings), (error: Error) => {
-		assert.match(error.message, /route was not configured/);
+		assert.ok(error instanceof TailscaleMutationError);
+		assert.equal(error.operation, "setup");
+		assert.equal(error.changed, true);
 		assert.doesNotMatch(error.message, new RegExp(marker));
 		return true;
 	});
@@ -88,15 +90,36 @@ test("setup fails when Tailscale exits successfully without installing the route
 	]);
 });
 
-test("matching setup is idempotent and exact removal uses off", async () => {
+test("matching setup is idempotent and exact removal verifies absence", async () => {
 	const calls: string[][] = [];
+	let configured = true;
 	const adapter = new TailscaleAdapter(async (args) => {
 		calls.push([...args]);
-		return { stdout: JSON.stringify(serveStatus("http://127.0.0.1:19877")) };
+		if (args[1] === "status") return { stdout: JSON.stringify(serveStatus(configured ? "http://127.0.0.1:19877" : undefined)) };
+		configured = false;
+		return { stdout: "" };
 	});
-	assert.equal(await adapter.setup(settings), "matching");
-	assert.equal(await adapter.remove(settings), "matching");
-	assert.deepEqual(calls.at(-1), ["serve", "--https=8443", "--set-path=/mcp-ui", "off"]);
+	assert.deepEqual(await adapter.setup(settings), { state: "matching", changed: false });
+	assert.deepEqual(await adapter.remove(settings), { state: "absent", changed: true });
+	assert.deepEqual(calls.slice(-2), [
+		["serve", "--https=8443", "--set-path=/mcp-ui", "off"],
+		["serve", "status", "--json"],
+	]);
+	assert.deepEqual(await adapter.remove(settings), { state: "absent", changed: false });
+});
+
+test("remove reports issued mutation when a zero-exit command misses its postcondition", async () => {
+	const marker = "SENSITIVE_TAILSCALE_OUTPUT";
+	const adapter = new TailscaleAdapter(async (args) => ({
+		stdout: args[1] === "status" ? JSON.stringify(serveStatus("http://127.0.0.1:19877")) : marker,
+	}));
+	await assert.rejects(adapter.remove(settings), (error: Error) => {
+		assert.ok(error instanceof TailscaleMutationError);
+		assert.equal(error.operation, "remove");
+		assert.equal(error.changed, true);
+		assert.doesNotMatch(error.message, new RegExp(marker));
+		return true;
+	});
 });
 
 test("conflicts, malformed status, and binary failures never mutate", async () => {
@@ -105,8 +128,8 @@ test("conflicts, malformed status, and binary failures never mutate", async () =
 		calls.push([...args]);
 		return { stdout: JSON.stringify(serveStatus("http://127.0.0.1:9")) };
 	});
-	await assert.rejects(conflict.setup(settings), /owned/);
-	await assert.rejects(conflict.remove(settings), /Refusing/);
+	await assert.rejects(conflict.setup(settings), /setup failed/);
+	await assert.rejects(conflict.remove(settings), /remove failed/);
 	assert.ok(calls.every((call) => call.join(" ") === "serve status --json"));
 	await assert.rejects(new TailscaleAdapter(async () => ({ stdout: "{" })).status(settings), /Malformed/);
 	await assert.rejects(new TailscaleAdapter(async () => { throw new Error("secret command output"); }).status(settings), /unavailable/);

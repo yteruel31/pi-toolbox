@@ -24,10 +24,40 @@ function homeWith(xdg: unknown, pi?: unknown): string {
 	return home;
 }
 
-test("uses defaults when files are missing", () => {
+test("uses defaults with no implicit gateway mode when files are missing", () => {
 	const result = loadMcpConfig({ homeDir: join(tmpdir(), "definitely-missing-pi-mcp") });
 	assert.deepEqual(result.settings.ui, DEFAULT_UI_SETTINGS);
+	assert.equal(result.settings.gateway, undefined);
 	assert.deepEqual(result.diagnostics, []);
+});
+
+test("parses explicit gateway modes and canonicalizes custom HTTPS URLs", () => {
+	const tailscale = loadMcpConfig({ homeDir: homeWith({}, { settings: { gateway: { mode: "tailscale" } } }) });
+	assert.deepEqual(tailscale.settings.gateway, { mode: "tailscale" });
+	const custom = loadMcpConfig({ homeDir: homeWith({}, { settings: { gateway: { mode: "custom", externalUrl: "https://mcp.example.test/apps/", listenAddress: "0.0.0.0" } } }) });
+	assert.deepEqual(custom.settings.gateway, { mode: "custom", externalUrl: "https://mcp.example.test/apps", listenAddress: "0.0.0.0" });
+	const root = loadMcpConfig({ homeDir: homeWith({}, { settings: { gateway: { mode: "custom", externalUrl: "https://mcp.example.test/", listenAddress: "::" } } }) });
+	assert.deepEqual(root.settings.gateway, { mode: "custom", externalUrl: "https://mcp.example.test", listenAddress: "::" });
+});
+
+test("gateway layers are fail-soft and unsupported custom values remain unconfigured", () => {
+	const layered = loadMcpConfig({ homeDir: homeWith(
+		{ settings: { gateway: { mode: "tailscale" } } },
+		{ settings: { gateway: { mode: "custom", externalUrl: "http://user:secret@example.test/path?token=x#bad", listenAddress: "host name" } } },
+	) });
+	assert.equal(layered.settings.gateway, undefined);
+	assert.ok(layered.diagnostics.some((item) => item.code === "invalid-gateway"));
+	assert.doesNotMatch(JSON.stringify(layered.diagnostics), /secret|token/);
+	for (const gateway of [
+		{ mode: "custom", externalUrl: "http://example.test", listenAddress: "127.0.0.1" },
+		{ mode: "custom", externalUrl: "https://example.test?x=1", listenAddress: "127.0.0.1" },
+		{ mode: "custom", externalUrl: "https://example.test", listenAddress: "localhost" },
+		{ mode: "tailscale", extra: true },
+	]) {
+		const result = loadMcpConfig({ homeDir: homeWith({}, { settings: { gateway } }) });
+		assert.equal(result.settings.gateway, undefined);
+		assert.equal(result.diagnostics[0]?.code, "invalid-gateway");
+	}
 });
 
 test("merges server maps and lets Pi replace matching names and augment UI", () => {

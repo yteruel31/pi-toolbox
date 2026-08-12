@@ -1,8 +1,17 @@
 import { createHash } from "node:crypto";
 import type { McpUiSettings } from "../config.js";
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const INTERNAL_SECRET_HEADER = "x-pi-mcp-backend-secret";
+
+export interface GatewayDaemonSettings {
+	externalUrl: string;
+	listenAddress: string;
+	gatewayPort: number;
+	basePath: string;
+	requireTailscaleIdentity: boolean;
+	idleTimeoutMs: number;
+}
 
 export interface Registration {
 	label: string;
@@ -15,8 +24,16 @@ export interface Session {
 	leaseSecret: string;
 	externalUrl: string;
 }
-export function settingsSignature(settings: McpUiSettings): string {
-	return createHash("sha256").update(JSON.stringify(settings)).digest("hex");
+export function settingsSignature(settings: McpUiSettings | GatewayDaemonSettings): string {
+	const canonical = "externalUrl" in settings ? {
+		externalUrl: settings.externalUrl,
+		listenAddress: settings.listenAddress,
+		gatewayPort: settings.gatewayPort,
+		basePath: settings.basePath,
+		requireTailscaleIdentity: settings.requireTailscaleIdentity,
+		idleTimeoutMs: settings.idleTimeoutMs,
+	} : settings;
+	return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 export function isLoopbackOrigin(value: string): boolean {
 	try {

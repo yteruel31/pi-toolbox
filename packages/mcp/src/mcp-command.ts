@@ -1,11 +1,15 @@
-import { copyToClipboard, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { safeAuthorizationUrl } from "./auth/coordinator.js";
 import { writeMcpServerControls } from "./config-writer.js";
 import { mcpStatusSnapshot, mcpStatusText } from "./mcp/status.js";
 import type { McpRuntime } from "./runtime.js";
 import { McpPanel, type McpPanelResult } from "./tui/mcp-panel.js";
 
-export function registerMcpCommand(pi: ExtensionAPI, getRuntime: () => McpRuntime | undefined): void {
+export function registerMcpCommand(
+	pi: ExtensionAPI,
+	getRuntime: () => McpRuntime | undefined,
+	openGateway?: (context: ExtensionCommandContext) => Promise<void>,
+): void {
 	pi.registerCommand("mcp", {
 		description: "Inspect and configure MCP servers",
 		getArgumentCompletions: () => null,
@@ -32,6 +36,7 @@ export function registerMcpCommand(pi: ExtensionAPI, getRuntime: () => McpRuntim
 				const panel = new McpPanel({
 					theme,
 					servers: mcpStatusSnapshot(runtime),
+					gatewayConfigured: runtime.gatewayConfigured,
 					onRender: () => tui.requestRender(),
 					onDone: finish,
 					onReconnect: async (server) => { await runtime.manager.connect(server, true); },
@@ -47,7 +52,13 @@ export function registerMcpCommand(pi: ExtensionAPI, getRuntime: () => McpRuntim
 				return panel;
 			}, { overlay: true, overlayOptions: { width: "85%", minWidth: 60, maxHeight: "85%", anchor: "center", margin: 1 } });
 
-			if (!result || !Object.keys(result.updates).length) return;
+			if (!result) return;
+			if ("openGateway" in result) {
+				if (openGateway) await openGateway(ctx);
+				else ctx.ui.notify("Run /mcp-gateway to configure publication.", "warning");
+				return;
+			}
+			if (!Object.keys(result.updates).length) return;
 			try {
 				await writeMcpServerControls(result.updates);
 			} catch {

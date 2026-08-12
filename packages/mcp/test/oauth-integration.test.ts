@@ -264,7 +264,7 @@ interface FakeAuthHarness {
 
 async function fakeAuthHarness(
 	routeState: "matching" | "absent" | "conflicting" = "matching",
-	options: { heartbeatMs?: number; timeoutMs?: number; finishError?: Error } = {},
+	options: { heartbeatMs?: number; timeoutMs?: number; finishError?: Error; cancelError?: Error } = {},
 ): Promise<FakeAuthHarness> {
 	const settings = { ...DEFAULT_UI_SETTINGS };
 	const serverConfig: HttpServerConfig = { name: "server", url: new URL("https://server.invalid/mcp"), headers: {} };
@@ -282,7 +282,7 @@ async function fakeAuthHarness(
 			finished.push(code);
 			return {} as never;
 		},
-		async cancelAuth() {},
+		async cancelAuth() { if (options.cancelError) throw options.cancelError; },
 	} as unknown as McpServerManager;
 	const gateway = {
 		async register() {
@@ -291,9 +291,9 @@ async function fakeAuthHarness(
 		async heartbeat() {},
 		async unregister() { unregistered++; },
 	};
-	const tailscale = { async status() { return { state: routeState, target: "http://127.0.0.1:19877" }; } };
+	const exposure = { async verify() { if (routeState !== "matching") throw new Error("MCP gateway is not configured"); } };
 	const store = new OAuthStore(await temporaryDirectory("pi-oauth-validation-"));
-	const coordinator = new OAuthCoordinator(manager, servers, settings, gateway, tailscale, store, { timeoutMs: 5_000, ...options });
+	const coordinator = new OAuthCoordinator(manager, servers, settings, gateway, exposure, store, { timeoutMs: 5_000, ...options });
 	const started = routeState === "matching" ? await coordinator.begin("server") : undefined;
 	return {
 		coordinator,
@@ -350,6 +350,12 @@ test("OAuth coordinator shutdown cleans an active attempt and is terminal", asyn
 	await assert.rejects(harness.coordinator.begin("server"), /closed/);
 });
 
+test("OAuth shutdown still unregisters its callback lease when manager cancellation fails", async () => {
+	const harness = await fakeAuthHarness("matching", { cancelError: new Error("CANCEL_SECRET") });
+	await assert.rejects(harness.coordinator.close(), /cleanup failed/);
+	assert.equal(harness.unregistered, 1);
+});
+
 test("OAuth attempt timeout unregisters its callback lease", async () => {
 	const harness = await fakeAuthHarness("matching", { timeoutMs: 20 });
 	await waitUntil(() => harness.unregistered === 1);
@@ -357,14 +363,14 @@ test("OAuth attempt timeout unregisters its callback lease", async () => {
 	await harness.coordinator.close();
 });
 
-test("OAuth start refuses absent or conflicting Tailscale routes without gateway registration", async () => {
+test("OAuth start refuses unverified gateway exposure without gateway registration", async () => {
 	for (const routeState of ["absent", "conflicting"] as const) {
 		const settings = { ...DEFAULT_UI_SETTINGS };
 		const config: HttpServerConfig = { name: "server", url: new URL("https://server.invalid/mcp"), headers: {} };
 		let registrations = 0;
 		const gateway = { async register() { registrations++; throw new Error("must not register"); }, async heartbeat() {}, async unregister() {} };
-		const tailscale = { async status() { return { state: routeState, target: "http://127.0.0.1:19877" }; } };
-		const coordinator = new OAuthCoordinator({} as McpServerManager, new Map([["server", config]]), settings, gateway, tailscale, new OAuthStore(await temporaryDirectory("pi-oauth-route-")));
+		const exposure = { async verify() { throw new Error("MCP gateway is not configured"); } };
+		const coordinator = new OAuthCoordinator({} as McpServerManager, new Map([["server", config]]), settings, gateway, exposure, new OAuthStore(await temporaryDirectory("pi-oauth-route-")));
 		await assert.rejects(coordinator.begin("server"), /not configured/);
 		assert.equal(registrations, 0);
 		await coordinator.close();

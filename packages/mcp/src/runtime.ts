@@ -7,6 +7,7 @@ import { OAuthCoordinator } from "./auth/coordinator.js";
 import { OAuthStore } from "./auth/store.js";
 import { StoredOAuthProvider } from "./auth/provider.js";
 import { GatewayClient } from "./gateway/client.js";
+import { CustomGatewayExposure, TailscaleGatewayExposure, type GatewayExposure } from "./gateway/exposure.js";
 import { TailscaleAdapter } from "./tailscale.js";
 import { McpAppController } from "./apps/controller.js";
 import { AppPublisher, type AppPublicationStatus } from "./apps/publisher.js";
@@ -135,6 +136,7 @@ export class McpRuntime {
 	readonly serverConfigs: ReturnType<typeof parseServerConfigs>["servers"];
 	readonly disabledServers: ReturnType<typeof parseServerConfigs>["disabled"];
 	readonly coordinator?: OAuthCoordinator;
+	readonly gatewayConfigured: boolean;
 	readonly apps: McpAppController;
 	readonly publisher?: AppPublisher;
 	readonly diagnostics;
@@ -153,6 +155,7 @@ export class McpRuntime {
 		if (manager) {
 			this.manager = manager;
 			this.coordinator = coordinator;
+			this.gatewayConfigured = !!coordinator;
 			this.apps = apps ?? new McpAppController(manager);
 			this.publisher = options.publisher;
 			return;
@@ -180,23 +183,39 @@ export class McpRuntime {
 			sampling: samplingEnabled ? (server, params, signal) => guarded(() => sample(server, params, context!, autoApprove, requestSignal(signal))) : undefined,
 			elicitation: elicitationEnabled ? (server, params, signal) => guarded(() => elicitForm(server, params, context!.ui, requestSignal(signal))) : undefined,
 		});
-		const settings = { ...DEFAULT_UI_SETTINGS, ...config.settings.ui };
+		const baseSettings = { ...DEFAULT_UI_SETTINGS, ...config.settings.ui };
 		const tailscale = options.tailscale ?? new TailscaleAdapter();
-		const gateway = options.gateway ?? new GatewayClient({ settings, hostnameResolver: async () => {
-			if (settings.hostname !== "auto") return settings.hostname;
-			const hostname = await tailscale.hostname(); if (!hostname) throw new Error("Tailscale hostname unavailable"); return hostname;
-		} });
-		this.coordinator = new OAuthCoordinator(this.manager, parsed.servers, settings, gateway, tailscale, store);
+		const publication = config.settings.gateway;
+		this.gatewayConfigured = publication !== undefined;
 		let activePublisher: AppPublisher | undefined;
 		this.apps = apps ?? new McpAppController(this.manager, {
 			onChange: (current) => { void activePublisher?.reconcile(current); },
 		});
+		if (!publication) {
+			this.coordinator = undefined;
+			this.publisher = options.publisher;
+			activePublisher = this.publisher;
+			return;
+		}
+		const settings = publication.mode === "tailscale"
+			? { ...baseSettings, requireTailscaleIdentity: true }
+			: { ...baseSettings, basePath: new URL(publication.externalUrl).pathname || "/", requireTailscaleIdentity: false };
+		const gateway = options.gateway ?? (publication.mode === "tailscale"
+			? new GatewayClient({ settings, hostnameResolver: async () => {
+				if (settings.hostname !== "auto") return settings.hostname;
+				const hostname = await tailscale.hostname(); if (!hostname) throw new Error("Tailscale hostname unavailable"); return hostname;
+			} })
+			: new GatewayClient({ settings, externalUrlResolver: async () => publication.externalUrl, listenAddress: publication.listenAddress }));
+		const exposure: GatewayExposure = publication.mode === "tailscale"
+			? new TailscaleGatewayExposure(settings, tailscale, gateway)
+			: new CustomGatewayExposure(gateway);
+		this.coordinator = new OAuthCoordinator(this.manager, parsed.servers, settings, gateway, exposure, store);
 		this.publisher = options.publishApps === false
 			? undefined
 			: options.publisher ?? new AppPublisher({
 				settings,
 				gateway,
-				tailscale,
+				exposure,
 				backend: () => this.apps.backend(),
 				onStatus: options.onUiStatus,
 			});
@@ -249,7 +268,7 @@ export class McpRuntime {
 				const result = await this.manager.getPrompt(input.server, input.args.name, values as Record<string, string>, signal);
 				return this.renderBlocks(result.messages.map((message) => message.content), { server: input.server, action: input.action, prompt: utf8Prefix(input.args.name, 500) }, "MCP prompt returned no messages.");
 			}
-			if (!this.coordinator) throw new Error("MCP OAuth is unavailable");
+			if (!this.coordinator) throw new Error(this.gatewayConfigured ? "MCP OAuth is unavailable" : "MCP gateway is not configured");
 			if (input.action === "auth-start") {
 				if (input.args !== undefined) throw new Error("auth-start does not accept args");
 				const result = await this.coordinator.begin(input.server);
@@ -351,10 +370,14 @@ export class McpRuntime {
 
 	async close(): Promise<void> {
 		this.clientRequestAbort.abort();
-		await this.apps.close();
-		await this.publisher?.close();
-		await this.coordinator?.close();
-		await this.manager.close();
+		const cleanup = await Promise.allSettled([
+			this.apps.close(),
+			this.publisher?.close(),
+			this.coordinator?.close(),
+		]);
+		const manager = await Promise.allSettled([this.manager.close()]);
+		const failures = [...cleanup, ...manager].filter((result) => result.status === "rejected");
+		if (failures.length) throw new AggregateError(failures.map((result) => (result as PromiseRejectedResult).reason), "MCP runtime cleanup failed");
 	}
 
 	private list(name: string): AgentToolResult<Details> {

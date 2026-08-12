@@ -5,6 +5,12 @@ import type { McpUiSettings } from "./config.js";
 const execFile = promisify(execFileCallback);
 export interface TailscaleExec { (args: readonly string[]): Promise<{ stdout: string }> }
 export type RouteState = "absent" | "matching" | "conflicting";
+export interface RouteMutationResult { state: "absent" | "matching"; changed: boolean; }
+export class TailscaleMutationError extends Error {
+	constructor(readonly operation: "setup" | "remove", readonly changed: boolean) {
+		super(`Tailscale Serve ${operation} failed`);
+	}
+}
 
 const TAILSCALE_TIMEOUT_MS = 5_000;
 export class TailscaleAdapter {
@@ -40,22 +46,36 @@ export class TailscaleAdapter {
 		} catch { throw new Error("Malformed Tailscale status"); }
 	}
 
-	async setup(settings: McpUiSettings): Promise<RouteState> {
+	async setup(settings: McpUiSettings): Promise<RouteMutationResult> {
 		const status = await this.status(settings);
-		if (status.state === "conflicting") throw new Error("Tailscale Serve route is owned by another target");
-		if (status.state === "matching") return status.state;
-		await this.safeRun(["serve", "--bg", `--https=${settings.httpsPort}`, `--set-path=${settings.basePath}`, status.target]);
-		const verified = await this.status(settings);
-		if (verified.state === "conflicting") throw new Error("Tailscale Serve route is owned by another target");
-		if (verified.state !== "matching") throw new Error("Tailscale Serve route was not configured");
-		return verified.state;
+		if (status.state === "conflicting") throw new TailscaleMutationError("setup", false);
+		if (status.state === "matching") return { state: "matching", changed: false };
+		let changed = false;
+		try {
+			changed = true;
+			await this.safeRun(["serve", "--bg", `--https=${settings.httpsPort}`, `--set-path=${settings.basePath}`, status.target]);
+			const verified = await this.status(settings);
+			if (verified.state !== "matching") throw new Error("postcondition");
+			return { state: "matching", changed };
+		} catch {
+			throw new TailscaleMutationError("setup", changed);
+		}
 	}
 
-	async remove(settings: McpUiSettings): Promise<RouteState> {
+	async remove(settings: McpUiSettings): Promise<RouteMutationResult> {
 		const status = await this.status(settings);
-		if (status.state === "conflicting") throw new Error("Refusing to remove a route owned by another target");
-		if (status.state === "matching") await this.safeRun(["serve", `--https=${settings.httpsPort}`, `--set-path=${settings.basePath}`, "off"]);
-		return status.state;
+		if (status.state === "conflicting") throw new TailscaleMutationError("remove", false);
+		if (status.state === "absent") return { state: "absent", changed: false };
+		let changed = false;
+		try {
+			changed = true;
+			await this.safeRun(["serve", `--https=${settings.httpsPort}`, `--set-path=${settings.basePath}`, "off"]);
+			const verified = await this.status(settings);
+			if (verified.state !== "absent") throw new Error("postcondition");
+			return { state: "absent", changed };
+		} catch {
+			throw new TailscaleMutationError("remove", changed);
+		}
 	}
 
 	private async safeRun(args: readonly string[]): Promise<void> {
