@@ -1,6 +1,6 @@
 {
   "name": "pi-toolbox",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "private": true,
   "type": "module",
   "description": "Pi extensions including an MCP client and capability gateway.",
