@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerGatewayCommand } from "./commands.js";
+import { openGatewayPanel, registerGatewayCommand } from "./commands.js";
 import { loadMcpConfig } from "./config.js";
 import { McpRuntime, registerMcpTool } from "./runtime.js";
 import { appStatusText } from "./apps/status.js";
@@ -12,16 +12,38 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 	let runtime: McpRuntime | undefined;
 	let unsubscribeStatus: (() => void) | undefined;
 	let lifecycle: Promise<void> = Promise.resolve();
+	let maintenanceQueue: Promise<unknown> = Promise.resolve();
+	let maintenanceActive = false;
+	let disposed = false;
 	const enqueueLifecycle = (operation: () => Promise<void>): Promise<void> => {
 		const next = lifecycle.catch(() => undefined).then(operation);
 		lifecycle = next;
 		return next;
 	};
+	const maintenance = <T>(operation: () => Promise<T>): Promise<T> => {
+		const next = maintenanceQueue.catch(() => undefined).then(async () => {
+			if (disposed) throw new Error("MCP extension runtime was replaced");
+			maintenanceActive = true;
+			try { return await operation(); }
+			finally { maintenanceActive = false; }
+		});
+		maintenanceQueue = next;
+		return next;
+	};
 	const directTools = new DirectToolRegistry(pi);
-	registerGatewayCommand(pi);
-	registerMcpCommand(pi, () => runtime);
+	const quiesce = (): Promise<void> => enqueueLifecycle(async () => {
+		const previous = runtime;
+		runtime = undefined;
+		unsubscribeStatus?.(); unsubscribeStatus = undefined;
+		directTools.detach(previous);
+		await previous?.close();
+	});
+	const gatewayDependencies = { quiesce, maintenance };
+	registerGatewayCommand(pi, gatewayDependencies);
+	registerMcpCommand(pi, () => runtime, (context) => openGatewayPanel(context, gatewayDependencies));
 	registerMcpTool(pi, () => runtime);
 	pi.on("session_start", (_event, ctx) => enqueueLifecycle(async () => {
+		if (maintenanceActive || disposed) return;
 		const previous = runtime;
 		unsubscribeStatus?.(); unsubscribeStatus = undefined;
 		directTools.detach(previous);
@@ -47,7 +69,9 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		renderStatus();
 		directTools.startDiscovery(current);
 	}));
-	pi.on("session_shutdown", (_event, ctx) => enqueueLifecycle(async () => {
+	pi.on("session_shutdown", (_event, ctx) => {
+		disposed = true;
+		return enqueueLifecycle(async () => {
 		const previous = runtime;
 		runtime = undefined;
 		unsubscribeStatus?.(); unsubscribeStatus = undefined;
@@ -55,11 +79,12 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		await previous?.close();
 		ctx?.ui.setStatus("mcp-ui", undefined);
 		ctx?.ui.setStatus("mcp-status", undefined);
-	}));
+		});
+	});
 }
 
 export { DEFAULT_UI_SETTINGS, getMcpConfigPaths, loadMcpConfig } from "./config.js";
-export type { ConfigDiagnostic, DirectToolsSetting, McpConfig, McpServerControls, McpServerDefinition, McpUiSettings } from "./config.js";
+export type { ConfigDiagnostic, DirectToolsSetting, McpConfig, McpGatewaySettings, McpServerControls, McpServerDefinition, McpUiSettings } from "./config.js";
 export { GatewayClient } from "./gateway/client.js";
 export { TailscaleAdapter } from "./tailscale.js";
 export { McpAppController } from "./apps/controller.js";

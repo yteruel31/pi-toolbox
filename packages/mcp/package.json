@@ -2,7 +2,7 @@
   "name": "pi-mcp",
   "version": "0.1.0",
   "type": "module",
-  "description": "Phase-2 private Tailnet MCP client and Apps gateway for Pi.",
+  "description": "MCP client and capability gateway for Pi.",
   "keywords": [
     "pi-package",
     "pi",

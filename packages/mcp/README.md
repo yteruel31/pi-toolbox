@@ -1,6 +1,6 @@
 # pi-mcp
 
-Private Tailnet MCP client and Apps gateway for Pi. Phase 2 is implemented for the approved Mobbin/Tailnet scope: the package connects Streamable HTTP, legacy SSE, and stdio MCP servers, hosts Apps on loopback, and lazily publishes active sessions through the configured Tailscale Serve route with a private dashboard and persistent Pi status link. It is not a universal `pi-mcp-adapter` replacement; see the [parity matrix and migration runbook](./PARITY.md).
+MCP client and capability gateway for Pi. The package connects Streamable HTTP, legacy SSE, and stdio MCP servers, hosts Apps on loopback, and lazily publishes active sessions through either managed Tailscale Serve or a user-managed HTTPS reverse proxy, with a dashboard and persistent Pi status link. It is not a universal `pi-mcp-adapter` replacement; see the [parity matrix and migration runbook](./PARITY.md).
 
 ## Configuration contract
 
@@ -17,6 +17,11 @@ Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/
   },
   "settings": {
     "directTools": false,
+    "gateway": {
+      "mode": "custom",
+      "externalUrl": "https://mcp.example.com/mcp-ui",
+      "listenAddress": "127.0.0.1"
+    },
     "ui": {
       "hostname": "auto",
       "httpsPort": 8443,
@@ -31,6 +36,8 @@ Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/
   }
 }
 ```
+
+`settings.gateway` is a Pi-owned global setting accepted only from `~/.pi/agent/mcp.json`; this ensures panel deactivation cannot be overridden by a lower layer. It is optional and has no implicit default: until `/mcp-gateway` saves either `{ "mode": "tailscale" }` or a validated custom configuration, OAuth callbacks and remote App publication remain disabled. A custom `externalUrl` must be HTTPS without credentials, query, or fragment; its optional path is preserved. `listenAddress` must be an IP literal and defaults to `127.0.0.1` in the panel.
 
 URL definitions may explicitly select `streamable-http` or legacy `sse`; when omitted, Pi tries Streamable HTTP and falls back to SSE only when the modern endpoint is unsupported. Adapter-compatible `auth: "oauth"` and `lifecycle: "lazy"` markers are accepted because they match this runtime's OAuth discovery and lazy lifecycle. Bearer authentication helpers and non-lazy lifecycle modes remain unsupported and fail closed rather than being silently ignored. Stdio definitions use `{ "command": "executable", "args": [], "env": {}, "cwd": "..." }`; they may also include the compatible `lifecycle: "lazy"` marker. Add `disabled: true` to keep a server configured while preventing connection, discovery, and direct-tool registration. Commands are spawned directly without a shell. Configured stdio commands execute trusted local code with the user's privileges; only configure commands you trust. Configuration values and child stderr are never exposed in model-visible errors. `idleTimeoutMs` must be between 15 seconds and 24 hours so capability heartbeats and bounded gateway operations can complete before lease expiry.
 
@@ -51,11 +58,18 @@ Run `/mcp` in TUI mode to open the server panel. It shows live connection, OAuth
 
 The footer uses the separate `mcp-status` slot to show a compact connected/enabled count and authentication or error totals. It updates on lifecycle transitions without connecting merely to calculate status. The existing `mcp-ui` slot remains reserved for the private MCP Apps publication link.
 
-Panel keys: `↑/↓` navigate, `Enter` expand, `Space` toggle a direct tool, `d` enable/disable, `r` reconnect, `a` authenticate, `/` search, `Ctrl+S` save, and `Esc` cancel.
+Panel keys: `↑/↓` navigate, `Enter` expand, `Space` toggle a direct tool, `d` enable/disable, `r` reconnect, `a` authenticate, `/` search, `Ctrl+S` save, and `Esc` cancel. When publication is unconfigured, `a` explains the requirement and `g` closes `/mcp` before opening the gateway panel.
 
-## Private gateway (U2)
+## Gateway setup (U2)
 
-`/mcp-gateway setup` persistently adds only the configured Tailscale Serve HTTPS path, retains existing Serve routes, and verifies that Tailscale actually installed the route before reporting success. `/mcp-gateway doctor` reports local gateway/config, hostname, and route state. `/mcp-gateway remove [--yes]` removes only an exactly matching route and asks for confirmation unless `--yes` is supplied. The gateway starts on demand, binds its public listener to `127.0.0.1`, and uses private capability URLs; loading the extension starts no service.
+Run `/mcp-gateway` in TUI mode to configure, diagnose, validate, or deactivate publication. The panel offers two explicit modes and no automatic fallback:
+
+- **Managed Tailscale** forces loopback listening and Tailscale identity checks, adds/removes only the exact configured Serve path, and preserves unrelated routes.
+- **Custom HTTPS reverse proxy** stores a full external URL and IP listen address. Pi does not configure or remove the proxy. Configure it to preserve the external URL path when forwarding to the displayed local HTTP target, without interactive authentication that would block OAuth callbacks.
+
+Both setup paths start a short-lived secret-protected backend and require a random challenge to travel through the generated external HTTPS capability URL before configuration is saved. Local daemon reachability alone is never reported as success. Switching modes leaves previous external infrastructure untouched and reports that fact. Deactivation revokes active sessions; custom deactivation clears only Pi's configuration.
+
+The gateway starts on demand and loading the extension starts no service. Custom non-loopback listening exposes cleartext capability endpoints on the selected interface; network access policy and reverse-proxy protection are the user's responsibility. Capability URLs remain random and short-lived, backend secrets stay loopback-only, and incoming Tailscale identity headers are ignored in custom mode.
 
 ## MCP transports and tools (U3a/U5)
 
@@ -69,7 +83,7 @@ Form elicitation supports bounded strings, choices, numbers, integers, booleans,
 
 ## OAuth (U3b)
 
-Run `/mcp-gateway setup` first. Start an interactive flow with `mcp({ action: "auth-start", server: "example" })`, then open or copy the returned authorization URL; Pi never opens a browser automatically. The remote callback normally completes the flow. If it cannot, copy the complete browser redirect URL into `mcp({ action: "auth-complete", server: "example", args: { redirectUrl: "…" } })`.
+Configure and externally validate a publication mode with `/mcp-gateway` first. Start an interactive flow with `mcp({ action: "auth-start", server: "example" })`, then open or copy the returned authorization URL; Pi never opens a browser automatically. The remote callback normally completes the flow. If it cannot, copy the complete browser redirect URL into `mcp({ action: "auth-complete", server: "example", args: { redirectUrl: "…" } })`.
 
 OAuth credentials, PKCE material, and dynamic client registration are sensitive. They are stored as mode `0600` JSON below the private mode `0700` directory `~/.pi/agent/pi-mcp/oauth/`. Delete that directory to revoke Pi's local saved credentials (and revoke the provider-side grant separately when needed). Each authorization attempt receives a dedicated short-lived callback-only gateway capability; it does not grant MCP tool access.
 
@@ -79,6 +93,6 @@ Tools declaring `_meta.ui.resourceUri` (or the legacy `_meta["ui/resourceUri"]`)
 
 The host uses the official bundled AppBridge, initializes it before loading an opaque sandboxed iframe, asks for browser consent before the first App-initiated tool call, scopes those calls to the owning MCP server, and records bounded message/context intents for later Pi integration. Sessions use heartbeat-based expiry, persistent replayable SSE, strict CSP/permissions, a process-private backend secret, and no automatic opening of the App UI. Explicit App `openLink` requests are validated, recorded, and delegated to the browser with `noopener,noreferrer`. Local backend origins, secrets, and routes are not included in model-visible tool details.
 
-## Private App publication (U4b)
+## App publication (U4b)
 
-Run `/mcp-gateway setup` explicitly before using Apps. The first active App verifies (but never mutates) the exact Serve route, obtains one process-local capability, and publishes a bounded dashboard; concurrent Apps remain isolated below its proxy. Gateway protocol v2 fails closed against an older resident daemon; if one is still draining after an upgrade, wait for its idle shutdown before retrying. Tailscale identity is required by default. The capability is removed when the last App completes or expires, and the compact Pi status link is cleared. Pi startup remains resource-idle, no browser is opened, and capability URLs and backend credentials never enter model-visible results.
+Configure `/mcp-gateway` explicitly before using Apps. The first active App verifies the selected exposure, obtains one process-local capability, and publishes a bounded dashboard; concurrent Apps remain isolated below its proxy. Gateway protocol v3 supports controlled same-protocol reconfiguration through the private Unix socket and fails closed against older resident daemons. Tailscale mode requires injected identity; custom mode relies on the capability and the user's network/proxy policy. The capability is removed when the last App completes or expires, and the compact Pi status link is cleared. Pi startup remains resource-idle, no browser is opened, and capability URLs and backend credentials never enter model-visible results.
