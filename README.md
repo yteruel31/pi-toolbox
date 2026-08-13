@@ -36,6 +36,10 @@ Inject relevant Claude Code `.claude/rules/` files into Pi sessions.
 
 A pull-only, challenge-first technical learning mode for Pi.
 
+### [`pi-hosted-code-review`](./packages/hosted-code-review)
+
+Open the current GitHub pull request in a hosted Plannotator review session.
+
 ### [`pi-mcp`](./packages/mcp)
 
 MCP client and capability gateway with Streamable HTTP/SSE/stdio, OAuth, a secure local App host, persistent Pi status, and an interactive publication panel for either managed Tailscale Serve or a user-owned HTTPS reverse proxy. It never opens an App UI automatically and does not claim universal `pi-mcp-adapter` parity. See the package [parity matrix, migration runbook, and conformance command](./packages/mcp/PARITY.md).

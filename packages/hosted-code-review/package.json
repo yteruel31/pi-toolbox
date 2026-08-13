@@ -1,0 +1,48 @@
+{
+  "name": "pi-hosted-code-review",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Open GitHub pull requests in a hosted Plannotator review session from Pi.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "github",
+    "code-review",
+    "plannotator"
+  ],
+  "author": "Yoann Teruel",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit && node --import tsx --test test/*.test.ts",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.81.1",
+    "@types/node": "^22.19.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

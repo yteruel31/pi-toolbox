@@ -16,6 +16,7 @@
       "./packages/claude-context/src/index.ts",
       "./packages/claude-rules/src/index.ts",
       "./packages/pi-learning/src/index.ts",
+      "./packages/hosted-code-review/src/index.ts",
       "./packages/session-title/src/index.ts",
       "./packages/mcp/src/index.ts"
     ],
