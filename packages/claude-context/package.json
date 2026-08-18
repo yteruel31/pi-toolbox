@@ -1,5 +1,5 @@
 {
-  "name": "pi-claude-context",
+  "name": "@yteruel31/pi-claude-context",
   "version": "0.1.0",
   "type": "module",
   "description": "Pi extension that injects descendant Claude Code CLAUDE.md context files into agent sessions.",
@@ -11,8 +11,10 @@
     "claude-code",
     "context"
   ],
-  "author": "Yoann Teruel",
+  "author": "Yoann TERUEL <yoann@gigapay.com>",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/yteruel31/pi-toolbox.git", "directory": "packages/claude-context" },
+  "publishConfig": { "access": "public" },
   "pi": {
     "extensions": [
       "./src/index.ts"
@@ -37,7 +39,7 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.2",
+    "@earendil-works/pi-coding-agent": "0.84.2",
     "@types/node": "^22.19.1",
     "typescript": "^5.9.3"
   }

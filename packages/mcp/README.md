@@ -1,6 +1,12 @@
-# pi-mcp
+# @yteruel31/pi-mcp
 
-MCP client and capability gateway for Pi. The package connects Streamable HTTP, legacy SSE, and stdio MCP servers, hosts Apps on loopback, and lazily publishes active sessions through either managed Tailscale Serve or a user-managed HTTPS reverse proxy, with a dashboard and persistent Pi status link. It is not a universal `pi-mcp-adapter` replacement; see the [parity matrix and migration runbook](./PARITY.md).
+MCP client and capability gateway for Pi.
+
+```bash
+pi install npm:@yteruel31/pi-mcp
+```
+
+The package connects Streamable HTTP, legacy SSE, and stdio MCP servers, hosts Apps on loopback, and lazily publishes active sessions through either managed Tailscale Serve or a user-managed HTTPS reverse proxy, with a dashboard and persistent Pi status link. It is not a universal `pi-mcp-adapter` replacement; see the [parity matrix and migration runbook](./PARITY.md).
 
 ## Configuration contract
 

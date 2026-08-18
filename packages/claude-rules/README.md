@@ -1,4 +1,4 @@
-# pi-claude-rules
+# @yteruel31/pi-claude-rules
 
 Pi extension that loads Claude Code rule files from repository and user scopes, then injects the relevant rule list into agent sessions.
 
@@ -30,10 +30,8 @@ The extension tracks file paths mentioned through `read`, `write`, `edit`, and s
 
 ## Install from npm
 
-If published to npm:
-
 ```bash
-pi install npm:pi-claude-rules
+pi install npm:@yteruel31/pi-claude-rules
 ```
 
 ## Install from this repository
@@ -41,7 +39,7 @@ pi install npm:pi-claude-rules
 The root meta-package exposes this extension, so installing the repository loads it together with the other packaged Pi extensions:
 
 ```bash
-pi install git:github.com/gigapay/pi-packages@main
+pi install git:github.com/yteruel31/pi-toolbox@main
 ```
 
 For local development from the repository root:
@@ -55,6 +53,6 @@ Then restart Pi or run `/reload`.
 ## Development
 
 ```bash
-pnpm install
-pnpm check
+npm install
+npm run check --workspace @yteruel31/pi-claude-rules
 ```

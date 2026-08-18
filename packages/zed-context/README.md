@@ -1,4 +1,4 @@
-# pi-zed-context
+# @yteruel31/pi-zed-context
 
 Automatically attach code selected in Zed to the next Pi prompt while keeping Pi in its terminal TUI.
 
@@ -25,9 +25,15 @@ unsaved edits are included.
 
 ## Install
 
+Install this package independently, or keep using the all-in-one `pi-toolbox`:
+
+```bash
+pi install npm:@yteruel31/pi-zed-context
+```
+
 ### 1. Install the helper on the Pi host
 
-The extension is included in `pi-toolbox`. After updating the toolbox, restart Pi and run:
+After installing or updating, restart Pi and run:
 
 ```text
 /zed-context setup

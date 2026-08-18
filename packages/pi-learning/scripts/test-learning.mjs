@@ -18,7 +18,7 @@ function assertEqual(actual, expected, message) {
 }
 
 try {
-	await symlink(join(packageRoot, "node_modules"), join(tmpRoot, "node_modules"), "dir");
+	await symlink(join(repoRoot, "node_modules"), join(tmpRoot, "node_modules"), "dir");
 	execFileSync(
 		process.execPath,
 		[

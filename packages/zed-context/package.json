@@ -1,5 +1,5 @@
 {
-  "name": "pi-zed-context",
+  "name": "@yteruel31/pi-zed-context",
   "version": "0.2.0",
   "type": "module",
   "description": "Automatically attach Zed editor selections to Pi prompts with an explicit selected-line count.",
@@ -11,8 +11,10 @@
     "ide",
     "selection"
   ],
-  "author": "Yoann Teruel",
+  "author": "Yoann TERUEL <yoann@gigapay.com>",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/yteruel31/pi-toolbox.git", "directory": "packages/zed-context" },
+  "publishConfig": { "access": "public" },
   "pi": {
     "extensions": [
       "./src/index.ts"
@@ -43,7 +45,7 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "@earendil-works/pi-coding-agent": "0.84.2",
     "@types/node": "^22.19.1",
     "typescript": "^5.9.3"
   },

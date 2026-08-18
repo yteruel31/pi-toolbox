@@ -17,9 +17,9 @@ const REQUIRED_PACKAGES = [
 		description: "Required for consent prompts, trust decisions, and Claude ask-style permission decisions.",
 	},
 	{
-		name: "pi-subagents",
-		toolName: "subagent",
-		installCommand: "pi install npm:pi-subagents",
+		name: "@yteruel31/pi-subagents",
+		toolName: "subagent_spawn",
+		installCommand: "pi install npm:@yteruel31/pi-subagents",
 		description: "Required for Claude agent compatibility and SubagentStart/SubagentStop lifecycle hooks.",
 	},
 ] as const;

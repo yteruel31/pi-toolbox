@@ -1,4 +1,4 @@
-# pi-session-title
+# @yteruel31/pi-session-title
 
 Keep Pi session names synchronized with Herdr tabs, tmux windows, and terminal titles.
 
@@ -16,10 +16,10 @@ Generated titles use the currently selected Pi model with a four-second timeout.
 
 ## Install
 
-From npm after publication:
+From npm:
 
 ```bash
-pi install npm:pi-session-title
+pi install npm:@yteruel31/pi-session-title
 ```
 
 From this repository:
@@ -62,10 +62,10 @@ Starting a new Pi session resets a custom Herdr tab label to its numeric tab num
 
 ## Development
 
-Requires Node.js 22.19 or newer and targets Pi 0.81.1.
+Requires Node.js 22.19 or newer and targets Pi 0.84.2.
 
 ```bash
-pnpm install --ignore-scripts
-pnpm check
-pnpm pack:dry
+npm install --ignore-scripts
+npm run check --workspace @yteruel31/pi-session-title
+npm run pack:dry --workspace @yteruel31/pi-session-title
 ```

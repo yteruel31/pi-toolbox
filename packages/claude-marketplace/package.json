@@ -1,5 +1,5 @@
 {
-  "name": "pi-claude-marketplace",
+  "name": "@yteruel31/pi-claude-marketplace",
   "version": "0.1.0",
   "type": "module",
   "description": "Pi extension for installing and running Claude Code marketplace plugins.",
@@ -12,8 +12,10 @@
     "marketplace",
     "plugins"
   ],
-  "author": "Yoann Teruel",
+  "author": "Yoann TERUEL <yoann@gigapay.com>",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/yteruel31/pi-toolbox.git", "directory": "packages/claude-marketplace" },
+  "publishConfig": { "access": "public" },
   "pi": {
     "extensions": [
       "./src/index.ts"
@@ -32,7 +34,7 @@
     "pack:dry": "npm pack --dry-run"
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "0.80.2"
+    "@earendil-works/pi-tui": "0.84.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
@@ -43,7 +45,7 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.2",
+    "@earendil-works/pi-coding-agent": "0.84.2",
     "@types/node": "^22.19.1",
     "typescript": "^5.9.3"
   }
