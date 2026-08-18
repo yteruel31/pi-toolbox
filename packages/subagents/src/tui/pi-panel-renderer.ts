@@ -1,9 +1,10 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { RouteFieldProvenance, RoutingScope } from "../agents/types.js";
 import type { RunInspection, RunListEntry, RunStatus } from "../shared/types.js";
 import type { KeyHint } from "./keys.js";
+import type { RoutingEditorField, RoutingEditorState } from "./routing-editor.js";
 import type { RoutingAgentRow, RoutingViewState } from "./routing-view.js";
 import type { RunsViewState } from "./runs-view.js";
 import { formatElapsed, wrapText } from "./text.js";
@@ -34,6 +35,19 @@ export function renderRoutingPanel(
   const bodyRows = Math.max(1, maxRows - 4);
   const content = renderRoutingList(theme, state, innerWidth, bodyRows);
   return frame(theme, "AGENT ROUTING", content, renderHints(theme, hints), width, maxRows);
+}
+
+export function renderRoutingEditorPanel(
+  theme: Theme,
+  state: RoutingEditorState,
+  width: number,
+  maxRows: number,
+  hints: readonly KeyHint[],
+): string[] {
+  const innerWidth = Math.max(1, width - 2);
+  const bodyRows = Math.max(1, maxRows - 4);
+  const content = renderRoutingEditor(theme, state, innerWidth, bodyRows);
+  return frame(theme, "EDIT AGENT ROUTE", content, renderHints(theme, hints), width, maxRows);
 }
 
 function renderRunsList(
@@ -167,6 +181,106 @@ function renderRunDetail(
   return lines.slice(0, maxRows);
 }
 
+function renderRoutingEditor(
+  theme: Theme,
+  state: RoutingEditorState,
+  width: number,
+  maxRows: number,
+): string[] {
+  const scope = state.session.scope.toUpperCase();
+  const content = [
+    columns(
+      `${theme.fg("accent", "◆")} ${theme.bold(theme.fg("text", state.session.agentName))}`,
+      theme.fg("accent", `${scope} MAPPING`),
+      width,
+    ),
+    padAnsi(theme.fg("dim", "Set only the overrides this agent needs. Inherited values follow the parent session."), width),
+    sectionLabel(theme, "ROUTE OVERRIDES", width),
+    ...editorField(
+      theme,
+      "harness",
+      "01",
+      "HARNESS",
+      choiceValue(theme, state.harness),
+      "Execution environment: Pi child session or Claude Agent SDK",
+      state.selectedField,
+      width,
+    ),
+    ...editorField(
+      theme,
+      "model",
+      "02",
+      "MODEL",
+      modelEditorValue(theme, state),
+      "Provider/model identifier; clear the value to inherit",
+      state.selectedField,
+      width,
+    ),
+    ...editorField(
+      theme,
+      "thinking",
+      "03",
+      "THINKING",
+      choiceValue(theme, state.thinking),
+      "Reasoning effort override",
+      state.selectedField,
+      width,
+    ),
+    sectionLabel(theme, "SAVED OVERRIDE", width),
+    padAnsi(routePreview(theme, state), width),
+  ];
+  return content.slice(0, maxRows);
+}
+
+function editorField(
+  theme: Theme,
+  field: RoutingEditorField,
+  number: string,
+  label: string,
+  value: string,
+  description: string,
+  selectedField: RoutingEditorField,
+  width: number,
+): string[] {
+  const selected = field === selectedField;
+  const marker = selected ? theme.fg("accent", "▸") : " ";
+  const heading = padAnsi(
+    `${marker} ${theme.fg(selected ? "accent" : "dim", number)}  ${theme.bold(theme.fg(selected ? "text" : "muted", label))}`,
+    width,
+  );
+  const valueLine = padAnsi(`     ${selected ? theme.fg("accent", "›") : " "} ${value}`, width);
+  const descriptionLine = padAnsi(`       ${theme.fg("dim", description)}`, width);
+  return selected
+    ? [theme.bg("selectedBg", heading), theme.bg("selectedBg", valueLine), theme.bg("selectedBg", descriptionLine)]
+    : [heading, valueLine, descriptionLine];
+}
+
+function choiceValue(theme: Theme, value: string): string {
+  const label = value === "inherit" ? "INHERIT" : value.toUpperCase();
+  return `${theme.fg("dim", "‹")} ${theme.fg(value === "inherit" ? "muted" : "accent", label)} ${theme.fg("dim", "›")}`;
+}
+
+function modelEditorValue(theme: Theme, state: RoutingEditorState): string {
+  const characters = Array.from(state.model);
+  const cursor = Math.min(Math.max(0, state.modelCursor), characters.length);
+  const before = characters.slice(0, cursor).join("");
+  const current = characters[cursor];
+  const after = current === undefined ? "" : characters.slice(cursor + 1).join("");
+  const cursorCell = theme.inverse(current ?? " ");
+  const value = `${before}${CURSOR_MARKER}${cursorCell}${after}`;
+  if (state.model.length > 0) return theme.fg("text", value);
+  return `${theme.fg("text", value)}${theme.fg("dim", " inherit parent model")}`;
+}
+
+function routePreview(theme: Theme, state: RoutingEditorState): string {
+  const parts = [
+    `harness=${state.harness}`,
+    `model=${state.model.trim() || "inherit"}`,
+    `thinking=${state.thinking}`,
+  ];
+  return `  ${theme.fg("muted", parts.join("  ·  "))}`;
+}
+
 function renderRoutingList(
   theme: Theme,
   state: RoutingViewState,
@@ -265,6 +379,7 @@ function frame(
   const bottom = theme.fg("borderAccent", `╰${"─".repeat(innerWidth)}╯`);
   const availableContent = Math.max(0, maxRows - 4);
   const boundedContent = content.slice(0, availableContent);
+  while (boundedContent.length < availableContent) boundedContent.push("");
   const lines = [
     top,
     ...boundedContent.map((line) => framedLine(theme, line, innerWidth)),
