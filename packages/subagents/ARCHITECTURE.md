@@ -92,7 +92,7 @@ On session start it restores state and builds both harnesses plus the manager. T
 
 Reducers and view models are terminal-independent. Concrete bindings translate Pi keys with `matchesKey`, call `requestRender`, keep every line width-bounded, subscribe to live manager changes, and dispose subscriptions exactly once.
 
-`/subagents runs` opens a fresh overlay with list/detail/cancel/refresh/takeover behavior. `/subagents agents` opens a fresh routing overlay with user/project scope, edit/delete, trust gating, and explicit invalid-file backup/reset. Overlays are not reused after close.
+`/subagents runs` opens a fresh full-terminal overlay with list/detail/cancel/refresh/takeover behavior. `/subagents agents` opens a fresh full-terminal routing overlay with user/project scope, edit/delete, trust gating, and explicit invalid-file backup/reset. The route field editor is an internal panel state rather than a nested `ctx.ui.select`/`ctx.ui.editor` flow, so Enter transitions within the same overlay and Escape returns to the mapping list. Overlays are not reused after close.
 
 `/btw` uses the same manager and Pi harness with automatic delivery disabled. The answer is persisted in a custom entry and shown through UI notification, never `sendMessage`.
 

@@ -4,16 +4,25 @@ import {
   matchesKey,
   type Component,
   type OverlayHandle,
+  type OverlayOptions,
   type TUI,
 } from "@earendil-works/pi-tui";
 
-import type { RoutingEntry } from "../agents/types.js";
 import type { RoutingDataPort, RunsDataPort } from "./binding.js";
 import type { RoutingKeyAction, RunsKeyAction } from "./keys.js";
-import { renderRoutingPanel, renderRunsPanel } from "./pi-panel-renderer.js";
+import {
+  renderRoutingEditorPanel,
+  renderRoutingPanel,
+  renderRunsPanel,
+} from "./pi-panel-renderer.js";
+import {
+  createRoutingEditorState,
+  reduceRoutingEditorInput,
+  ROUTING_EDITOR_KEY_HINTS,
+  type RoutingEditorState,
+} from "./routing-editor.js";
 import {
   ROUTING_KEY_HINTS,
-  type RoutingEditSession,
   type RoutingViewIntent,
 } from "./routing-view.js";
 import {
@@ -28,7 +37,12 @@ import {
   type RunsViewModel,
 } from "./view-models.js";
 
-const PANEL_ROWS = 24;
+export const FULL_SCREEN_PANEL_OPTIONS = {
+  width: "100%",
+  maxHeight: "100%",
+  anchor: "center",
+  margin: 0,
+} satisfies OverlayOptions;
 
 /** Open the live run inspector as a fresh experimental Pi overlay. */
 export async function openPiRunsOverlay(
@@ -48,13 +62,7 @@ export async function openPiRunsOverlay(
       }),
     {
       overlay: true,
-      overlayOptions: {
-        width: 88,
-        minWidth: 56,
-        maxHeight: "86%",
-        anchor: "right-center",
-        margin: 1,
-      },
+      overlayOptions: FULL_SCREEN_PANEL_OPTIONS,
       onHandle: (next) => {
         handle = next;
         next.focus();
@@ -74,13 +82,7 @@ export async function openPiRoutingOverlay(
       new RoutingOverlayComponent(tui, theme, data, ctx, done),
     {
       overlay: true,
-      overlayOptions: {
-        width: 100,
-        minWidth: 64,
-        maxHeight: "86%",
-        anchor: "center",
-        margin: 1,
-      },
+      overlayOptions: FULL_SCREEN_PANEL_OPTIONS,
     },
   );
 }
@@ -113,7 +115,7 @@ class RunsOverlayComponent implements Component {
       this.theme,
       this.model.getState(),
       width,
-      PANEL_ROWS,
+      this.tui.terminal.rows,
       RUNS_LIST_KEY_HINTS,
       RUN_DETAIL_KEY_HINTS,
     );
@@ -156,6 +158,7 @@ class RunsOverlayComponent implements Component {
 
 class RoutingOverlayComponent implements Component {
   private readonly model: RoutingViewModel;
+  private editor: RoutingEditorState | undefined;
   private disposed = false;
 
   constructor(
@@ -179,16 +182,39 @@ class RoutingOverlayComponent implements Component {
   }
 
   render(width: number): string[] {
+    if (this.editor) {
+      return renderRoutingEditorPanel(
+        this.theme,
+        this.editor,
+        width,
+        this.tui.terminal.rows,
+        ROUTING_EDITOR_KEY_HINTS,
+      );
+    }
     return renderRoutingPanel(
       this.theme,
       this.model.getState(),
       width,
-      PANEL_ROWS,
+      this.tui.terminal.rows,
       ROUTING_KEY_HINTS,
     );
   }
 
   handleInput(data: string): void {
+    if (this.editor) {
+      const step = reduceRoutingEditorInput(this.editor, data);
+      this.editor = step.state;
+      if (step.intent?.kind === "save") {
+        this.editor = undefined;
+        this.model.dispatch({ kind: "edit-committed", entry: step.intent.entry });
+      } else if (step.intent?.kind === "cancel") {
+        this.editor = undefined;
+        this.model.dispatch({ kind: "edit-cancelled" });
+      } else {
+        this.tui.requestRender();
+      }
+      return;
+    }
     const action = routingAction(data);
     if (action) this.model.dispatch({ kind: "key", action });
   }
@@ -207,11 +233,8 @@ class RoutingOverlayComponent implements Component {
   private handleIntent(model: RoutingViewModel, intent: RoutingViewIntent): void {
     switch (intent.kind) {
       case "open-editor":
-        void editRoutingEntry(this.ctx, intent.session).then((entry) => {
-          model.dispatch(entry
-            ? { kind: "edit-committed", entry }
-            : { kind: "edit-cancelled" });
-        });
+        this.editor = createRoutingEditorState(intent.session);
+        this.tui.requestRender();
         return;
       case "confirm-reset":
         void this.ctx.ui.confirm(
@@ -228,38 +251,6 @@ class RoutingOverlayComponent implements Component {
         return;
     }
   }
-}
-
-async function editRoutingEntry(
-  ctx: ExtensionContext,
-  session: RoutingEditSession,
-): Promise<RoutingEntry | undefined> {
-  const currentHarness = session.current.harness ?? "inherit";
-  const harnessChoice = await ctx.ui.select(
-    `${session.agentName} · ${session.scope} harness`,
-    [currentHarness, ...["inherit", "pi", "claude"].filter((value) => value !== currentHarness)],
-  );
-  if (harnessChoice === undefined) return undefined;
-  const model = await ctx.ui.editor(
-    `${session.agentName} · model (empty inherits)`,
-    typeof session.current.model === "string" ? session.current.model : "",
-  );
-  if (model === undefined) return undefined;
-  const currentThinking = session.current.thinking ?? "inherit";
-  const thinkingChoice = await ctx.ui.select(
-    `${session.agentName} · thinking`,
-    [
-      currentThinking,
-      ...["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
-        .filter((value) => value !== currentThinking),
-    ],
-  );
-  if (thinkingChoice === undefined) return undefined;
-  return {
-    ...(harnessChoice === "pi" || harnessChoice === "claude" ? { harness: harnessChoice } : {}),
-    ...(model.trim() ? { model: model.trim() } : {}),
-    ...(thinkingChoice !== "inherit" ? { thinking: thinkingChoice as RoutingEntry["thinking"] } : {}),
-  };
 }
 
 function runsAction(data: string): RunsKeyAction | undefined {
