@@ -48,6 +48,10 @@ Keep Pi session names synchronized with Herdr tabs, tmux windows, and terminal t
 
 Spawn and manage autonomous background subagents powered by in-process Pi sessions or Claude Code, with user/project agent discovery and per-agent routing.
 
+### [`pi-zed-context`](./packages/zed-context)
+
+Attach Zed editor selections to the next Pi prompt and show the explicit selected-line count in Pi's footer. The task-based bridge works with local and remote Zed workspaces.
+
 ## Themes
 
 ### Fallout: New Vegas
