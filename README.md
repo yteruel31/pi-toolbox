@@ -44,6 +44,10 @@ MCP client and capability gateway with Streamable HTTP/SSE/stdio, OAuth, a secur
 
 Keep Pi session names synchronized with Herdr tabs, tmux windows, and terminal titles.
 
+### [`pi-subagents`](./packages/subagents)
+
+Spawn and manage autonomous background subagents powered by in-process Pi sessions or Claude Code, with user/project agent discovery and per-agent routing.
+
 ## Themes
 
 ### Fallout: New Vegas
