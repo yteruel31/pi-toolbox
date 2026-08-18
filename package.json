@@ -17,7 +17,8 @@
       "./packages/claude-rules/src/index.ts",
       "./packages/pi-learning/src/index.ts",
       "./packages/session-title/src/index.ts",
-      "./packages/mcp/src/index.ts"
+      "./packages/mcp/src/index.ts",
+      "./packages/subagents/src/index.ts"
     ],
     "themes": [
       "./themes/*.json"
@@ -56,8 +57,10 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.216",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "effect": "^4.0.0-beta.99",
     "tsx": "^4.21.0",
     "zod": "^4.4.3"
   }

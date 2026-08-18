@@ -1,0 +1,9 @@
+This package adapts code from the subagents extension in davis7dotsh/my-pi-setup:
+https://github.com/davis7dotsh/my-pi-setup/tree/73bf4d826f39b5cab6b7865e706ba4a2669629ca/extensions/subagents
+
+Upstream commit: 73bf4d826f39b5cab6b7865e706ba4a2669629ca
+Upstream subagents tree: 16405f9de2ed33afc4b480efd96a3c98e2ebde39
+
+The package also vendors extensions/shared/tool-call-timeout.ts and its test from the same commit.
+
+No explicit upstream license was present in the referenced repository when this adaptation was created. The package therefore remains private and marked UNLICENSED pending compatible redistribution permission.
