@@ -144,8 +144,9 @@ current selected text, its file path, line count, and minimal lifecycle metadata
 - Run `/zed-context status` to verify whether Pi has received a selection.
 - Use **zed: open log** and check for `pi-selection-bridge` startup errors.
 - Confirm `~/.local/bin/pi-zed-context` exists on the same host as the language server.
-- Ensure the file's language is listed in `zed-extension/extension.toml`; use the explicit fallback
-  for an unlisted language and report it for inclusion.
+- Ensure the file's language is listed in `zed-extension/extension.toml`. Zed does not currently
+  support an all-languages wildcard for extension language servers; use the explicit fallback for an
+  unlisted language and report it for inclusion.
 
 The automatic trigger relies on Zed's eager code-action refresh behavior. If that behavior changes in
 a future Zed release, the explicit task remains a deterministic fallback.
