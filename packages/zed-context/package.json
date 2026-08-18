@@ -1,0 +1,52 @@
+{
+  "name": "pi-zed-context",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Attach Zed editor selections to Pi prompts with an explicit selected-line count.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "zed",
+    "ide",
+    "selection"
+  ],
+  "author": "Yoann Teruel",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "bin": {
+    "pi-zed-context": "./bin/pi-zed-context.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "scripts/test-zed-context.mjs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit && node scripts/test-zed-context.mjs",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "@types/node": "^22.19.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
