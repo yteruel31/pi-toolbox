@@ -4,10 +4,17 @@ import { describe, expect, it } from "vitest";
 
 import type { RoutingAgentRow } from "../src/tui/routing-view.js";
 import { initialRoutingViewState } from "../src/tui/routing-view.js";
-import { renderRoutingPanel, renderRunsPanel } from "../src/tui/pi-panel-renderer.js";
 import {
-  ROUTING_KEY_HINTS,
-} from "../src/tui/routing-view.js";
+  renderRoutingEditorPanel,
+  renderRoutingPanel,
+  renderRunsPanel,
+} from "../src/tui/pi-panel-renderer.js";
+import {
+  createRoutingEditorState,
+  ROUTING_EDITOR_KEY_HINTS,
+} from "../src/tui/routing-editor.js";
+import { ROUTING_KEY_HINTS } from "../src/tui/routing-view.js";
+import { FULL_SCREEN_PANEL_OPTIONS } from "../src/tui/pi-views.js";
 import {
   initialRunsViewState,
   RUN_DETAIL_KEY_HINTS,
@@ -19,6 +26,7 @@ const theme = {
   fg: (_color: string, text: string) => `\x1b[36m${text}\x1b[39m`,
   bg: (_color: string, text: string) => `\x1b[44m${text}\x1b[49m`,
   bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
+  inverse: (text: string) => `\x1b[7m${text}\x1b[27m`,
 } as unknown as Theme;
 
 function plain(lines: readonly string[]): string {
@@ -70,6 +78,15 @@ function routingRows(): RoutingAgentRow[] {
 }
 
 describe("theme-native Pi panel renderer", () => {
+  it("uses a zero-margin full-terminal overlay for both panels", () => {
+    expect(FULL_SCREEN_PANEL_OPTIONS).toEqual({
+      width: "100%",
+      maxHeight: "100%",
+      anchor: "center",
+      margin: 0,
+    });
+  });
+
   it("renders routing as a framed, themed, two-level list", () => {
     const state = initialRoutingViewState({
       rows: routingRows(),
@@ -88,6 +105,38 @@ describe("theme-native Pi panel renderer", () => {
     expect(output).toContain("↑↓ move");
     expect(output).toContain("╰");
     expect(lines.some((line) => line.includes("\x1b[44m"))).toBe(true);
+  });
+
+  it("fills the terminal height so the overlay is genuinely full-screen", () => {
+    const state = initialRoutingViewState({
+      rows: routingRows(),
+      projectTrusted: true,
+    });
+    const lines = renderRoutingPanel(theme, state, 84, 32, ROUTING_KEY_HINTS);
+
+    expect(lines).toHaveLength(32);
+    expect(plain(lines[30] ? [lines[30]] : [])).toContain("↑↓ move");
+    expect(plain(lines[31] ? [lines[31]] : [])).toContain("╰");
+  });
+
+  it("renders route editing inside the same full-screen panel", () => {
+    const editor = createRoutingEditorState({
+      agentName: "gig-feasibility-reviewer",
+      scope: "project",
+      current: { harness: "claude", model: "fable", thinking: "high" },
+    });
+    const lines = renderRoutingEditorPanel(theme, editor, 84, 28, ROUTING_EDITOR_KEY_HINTS);
+    const output = plain(lines);
+
+    expectBounded(lines, 84, 28);
+    expect(lines).toHaveLength(28);
+    expect(output).toContain("EDIT AGENT ROUTE");
+    expect(output).toContain("gig-feasibility-reviewer");
+    expect(output).toContain("PROJECT MAPPING");
+    expect(output).toContain("01  HARNESS");
+    expect(output).toContain("02  MODEL");
+    expect(output).toContain("03  THINKING");
+    expect(output).toContain("enter save");
   });
 
   it("keeps long routing values inside narrow terminals", () => {

@@ -116,7 +116,7 @@ Precedence is explicit spawn arguments, project route, user route, agent default
 - `/subagents agents` — open the routing editor.
 - `/btw <question>` — ask a one-off Pi side question using the shared cap. Its answer is shown to the human and persisted as a custom entry, but never enters parent-model context or triggers a parent turn.
 
-The run overlay supports arrows, Enter, refresh (`r`), cancel (`c`), takeover (`t`), and Escape. The routing overlay supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape.
+Both TUI panels use the full terminal and the active Pi theme. The run panel supports arrows, Enter, refresh (`r`), cancel (`c`), takeover (`t`), and Escape. The routing panel supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape. Route editing stays inside the same panel: use arrows or Tab to select a field, left/right to change harness or thinking, type to edit the model, Enter to save, and Escape to return to the mapping list.
 
 ## Development
 
