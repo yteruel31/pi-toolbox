@@ -50,7 +50,7 @@ Spawn and manage autonomous background subagents powered by in-process Pi sessio
 
 ### [`pi-zed-context`](./packages/zed-context)
 
-Attach Zed editor selections to the next Pi prompt and show the explicit selected-line count in Pi's footer. The task-based bridge works with local and remote Zed workspaces.
+Automatically attach Zed editor selections to the next Pi prompt and show the explicit selected-line count in Pi's footer. The language-server bridge includes unsaved edits and works with local and remote Zed workspaces without a shortcut.
 
 ## Themes
 

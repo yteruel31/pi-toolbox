@@ -1,27 +1,31 @@
 # pi-zed-context
 
-Attach code selected in Zed to the next Pi prompt while keeping Pi in its terminal TUI.
+Automatically attach code selected in Zed to the next Pi prompt while keeping Pi in its terminal TUI.
 
-This package is designed for both local and remote Zed workspaces. It does not depend on
-Zed's client-side SQLite database: a Zed task sends the current selection to a small helper
-on the same host as Pi.
+The integration works with local and remote Zed workspaces on macOS and Linux hosts. A small language
+server runs on the same host as Pi, receives Zed's synchronized buffer and selection range, and writes
+only the selected text to Pi's private state directory. No selection shortcut or client-side SQLite
+access is required. Native Windows hosts are not currently supported.
 
 ## What it does
 
 1. Select code in Zed.
-2. Press `Ctrl+Alt+K` (`Ctrl+Option+K` on macOS).
-3. Pi's footer shows an explicit count, for example:
+2. Within about half a second, Pi's footer shows an explicit count:
 
    ```text
    ⧉ ⇡ 12 lignes sélectionnées · invoice.ts
    ```
 
-4. Send your next Pi prompt. The selected text and file path are added to that turn's model
-   context, then the footer changes from `⇡` (pending) to `✓` (attached).
+3. Send your next Pi prompt. The selected text and file path are added to that turn's model context,
+   then the footer changes from `⇡` (pending) to `✓` (attached).
+4. Moving the cursor without a selection clears the pending context and footer.
 
-A selection is attached once. Press the shortcut again to attach it to another prompt.
+Each changed selection is attached once. The bridge uses Zed's synchronized in-memory document, so
+unsaved edits are included.
 
 ## Install
+
+### 1. Install the helper on the Pi host
 
 The extension is included in `pi-toolbox`. After updating the toolbox, restart Pi and run:
 
@@ -29,12 +33,64 @@ The extension is included in `pi-toolbox`. After updating the toolbox, restart P
 /zed-context setup
 ```
 
-This installs `pi-zed-context` in `~/.local/bin`. The task below uses its absolute
-`$HOME`-relative path, so Zed does not need a customized `PATH`.
+This installs `pi-zed-context` at `~/.local/bin/pi-zed-context` using the same Node executable as Pi.
+For a remote Zed workspace, run the command in Pi on the remote host.
 
-## Configure Zed
+### 2. Install Pi Selection Bridge in Zed
 
-Open the global task file with **zed: open tasks**, then add this task to the JSON array:
+Once **Pi Selection Bridge** is available in the Zed extension registry, install it from Zed's
+Extensions page. Zed automatically propagates installed extensions to remote workspaces and runs the
+bridge language server on the remote host.
+
+To test the extension before registry publication:
+
+1. Clone this repository on the machine running the Zed UI.
+2. Run **zed: install dev extension**.
+3. Select `packages/zed-context/zed-extension` from the local clone.
+4. Open or reload the project where Pi is running.
+
+A local clone is required for dev-extension installation even when the edited project is remote.
+The language server itself still runs remotely.
+
+## How it works
+
+Zed refreshes code actions after local selection changes. Pi Selection Bridge declares an empty code
+action provider, so it receives the current selection range after Zed's 250 ms debounce while always
+returning an empty action list. It does not add entries to Zed's code-action menu.
+
+The bridge also receives `didOpen` and incremental `didChange` notifications. It extracts the selected
+text from the synchronized buffer using LSP UTF-16 positions and atomically updates the existing Pi
+selection snapshot. Pi polls that private snapshot and attaches a non-empty selection to the next
+prompt.
+
+```text
+Zed UI
+  └─ selection change
+       └─ Zed remote language client
+            └─ pi-zed-context lsp (same host as Pi)
+                 └─ /tmp/pi-zed-context-<uid>/*.json
+                      └─ Pi TUI footer + next prompt context
+```
+
+There is no network listener, WebSocket, macOS daemon, or additional SSH connection.
+
+### Concurrent Pi sessions
+
+Selection state is intentionally repository-wide. If several Pi sessions are running in the same
+repository, each session displays the current selection and may attach it once to its next prompt,
+even when the sessions use different model providers. Use `/zed-context clear` in any matching Pi
+session to clear the shared selection everywhere.
+
+## Commands
+
+- `/zed-context status` — show the pending or last attached selection.
+- `/zed-context setup` — install or update the language-server helper.
+- `/zed-context clear` — discard the selection for every matching Pi session and clear the footer.
+
+## Explicit fallback
+
+The original task-based capture command remains available if the automatic bridge cannot run for a
+particular language:
 
 ```json
 {
@@ -60,34 +116,32 @@ Open the global task file with **zed: open tasks**, then add this task to the JS
 }
 ```
 
-Open **zed: open keymap** and add this binding to the JSON array:
+Running this task is optional and is not part of the normal automatic workflow.
 
-```json
-{
-  "context": "Editor",
-  "bindings": {
-    "ctrl-alt-k": [
-      "task::Spawn",
-      { "task_name": "Pi: Attach Selection" }
-    ]
-  }
-}
-```
+## Context limits and privacy
 
-Zed only resolves this task when text is selected because the helper consumes
-`ZED_SELECTED_TEXT`.
+Pi receives at most 50 KB or 2,000 lines from one selection. The footer keeps showing the number of
+lines originally selected, and the model context says when the text was truncated.
 
-## Commands
+Selection snapshots are written atomically with user-only permissions under
+`/tmp/pi-zed-context-<uid>`. The directory is mode `0700`, snapshots are mode `0600`, unsafe symlinked
+or foreign-owned state is rejected, and captures older than 24 hours are ignored and removed.
+Captures from a stopped language-server process are ignored. Override the location for testing with
+`PI_ZED_CONTEXT_STATE_DIR`.
 
-- `/zed-context status` — show the pending or last attached selection.
-- `/zed-context setup` — install/update the task helper in `~/.local/bin`.
-- `/zed-context clear` — discard the pending selection and clear the footer.
+The language server receives open buffers through standard LSP synchronization but persists only the
+current selected text, its file path, line count, and minimal lifecycle metadata.
 
-## Context limits
+## Troubleshooting
 
-Pi receives at most 50 KB or 2,000 lines from one selection. The footer keeps showing the
-number of lines originally selected, and the model context says when the text was truncated.
+- Run `/zed-context setup` again after updating `pi-toolbox`.
+- Run `/zed-context status` to verify whether Pi has received a selection.
+- Use **zed: open log** and check for `pi-selection-bridge` startup errors.
+- Confirm `~/.local/bin/pi-zed-context` exists on the same host as the language server.
+- Ensure the file's language is listed in `zed-extension/extension.toml`; use the explicit fallback
+  for an unlisted language and report it for inclusion.
 
-Selection snapshots are written with user-only permissions under
-`/tmp/pi-zed-context-<uid>` and stale files are removed after 24 hours. Override the location
-for testing with `PI_ZED_CONTEXT_STATE_DIR`.
+The automatic trigger relies on Zed's eager code-action refresh behavior. If that behavior changes in
+a future Zed release, the explicit task remains a deterministic fallback.
+
+> AI generated.

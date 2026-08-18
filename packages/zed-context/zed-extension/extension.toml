@@ -1,0 +1,112 @@
+id = "pi-selection-bridge"
+name = "Pi Selection Bridge"
+version = "0.2.0"
+schema_version = 1
+authors = ["Yoann TERUEL <yoann.teruel@gmail.com>"]
+description = "Streams the current editor selection to a Pi terminal session through a private local language server."
+repository = "https://github.com/yteruel31/pi-toolbox"
+
+[language_servers.pi-selection-bridge]
+name = "Pi Selection Bridge"
+languages = [
+  "Plain Text",
+  "Rust",
+  "C",
+  "C++",
+  "C#",
+  "Go",
+  "Zig",
+  "JavaScript",
+  "TypeScript",
+  "TSX",
+  "HTML",
+  "CSS",
+  "SCSS",
+  "Vue",
+  "Svelte",
+  "Astro",
+  "Python",
+  "Ruby",
+  "PHP",
+  "Perl",
+  "Lua",
+  "Shell",
+  "Fish",
+  "Java",
+  "Kotlin",
+  "Scala",
+  "Clojure",
+  "Elixir",
+  "Erlang",
+  "Haskell",
+  "OCaml",
+  "F#",
+  "Swift",
+  "Dart",
+  "JSON",
+  "JSONC",
+  "YAML",
+  "TOML",
+  "XML",
+  "Markdown",
+  "LaTeX",
+  "Typst",
+  "Nix",
+  "SQL",
+  "GraphQL",
+  "Dockerfile",
+  "Makefile",
+  "Proto",
+  "Terraform",
+]
+
+[language_servers.pi-selection-bridge.language_ids]
+"Plain Text" = "plaintext"
+"Rust" = "rust"
+"C" = "c"
+"C++" = "cpp"
+"C#" = "csharp"
+"Go" = "go"
+"Zig" = "zig"
+"JavaScript" = "javascript"
+"TypeScript" = "typescript"
+"TSX" = "typescriptreact"
+"HTML" = "html"
+"CSS" = "css"
+"SCSS" = "scss"
+"Vue" = "vue"
+"Svelte" = "svelte"
+"Astro" = "astro"
+"Python" = "python"
+"Ruby" = "ruby"
+"PHP" = "php"
+"Perl" = "perl"
+"Lua" = "lua"
+"Shell" = "shellscript"
+"Fish" = "fish"
+"Java" = "java"
+"Kotlin" = "kotlin"
+"Scala" = "scala"
+"Clojure" = "clojure"
+"Elixir" = "elixir"
+"Erlang" = "erlang"
+"Haskell" = "haskell"
+"OCaml" = "ocaml"
+"F#" = "fsharp"
+"Swift" = "swift"
+"Dart" = "dart"
+"JSON" = "json"
+"JSONC" = "jsonc"
+"YAML" = "yaml"
+"TOML" = "toml"
+"XML" = "xml"
+"Markdown" = "markdown"
+"LaTeX" = "latex"
+"Typst" = "typst"
+"Nix" = "nix"
+"SQL" = "sql"
+"GraphQL" = "graphql"
+"Dockerfile" = "dockerfile"
+"Makefile" = "makefile"
+"Proto" = "protobuf"
+"Terraform" = "terraform"
