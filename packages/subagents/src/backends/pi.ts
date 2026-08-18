@@ -41,6 +41,7 @@ const CHILD_SHUTDOWN_TIMEOUT_MS = 5_000;
 /** Tools that headless children must not receive. Everything else stays enabled. */
 const CHILD_EXCLUDED_TOOL_NAMES = [
   "subagent_spawn",
+  "subagent_agents",
   "subagent_wait",
   "subagent_cancel",
   "subagent_check",
@@ -95,12 +96,28 @@ function resolvePiModel(
 // --- Child session helpers (ported from v1 shared/child-session.ts) -----------
 
 /** Load normal global/package resources and trust-gated project resources. */
-async function createChildResources(cwd: string, projectTrusted: boolean) {
+async function createChildResources(
+  cwd: string,
+  projectTrusted: boolean,
+  agentSystemPrompt?: string,
+) {
   const agentDir = getAgentDir();
   const settingsManager = SettingsManager.create(cwd, agentDir, {
     projectTrusted,
   });
-  const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+  const loader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    settingsManager,
+    ...(agentSystemPrompt
+      ? {
+          appendSystemPromptOverride: (base: string[]) => [
+            ...base,
+            agentSystemPrompt,
+          ],
+        }
+      : {}),
+  });
   await loader.reload();
   return { loader, settingsManager };
 }
@@ -284,6 +301,7 @@ const makePiSession = (
         const { loader, settingsManager } = await createChildResources(
           task.cwd,
           task.parent.projectTrusted,
+          task.systemPrompt,
         );
         const { session } = await createAgentSession({
           cwd: task.cwd,

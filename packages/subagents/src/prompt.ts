@@ -2,16 +2,17 @@
 
 /** Describes subagent_spawn, including harnesses and the fixed concurrency cap. */
 export const SUBAGENT_SPAWN_TOOL_DESCRIPTION =
-  "Spawn a background subagent: a fully autonomous, headless agent with its own context window and the selected harness's normal host permissions. You choose the harness it runs on: pi (in-process pi session, inherits this environment's tools and config) or claude (Claude Code). Fire-and-forget: this returns immediately with an id. The subagent's final output is queued back to you as a message when it settles, or collect it explicitly with subagent_wait. Children cannot orchestrate more agents/workflows or ask the user, and cannot see this conversation, so the prompt must be self-contained. Only use trusted working directories. Max 4 subagents can be running at once across all harnesses.";
+  "Spawn a background subagent: a fully autonomous, headless agent with its own context window and the selected harness's normal host permissions. Choose an optional named agent profile to apply its system prompt and saved routing. Explicit harness/model/reasoning_effort values override that routing. Without a profile or explicit routing, the child uses pi and inherits the parent model and thinking level. Fire-and-forget: this returns immediately with an id. The subagent's final output is queued back to you as a message when it settles, or collect it explicitly with subagent_wait. Children cannot orchestrate more agents/workflows or ask the user, and cannot see this conversation, so the prompt must be self-contained. Only use trusted working directories. Max 4 subagents can be running at once across all harnesses.";
 
 /** Adds background subagent delegation to the parent model's available-tools prompt. */
 export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
-  "Spawn a background subagent on a chosen harness (pi or Claude Code; own context, normal tools) for a self-contained task";
+  "Spawn a background named or ad-hoc subagent on Pi or Claude Code for a self-contained task";
 
 /** Guides the parent model to delegate standalone tasks and avoid unnecessary blocking waits. */
 export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
   "Use subagent_spawn to delegate self-contained tasks that can run in the background; give it a complete, standalone prompt.",
-  "Pick the subagent harness deliberately: pi unless you have a reason to prefer Claude Code (e.g. the user asked for it, or the task suits that harness).",
+  "When a configured subagent profile matches the task, pass its exact name in subagent_spawn.agent so its role and routing are applied automatically.",
+  "For ad-hoc subagent_spawn calls, omit harness/model/reasoning_effort to use Pi with the parent model and thinking level; set them only for an intentional override.",
   "After subagent_spawn, keep working; results arrive automatically. Only call subagent_wait when you cannot proceed without the result.",
 ];
 
@@ -19,15 +20,18 @@ export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
 export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
   prompt:
     "Task prompt for the subagent. Must be self-contained: include all needed context, file paths, and what to report back.",
-  name: "Short human-readable name for this subagent, shown in listings and the UI",
+  agent:
+    "Optional configured agent profile name. Applies its system prompt and saved routing; omit for an ad-hoc child.",
+  name:
+    "Optional short human-readable run title. Defaults to the configured agent name, then subagent.",
   harness:
-    'Harness to run the subagent on: "pi" (in-process pi session; inherits this environment) or "claude" (Claude Code). Choose deliberately per task.',
+    'Optional harness override: "pi" (in-process Pi session) or "claude" (Claude Code). Omit to use the profile mapping, then Pi by default.',
   workingDir:
     "Trusted working directory for the autonomous child (default: current working directory)",
   model:
-    'Model hint, interpreted by the chosen harness (pi: "provider/model-id" or model id; claude: model alias like "sonnet"/"opus"). Omit for the harness default (pi inherits the current model).',
+    'Optional model override interpreted by the chosen harness (pi: "provider/model-id" or model id; claude: model alias like "sonnet"/"opus"). Omit to use the profile mapping, then the harness default.',
   reasoningEffort:
-    "Reasoning effort on a shared scale; the harness maps it to its nearest native equivalent (pi thinking level or claude thinking budget). Omit for the harness default (pi inherits the current level).",
+    "Optional thinking override on the shared scale. Omit to use the profile mapping, then the harness default (Pi inherits the parent level).",
 };
 
 /** Builds the subagent_spawn result that tells the parent model how to continue or inspect the child. */

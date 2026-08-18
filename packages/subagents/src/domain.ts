@@ -48,6 +48,10 @@ export interface ParentContext {
 export interface SpawnTask {
   /** Omitted for normal tool-driven spawns. */
   readonly origin?: SubagentOrigin;
+  /** Selected named agent, when the task uses a discovered agent profile. */
+  readonly agentName?: string;
+  /** Agent profile instructions appended to the harness's normal system prompt. */
+  readonly systemPrompt?: string;
   readonly prompt: string;
   readonly title: string;
   readonly cwd: string;

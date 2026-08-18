@@ -340,6 +340,15 @@ const makeClaudeSession = (
             ...(task.parent.projectTrusted
               ? {}
               : { settingSources: ["user" as const] }),
+            ...(task.systemPrompt
+              ? {
+                  systemPrompt: {
+                    type: "preset" as const,
+                    preset: "claude_code" as const,
+                    append: task.systemPrompt,
+                  },
+                }
+              : {}),
             includePartialMessages: true,
             abortController,
             ...(claudeBinary

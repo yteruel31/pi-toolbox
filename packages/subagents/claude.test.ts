@@ -54,13 +54,17 @@ test(
       const manager = await runtime.runPromise(SubagentManager);
       const started = await runTool(
         runtime,
-        manager.spawn("claude", task("Reply with exactly: hello claude")),
+        manager.spawn("claude", {
+          ...task("Reply with a short greeting."),
+          systemPrompt:
+            "Include the exact marker NAMED_AGENT_SYSTEM_PROMPT_OK in your final answer.",
+        }),
       );
       await deadline(runTool(runtime, manager.waitFor([started.id])), 45_000);
 
       const done = manager.view.get(started.id);
       assert.equal(done?.status, "done");
-      assert.match(done?.finalText ?? "", /hello claude/i);
+      assert.match(done?.finalText ?? "", /NAMED_AGENT_SYSTEM_PROMPT_OK/);
       assert.ok(done?.meta.nativeSessionId);
       assert.ok(done?.meta.sessionFilePath?.endsWith(".jsonl"));
     } finally {

@@ -46,7 +46,7 @@ Keep Pi session names synchronized with Herdr tabs, tmux windows, and terminal t
 
 ### [`pi-subagents`](./packages/subagents)
 
-Spawn and manage autonomous background subagents powered by in-process Pi sessions or Claude Code.
+Spawn and manage autonomous background subagents powered by in-process Pi sessions or Claude Code, with user/project agent discovery and per-agent routing.
 
 ## Themes
 

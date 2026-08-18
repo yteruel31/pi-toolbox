@@ -5,6 +5,7 @@
  * Tools (for the parent LLM):
  * - subagent_spawn: fire-and-forget spawn (prompt, title, agent, working_dir,
  *   model, reasoning_effort). Max 4 running at once across all backends.
+ * - subagent_agents: list configured named agents and their effective routing.
  * - subagent_wait: block until the listed subagents settle, return results.
  * - subagent_cancel: stop one or more running subagents.
  * - subagent_check: peek at a subagent's status and recent activity.
@@ -39,6 +40,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+  buildAgentCatalogPrompt,
+  effectiveAgentRouting,
+  loadAgentCatalog,
+  resolveAgentSpawn,
+} from "./agents.ts";
 import { deriveBtwTitle, isModelVisible } from "./by-the-way.ts";
 import {
   BACKEND_NAMES,
@@ -73,6 +80,7 @@ import {
   runTool,
   type SubagentRuntime,
 } from "./runtime.ts";
+import { openAgentRoutingPanel } from "./ui/agent-routing.ts";
 import { openSubagentPicker, openSubagentTakeover } from "./ui/takeover.ts";
 
 const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
@@ -125,7 +133,13 @@ function resolveChildProjectTrust(options: {
   childCwd: string;
   parentTrusted: boolean;
 }) {
-  if (path.resolve(options.childCwd) === path.resolve(options.parentCwd)) {
+  let canonicalParent: string;
+  try {
+    canonicalParent = fs.realpathSync(options.parentCwd);
+  } catch {
+    canonicalParent = path.resolve(options.parentCwd);
+  }
+  if (fs.realpathSync(options.childCwd) === canonicalParent) {
     return options.parentTrusted;
   }
   try {
@@ -145,6 +159,8 @@ export default function (pi: ExtensionAPI) {
   const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
 
   const getRuntime = () => (runtime ??= createSubagentRuntime());
+  const loadCatalog = (cwd: string, projectTrusted: boolean) =>
+    loadAgentCatalog({ cwd, projectTrusted });
 
   /** Resolve the manager service once per runtime and wire the extension hooks. */
   const getManager = () => {
@@ -273,12 +289,21 @@ export default function (pi: ExtensionAPI) {
       prompt: Type.String({
         description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.prompt,
       }),
-      name: Type.String({
-        description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.name,
-      }),
-      harness: StringEnum(BACKEND_NAMES, {
-        description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.harness,
-      }),
+      agent: Type.Optional(
+        Type.String({
+          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.agent,
+        }),
+      ),
+      name: Type.Optional(
+        Type.String({
+          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.name,
+        }),
+      ),
+      harness: Type.Optional(
+        StringEnum(BACKEND_NAMES, {
+          description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.harness,
+        }),
+      ),
       working_dir: Type.Optional(
         Type.String({
           description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.workingDir,
@@ -297,29 +322,55 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const manager = await getManager();
-      const harness = params.harness;
-
-      const cwd = path.resolve(ctx.cwd, params.working_dir ?? ".");
-      if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
-        throw new Error(`working_dir is not a directory: ${cwd}`);
+      const requestedCwd = path.resolve(ctx.cwd, params.working_dir ?? ".");
+      if (!fs.existsSync(requestedCwd) || !fs.statSync(requestedCwd).isDirectory()) {
+        throw new Error(`working_dir is not a directory: ${requestedCwd}`);
       }
+      // Canonicalize before trust lookup, profile discovery, and backend
+      // launch so a symlink cannot make those layers reason about different
+      // directories. Arbitrary trusted directories remain an intentional API.
+      const cwd = fs.realpathSync(requestedCwd);
+      const projectTrusted = resolveChildProjectTrust({
+        parentCwd: ctx.cwd,
+        childCwd: cwd,
+        parentTrusted: ctx.isProjectTrusted(),
+      });
+      const catalog = params.agent ? loadCatalog(cwd, projectTrusted) : undefined;
+      const resolved = catalog
+        ? resolveAgentSpawn(catalog, {
+            agent: params.agent,
+            harness: params.harness,
+            model: params.model,
+            thinking: params.reasoning_effort,
+          })
+        : {
+            harness: params.harness ?? ("pi" as const),
+            ...(params.model ? { model: params.model } : {}),
+            ...(params.reasoning_effort
+              ? { thinking: params.reasoning_effort }
+              : {}),
+          };
+      const harness = resolved.harness;
 
-      const title = params.name.trim().slice(0, 160) || "subagent";
+      const title =
+        params.name?.trim().slice(0, 160) || resolved.agent?.name || "subagent";
       const snap = await runTool(
         getRuntime(),
         manager.spawn(harness, {
+          ...(resolved.agent
+            ? {
+                agentName: resolved.agent.name,
+                systemPrompt: resolved.agent.systemPrompt,
+              }
+            : {}),
           prompt: params.prompt,
           title,
           cwd,
-          model: params.model,
-          reasoningEffort: params.reasoning_effort,
+          model: resolved.model,
+          reasoningEffort: resolved.thinking,
           parent: {
             parentCwd: ctx.cwd,
-            projectTrusted: resolveChildProjectTrust({
-              parentCwd: ctx.cwd,
-              childCwd: cwd,
-              parentTrusted: ctx.isProjectTrusted(),
-            }),
+            projectTrusted,
             inheritedModel: ctx.model
               ? { provider: ctx.model.provider, id: ctx.model.id }
               : undefined,
@@ -334,13 +385,17 @@ export default function (pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: buildSubagentSpawnResult({
-              id: snap.id,
-              title: snap.title,
-              harness,
-              modelLabel: snap.meta.modelLabel ?? "?",
-              cwd,
-            }),
+            text:
+              buildSubagentSpawnResult({
+                id: snap.id,
+                title: snap.title,
+                harness,
+                modelLabel: snap.meta.modelLabel ?? "?",
+                cwd,
+              }) +
+              (catalog && catalog.warnings.length > 0
+                ? "\nWarning: one or more agent configuration entries were ignored; open /subagents agents for details."
+                : ""),
           },
         ],
         details: {
@@ -348,7 +403,37 @@ export default function (pi: ExtensionAPI) {
           title: snap.title,
           cwd,
           harness,
+          ...(resolved.agent ? { agent: resolved.agent.name } : {}),
           model: snap.meta.modelLabel,
+          warningCount: catalog?.warnings.length ?? 0,
+        },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "subagent_agents",
+    label: "List Subagent Agents",
+    description:
+      "List named subagent profiles discovered in user and trusted current-project scope, including their effective harness, model, and thinking routing. Use this before spawning when you need to discover the configured specialist names.",
+    promptSnippet:
+      "List configured named subagent profiles and their effective routing",
+    promptGuidelines: [
+      "Use subagent_agents when you need to discover which named profiles can be passed to subagent_spawn.agent; do not guess profile names.",
+    ],
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const catalog = loadCatalog(ctx.cwd, ctx.isProjectTrusted());
+      const text =
+        (buildAgentCatalogPrompt(catalog) ?? "No named subagents found.") +
+        (catalog.warnings.length > 0
+          ? `\n\nWarning: ${catalog.warnings.length} agent configuration issue(s) were ignored. Open /subagents agents for local details.`
+          : "");
+      return {
+        content: [{ type: "text", text }],
+        details: {
+          count: catalog.agents.length,
+          warningCount: catalog.warnings.length,
         },
       };
     },
@@ -721,16 +806,42 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("subagents", {
-    description: "List, inspect, and take over subagents",
-    handler: async (_args, ctx) => {
+    description: "Inspect running subagents or configure named agent routing",
+    handler: async (rawArgs, ctx) => {
       if (ctx.mode !== "tui") {
         if (ctx.hasUI)
-          ctx.ui.notify(
-            "Subagent takeover is only available in the TUI",
-            "error",
-          );
+          ctx.ui.notify("Subagent views are only available in the TUI", "error");
         return;
       }
+
+      const requested = rawArgs.trim().toLowerCase();
+      let view: "agents" | "runs" | undefined;
+      if (requested === "agents" || requested === "config") {
+        view = "agents";
+      } else if (requested === "runs") {
+        view = "runs";
+      } else if (requested) {
+        ctx.ui.notify('Use "/subagents agents" or "/subagents runs".', "error");
+        return;
+      }
+
+      if (!view) {
+        const manager = await getManager();
+        const choice = await ctx.ui.select("Subagents", [
+          "Agent routing",
+          `Running subagents (${manager.view.size()})`,
+        ]);
+        if (!choice) return;
+        view = choice === "Agent routing" ? "agents" : "runs";
+      }
+
+      if (view === "agents") {
+        await openAgentRoutingPanel(ctx, () =>
+          loadCatalog(ctx.cwd, ctx.isProjectTrusted()),
+        );
+        return;
+      }
+
       const manager = await getManager();
       if (manager.view.size() === 0) {
         ctx.ui.notify(

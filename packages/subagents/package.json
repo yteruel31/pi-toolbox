@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Spawn and manage background Pi or Claude Code subagents from Pi.",
+  "description": "Run named or ad-hoc background subagents through Pi or Claude Code.",
   "keywords": [
     "pi-package",
     "pi",
@@ -26,7 +26,7 @@
   ],
   "scripts": {
     "check": "tsc --noEmit -p .",
-    "test": "node --test --experimental-strip-types manager.test.ts result-delivery.test.ts context-usage.test.ts takeover.test.ts by-the-way.test.ts tool-call-timeout.test.ts",
+    "test": "node --test --experimental-strip-types manager.test.ts result-delivery.test.ts context-usage.test.ts takeover.test.ts by-the-way.test.ts tool-call-timeout.test.ts agents.test.ts",
     "test:live": "node --test --experimental-strip-types claude.test.ts",
     "pack:dry": "npm pack --dry-run"
   },
