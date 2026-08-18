@@ -47,6 +47,14 @@ function writeAgent(
   );
 }
 
+function writePackageManifest(packageRoot: string, manifest: Record<string, unknown>) {
+  fs.mkdirSync(packageRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+}
+
 test("agent markdown parsing extracts routing metadata and system prompt", () => {
   const parsed = parseAgentMarkdown(
     '---\r\nname: "reviewer"\r\ndescription: Review code\r\n---\r\n\r\nBe strict.\r\n',
@@ -94,6 +102,362 @@ test("catalog discovers recursive user and trusted project agents with project p
     });
     assert.equal(untrusted.byName.get("reviewer")?.scope, "user");
     assert.equal(untrusted.projectRoutingPath, undefined);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("catalog discovers agents declared by a configured Pi git package", () => {
+  const env = fixture();
+  try {
+    const packageRoot = path.join(
+      env.agentDir,
+      "git",
+      "github.com",
+      "acme",
+      "agent-pack",
+    );
+    writePackageManifest(packageRoot, {
+      name: "agent-pack",
+      pi: { subagents: { agents: ["./profiles"] } },
+    });
+    writeAgent(path.join(packageRoot, "profiles", "reviewer.md"), {
+      name: "package-reviewer",
+      description: "Review from the installed package",
+      prompt: "Package reviewer prompt",
+    });
+    fs.writeFileSync(
+      path.join(env.agentDir, "settings.json"),
+      `${JSON.stringify({ packages: ["git:github.com/acme/agent-pack@v1"] })}\n`,
+    );
+
+    const catalog = loadAgentCatalog({
+      cwd: env.cwd,
+      agentDir: env.agentDir,
+      projectTrusted: false,
+    });
+    assert.equal(catalog.byName.get("package-reviewer")?.scope, "package");
+    assert.equal(
+      catalog.byName.get("package-reviewer")?.systemPrompt,
+      "Package reviewer prompt",
+    );
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("local agents override package agents and compatibility manifests remain supported", () => {
+  const env = fixture();
+  try {
+    const packageRoot = path.join(env.root, "compat-package");
+    writePackageManifest(packageRoot, {
+      name: "compat-package",
+      "pi-subagents": { agents: ["agents"] },
+    });
+    writeAgent(path.join(packageRoot, "agents", "reviewer.md"), {
+      name: "reviewer",
+      prompt: "Package prompt",
+    });
+    writeAgent(path.join(packageRoot, "agents", "scout.md"), {
+      name: "package-scout",
+      prompt: "Package scout prompt",
+    });
+    writeAgent(path.join(env.agentDir, "agents", "reviewer.md"), {
+      name: "reviewer",
+      prompt: "User prompt",
+    });
+
+    const disabledPackageRoot = path.join(env.root, "disabled-package");
+    writePackageManifest(disabledPackageRoot, {
+      name: "disabled-package",
+      pi: { subagents: { agents: ["agents"] } },
+    });
+    writeAgent(path.join(disabledPackageRoot, "agents", "disabled.md"), {
+      name: "disabled-package-agent",
+    });
+    fs.writeFileSync(
+      path.join(env.agentDir, "settings.json"),
+      `${JSON.stringify({
+        packages: [
+          { source: packageRoot, extensions: [] },
+          { source: disabledPackageRoot, autoload: false },
+        ],
+      })}\n`,
+    );
+
+    const catalog = loadAgentCatalog({
+      cwd: env.cwd,
+      agentDir: env.agentDir,
+      projectTrusted: false,
+    });
+    assert.equal(catalog.byName.get("reviewer")?.scope, "user");
+    assert.equal(catalog.byName.get("reviewer")?.systemPrompt, "User prompt");
+    assert.equal(catalog.byName.get("package-scout")?.scope, "package");
+    assert.equal(catalog.byName.has("disabled-package-agent"), false);
+    assert.equal(
+      catalog.warnings.some((warning) => warning.includes('Duplicate package agent "reviewer"')),
+      false,
+    );
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("project package agents require project trust", () => {
+  const env = fixture();
+  try {
+    const packageRoot = path.join(
+      env.cwd,
+      ".pi",
+      "git",
+      "github.com",
+      "acme",
+      "project-agents",
+    );
+    writePackageManifest(packageRoot, {
+      name: "project-agents",
+      pi: { subagents: { agents: ["agents"] } },
+    });
+    writeAgent(path.join(packageRoot, "agents", "project.md"), {
+      name: "project-package-agent",
+    });
+    fs.writeFileSync(
+      path.join(env.cwd, ".pi", "settings.json"),
+      `${JSON.stringify({ packages: ["git:github.com/acme/project-agents"] })}\n`,
+    );
+
+    const trusted = loadAgentCatalog({
+      cwd: env.cwd,
+      agentDir: env.agentDir,
+      projectTrusted: true,
+    });
+    assert.equal(trusted.byName.get("project-package-agent")?.scope, "package");
+
+    const untrusted = loadAgentCatalog({
+      cwd: env.cwd,
+      agentDir: env.agentDir,
+      projectTrusted: false,
+    });
+    assert.equal(untrusted.byName.has("project-package-agent"), false);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("project package identity replaces global versions and can disable inherited agents", () => {
+  const env = fixture();
+  try {
+    const globalRoot = path.join(
+      env.agentDir,
+      "git",
+      "github.com",
+      "acme",
+      "versioned-agents",
+    );
+    writePackageManifest(globalRoot, {
+      name: "versioned-agents",
+      pi: { subagents: { agents: ["agents"] } },
+    });
+    writeAgent(path.join(globalRoot, "agents", "global.md"), {
+      name: "global-version-agent",
+    });
+    writeAgent(path.join(globalRoot, "agents", "priority.md"), {
+      name: "package-priority-agent",
+      prompt: "Global overridden package",
+    });
+
+    const otherGlobalRoot = path.join(
+      env.agentDir,
+      "git",
+      "github.com",
+      "acme",
+      "other-agents",
+    );
+    writePackageManifest(otherGlobalRoot, {
+      name: "other-agents",
+      pi: { subagents: { agents: ["agents"] } },
+    });
+    writeAgent(path.join(otherGlobalRoot, "agents", "priority.md"), {
+      name: "package-priority-agent",
+      prompt: "Other global package",
+    });
+
+    const projectRoot = path.join(
+      env.cwd,
+      ".pi",
+      "git",
+      "github.com",
+      "acme",
+      "versioned-agents",
+    );
+    writePackageManifest(projectRoot, {
+      name: "versioned-agents",
+      pi: { subagents: { agents: ["agents"] } },
+    });
+    writeAgent(path.join(projectRoot, "agents", "project.md"), {
+      name: "project-version-agent",
+    });
+    writeAgent(path.join(projectRoot, "agents", "priority.md"), {
+      name: "package-priority-agent",
+      prompt: "Project package",
+    });
+    fs.writeFileSync(
+      path.join(env.agentDir, "settings.json"),
+      `${JSON.stringify({
+        packages: [
+          "git:github:acme/versioned-agents#v1",
+          "git:github.com/acme/other-agents",
+        ],
+      })}\n`,
+    );
+    const projectSettingsPath = path.join(env.cwd, ".pi", "settings.json");
+    fs.writeFileSync(
+      projectSettingsPath,
+      `${JSON.stringify({ packages: ["git:https://github.com/acme/versioned-agents@v2"] })}\n`,
+    );
+
+    const overridden = loadAgentCatalog({
+      cwd: env.cwd,
+      agentDir: env.agentDir,
+      projectTrusted: true,
+    });
+    assert.equal(overridden.byName.has("global-version-agent"), false);
+    assert.equal(overridden.byName.has("project-version-agent"), true);
+    assert.equal(
+      overridden.byName.get("package-priority-agent")?.systemPrompt,
+      "Project package",
+    );
+
+    fs.writeFileSync(
+      projectSettingsPath,
+      `${JSON.stringify({
+        packages: [
+          {
+            source: "git:https://github.com/acme/versioned-agents@v2",
+            autoload: false,
+          },
+        ],
+      })}\n`,
+    );
+    const disabled = loadAgentCatalog({
+      cwd: env.cwd,
+      agentDir: env.agentDir,
+      projectTrusted: true,
+    });
+    assert.equal(disabled.byName.has("global-version-agent"), false);
+    assert.equal(disabled.byName.has("project-version-agent"), false);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("package collisions expose deterministic provenance", () => {
+  const env = fixture();
+  try {
+    const firstRoot = path.join(env.root, "first-package");
+    const secondRoot = path.join(env.root, "second-package");
+    for (const packageRoot of [firstRoot, secondRoot]) {
+      writePackageManifest(packageRoot, {
+        name: path.basename(packageRoot),
+        pi: { subagents: { agents: ["agents"] } },
+      });
+      writeAgent(path.join(packageRoot, "agents", "reviewer.md"), {
+        name: "colliding-reviewer",
+        prompt: `Prompt from ${path.basename(packageRoot)}`,
+      });
+    }
+    fs.writeFileSync(
+      path.join(env.agentDir, "settings.json"),
+      `${JSON.stringify({ packages: [firstRoot, secondRoot] })}\n`,
+    );
+
+    const catalog = loadAgentCatalog({
+      cwd: env.cwd,
+      agentDir: env.agentDir,
+      projectTrusted: false,
+    });
+    const agent = catalog.byName.get("colliding-reviewer");
+    assert.equal(agent?.systemPrompt, "Prompt from second-package");
+    assert.equal(agent?.packageSource, `local:${secondRoot}`);
+    assert.match(
+      catalog.warnings.find((warning) => warning.includes("Duplicate package agent")) ?? "",
+      /first-package.*second-package/,
+    );
+    assert.match(buildAgentCatalogPrompt(catalog) ?? "", /package="local:/);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("package agent discovery has a bounded recursion depth", () => {
+  const env = fixture();
+  try {
+    const packageRoot = path.join(env.root, "deep-package");
+    writePackageManifest(packageRoot, {
+      name: "deep-package",
+      pi: { subagents: { agents: ["agents"] } },
+    });
+    const deepRoot = path.join(
+      packageRoot,
+      "agents",
+      ...Array.from({ length: 21 }, (_, index) => `level-${index}`),
+    );
+    writeAgent(path.join(deepRoot, "hidden.md"), { name: "too-deep" });
+    fs.writeFileSync(
+      path.join(env.agentDir, "settings.json"),
+      `${JSON.stringify({ packages: [packageRoot] })}\n`,
+    );
+
+    const catalog = loadAgentCatalog({
+      cwd: env.cwd,
+      agentDir: env.agentDir,
+      projectTrusted: false,
+    });
+    assert.equal(catalog.byName.has("too-deep"), false);
+    assert.match(
+      catalog.warnings.find((warning) => warning.includes("directory levels")) ?? "",
+      /20/,
+    );
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("package agent directories cannot escape or cross symlinks", () => {
+  const env = fixture();
+  try {
+    const packageRoot = path.join(env.root, "unsafe-package");
+    const outsideRoot = path.join(env.root, "outside-package");
+    writeAgent(path.join(outsideRoot, "escaped.md"), { name: "escaped" });
+    writePackageManifest(packageRoot, {
+      name: "unsafe-package",
+      pi: {
+        subagents: {
+          agents: ["../outside-package", "linked-agents", ".", "safe-agents"],
+        },
+      },
+    });
+    fs.symlinkSync(outsideRoot, path.join(packageRoot, "linked-agents"));
+    writeAgent(path.join(packageRoot, "safe-agents", "safe.md"), {
+      name: "safe-package-agent",
+    });
+    fs.writeFileSync(
+      path.join(env.agentDir, "settings.json"),
+      `${JSON.stringify({ packages: [packageRoot] })}\n`,
+    );
+
+    const catalog = loadAgentCatalog({
+      cwd: env.cwd,
+      agentDir: env.agentDir,
+      projectTrusted: false,
+    });
+    assert.equal(catalog.byName.has("escaped"), false);
+    assert.equal(catalog.byName.get("safe-package-agent")?.scope, "package");
+    assert.equal(
+      catalog.warnings.filter((warning) => warning.includes("unsafe package agent directory"))
+        .length,
+      3,
+    );
   } finally {
     env.cleanup();
   }

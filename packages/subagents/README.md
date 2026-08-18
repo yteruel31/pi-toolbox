@@ -25,10 +25,27 @@ claude --version
 
 The extension discovers Markdown agent definitions recursively from:
 
+- Installed Pi packages that declare `pi.subagents.agents` in `package.json`
 - User scope: `~/.pi/agent/agents/**/*.md`
 - Trusted project scope: `<cwd>/.pi/agents/**/*.md`
 
-Project definitions win when both scopes define the same agent name. Each file uses YAML frontmatter for its name and description, followed by the agent system prompt:
+Package paths are relative directories and use the same manifest style as other Pi resources:
+
+```json
+{
+  "pi": {
+    "subagents": {
+      "agents": ["./agents"]
+    }
+  }
+}
+```
+
+The compatibility form `pi-subagents.agents` is also supported. Package definitions have the lowest precedence, followed by user definitions and then trusted project definitions. When the same package is configured in both scopes, the project package wins. Package-to-package name collisions use the later effective package and surface both package identities in a warning and the routing view.
+
+Project-configured packages are ignored until the project is trusted. Object-form package filters do not filter agent definitions, but `autoload: false` disables them with the package's other automatic resources.
+
+Declared package directories must stay inside the installed package and cannot cross symlinks. Package scans also cap manifest paths, recursion depth, directories, Markdown files, individual file size, and aggregate Markdown bytes. Each file uses YAML frontmatter for its name and description, followed by the agent system prompt:
 
 ```md
 ---
