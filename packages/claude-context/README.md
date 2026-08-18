@@ -1,4 +1,4 @@
-# pi-claude-context
+# @yteruel31/pi-claude-context
 
 Pi extension that loads Claude Code `CLAUDE.md` context files from the current directory and descendant project directories, then injects the relevant context file list into agent sessions.
 
@@ -17,10 +17,8 @@ The extension tracks file paths mentioned through `read`, `write`, `edit`, and s
 
 ## Install from npm
 
-If published to npm:
-
 ```bash
-pi install npm:pi-claude-context
+pi install npm:@yteruel31/pi-claude-context
 ```
 
 ## Install from this repository
@@ -28,7 +26,7 @@ pi install npm:pi-claude-context
 The root meta-package exposes this extension, so installing the repository loads it together with the other packaged Pi extensions:
 
 ```bash
-pi install git:github.com/gigapay/pi-packages@main
+pi install git:github.com/yteruel31/pi-toolbox@main
 ```
 
 For local development from the repository root:
@@ -42,6 +40,6 @@ Then restart Pi or run `/reload`.
 ## Development
 
 ```bash
-pnpm install
-pnpm check
+npm install
+npm run check --workspace @yteruel31/pi-claude-context
 ```

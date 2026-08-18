@@ -1,4 +1,4 @@
-# pi-claude-marketplace
+# @yteruel31/pi-claude-marketplace
 
 Pi extension for installing and running Claude Code marketplace plugins.
 
@@ -136,13 +136,13 @@ This package expects the user to install and enable:
 
 ```bash
 pi install npm:pi-ask-user
-pi install npm:pi-subagents
+pi install npm:@yteruel31/pi-subagents
 ```
 
 Why:
 
 - `pi-ask-user` is required for trust decisions, hook/MCP consent, and Claude `ask`-style permission decisions.
-- `pi-subagents` is required to expose Claude agents and to support `SubagentStart` / `SubagentStop` lifecycle compatibility.
+- `@yteruel31/pi-subagents` is required to expose Claude agents and to support `SubagentStart` / `SubagentStop` lifecycle compatibility.
 
 ## Optional Pi packages
 
@@ -164,7 +164,15 @@ For already-installed plugins, run `/claude-marketplace-plugin-env-init <plugin>
 
 Use `/claude-marketplace-plugin-mcp-sync <plugin>` to generate Pi MCP adapter config in `~/.pi/agent/mcp.json`; sync is lazy/proxy-only by default, does not start server code, resolves marketplace env values into the generated config, and blocks when required environment variables are missing. Use `/claude-marketplace-plugin-mcp-unsync <plugin>` to remove managed entries.
 
-## Install from local path
+## Install
+
+From npm:
+
+```bash
+pi install npm:@yteruel31/pi-claude-marketplace
+```
+
+From a local checkout:
 
 ```bash
 pi install ./packages/claude-marketplace
@@ -175,7 +183,7 @@ pi install ./packages/claude-marketplace
 The parent monorepo can expose this package from its root `pi` manifest:
 
 ```bash
-pi install git:github.com/gigapay/pi-packages@main
+pi install git:github.com/yteruel31/pi-toolbox@main
 ```
 
 ## State layout

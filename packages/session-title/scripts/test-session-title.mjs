@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = join(packageRoot, "..", "..");
 const tmpRoot = await mkdtemp(join(tmpdir(), "pi-session-title-"));
 const buildDir = join(tmpRoot, "build");
 const originalHostEnvironment = Object.fromEntries(
@@ -40,11 +41,11 @@ async function waitForLog(logPath, expected, timeout = 1_000) {
 }
 
 try {
-  await symlink(join(packageRoot, "node_modules"), join(tmpRoot, "node_modules"), "dir");
+  await symlink(join(repoRoot, "node_modules"), join(tmpRoot, "node_modules"), "dir");
   execFileSync(
     process.execPath,
     [
-      join(packageRoot, "node_modules", "typescript", "bin", "tsc"),
+      join(repoRoot, "node_modules", "typescript", "bin", "tsc"),
       "-p",
       join(packageRoot, "tsconfig.json"),
       "--outDir",

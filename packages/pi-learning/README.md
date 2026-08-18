@@ -1,25 +1,25 @@
-# pi-learning
+# @yteruel31/pi-learning
 
 A pull-only, challenge-first technical learning mode for Pi. The learner keeps the initiative, implements the exercises, and owns verbatim notes; Pi researches, proposes a minimal path, gives graduated help on request, and evaluates evidence without completing the learner's solution.
 
 ## Install
 
-From npm after publication:
+From npm:
 
 ```bash
-pi install npm:pi-learning
+pi install npm:@yteruel31/pi-learning
 ```
 
 From this repository:
 
 ```bash
-pi install ./packages/learning
+pi install ./packages/pi-learning
 ```
 
 The root meta-package also exposes this extension:
 
 ```bash
-pi install git:github.com/gigapay/pi-packages@main
+pi install git:github.com/yteruel31/pi-toolbox@main
 ```
 
 Restart Pi or run `/reload` after installation.
@@ -96,10 +96,10 @@ This is tutoring policy enforcement, not a filesystem sandbox or learning certif
 
 ## Development
 
-Requires Node.js 22.19 or newer and targets Pi 0.81.1.
+Requires Node.js 22.19 or newer and targets Pi 0.84.2.
 
 ```bash
-pnpm install --ignore-scripts
-pnpm --filter pi-learning check
-pnpm --filter pi-learning pack:dry
+npm install --ignore-scripts
+npm run check --workspace @yteruel31/pi-learning
+npm run pack:dry --workspace @yteruel31/pi-learning
 ```
