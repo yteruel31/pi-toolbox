@@ -1,14 +1,19 @@
 {
   "compilerOptions": {
-    "allowImportingTsExtensions": true,
     "target": "ES2022",
+    "lib": ["ES2023"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
-    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "types": ["node"],
-    "verbatimModuleSyntax": true
+    "noEmit": true,
+    "types": ["node"]
   },
-  "include": ["src/**/*.ts", "*.test.ts"]
+  "include": ["src", "test"]
 }

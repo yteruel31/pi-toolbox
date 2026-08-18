@@ -1,35 +1,79 @@
-# pi-subagents
+# @yteruel31/pi-subagents
 
-Spawn and manage autonomous background subagents from Pi. The extension supports two harnesses:
+Background subagents for [Pi](https://github.com/badlogic/pi-mono): spawn autonomous work, keep using the parent session, inspect progress, and collect or automatically receive results.
 
-- `pi`: an in-process Pi session that inherits the current model, thinking level, tools, and configuration by default.
-- `claude`: Claude Code through `@anthropic-ai/claude-agent-sdk`, using the installed `claude` executable and its existing authentication.
+> **Security:** child harnesses run with your normal host permissions. The Claude harness is headless and deliberately uses `bypassPermissions` with `allowDangerouslySkipPermissions`. Only run trusted tasks in trusted working directories.
 
-This package adapts the subagents extension from [davis7dotsh/my-pi-setup at `73bf4d8`](https://github.com/davis7dotsh/my-pi-setup/tree/73bf4d826f39b5cab6b7865e706ba4a2669629ca/extensions/subagents) for Pi Toolbox. See [`NOTICE`](./NOTICE) for provenance and redistribution status.
-
-## Installation
-
-Install Pi Toolbox to load the package:
+## Install
 
 ```bash
-pi install git:github.com/yteruel31/pi-toolbox
+pi install npm:@yteruel31/pi-subagents
 ```
 
-The Claude harness requires Claude Code to be installed and authenticated:
+Restart Pi or run `/reload`. The package requires Node.js 22.19 or newer and Pi 0.84.1 or newer. The Claude Agent SDK is an optional dependency; if it cannot be installed or authenticated, the Pi harness still works and Claude runs fail with a bounded diagnostic.
 
-```bash
-claude --version
+The full `pi-toolbox` repository remains Git-installable. This scoped package is the independently versioned distribution of its subagents extension.
+
+## Tools
+
+| Tool | Purpose |
+| --- | --- |
+| `subagent_spawn` | Start a background run and return its `run-N` id immediately. |
+| `subagent_agents` | Discover named profiles and show effective routing. |
+| `subagent_wait` | Wait for one or more runs and consume their results. |
+| `subagent_cancel` | Request cancellation without deleting records. |
+| `subagent_check` | Inspect status, bounded activity, and result preview. |
+| `subagent_list` | List all session runs in creation order. |
+
+At most four runs are active at once across both harnesses and `/btw`. Results not collected with `subagent_wait` are delivered once when the parent becomes idle.
+
+Example:
+
+```text
+subagent_spawn({
+  prompt: "Review this repository for unsafe path handling and report findings.",
+  name: "path-security-review",
+  harness: "pi",
+  working_dir: "/path/to/trusted/project",
+  reasoning_effort: "high"
+})
 ```
+
+Children cannot call subagent/workflow orchestration tools or interactive user-question tools. Give each child a complete, self-contained prompt.
+
+## Harnesses
+
+### Pi
+
+Creates an isolated in-process Pi session with in-memory history. It inherits the parent model and thinking level unless routing or spawn arguments override them. Normal user/package resources load; project resources load only for the trusted current project. Child tool calls have independent three-minute inactivity watchdogs.
+
+### Claude Code
+
+Uses `@anthropic-ai/claude-agent-sdk` in headless mode. It applies the requested cwd, model/alias, effort, and named-agent system prompt. Claude settings sources are disabled for isolation; `CLAUDE.md`, hooks, MCP configuration, and user/project Claude settings are therefore not loaded into the child. Authentication comes from the local Claude CLI or `ANTHROPIC_API_KEY`.
 
 ## Named agents
 
-The extension discovers Markdown agent definitions recursively from:
+Definitions are Markdown files under:
 
-- Installed Pi packages that declare `pi.subagents.agents` in `package.json`
-- User scope: `~/.pi/agent/agents/**/*.md`
-- Trusted project scope: `<cwd>/.pi/agents/**/*.md`
+- an installed package directory declared by `pi.subagents.agents`;
+- `~/.pi/agent/agents/**/*.md`;
+- `<project>/.pi/agents/**/*.md` for trusted projects.
 
-Package paths are relative directories and use the same manifest style as other Pi resources:
+```markdown
+---
+name: reviewer
+description: Review changes for correctness and regressions.
+harness: pi
+model: anthropic/claude-sonnet-4-5
+thinking: high
+---
+
+You are a strict reviewer. Return concrete findings with file references.
+```
+
+User definitions replace package definitions; trusted project definitions replace both. Scans are bounded and reject symlink traversal or package paths outside their real package root.
+
+A package can expose agents with:
 
 ```json
 {
@@ -41,41 +85,14 @@ Package paths are relative directories and use the same manifest style as other 
 }
 ```
 
-The compatibility form `pi-subagents.agents` is also supported. Package definitions have the lowest precedence, followed by user definitions and then trusted project definitions. When the same package is configured in both scopes, the project package wins. Package-to-package name collisions use the later effective package and surface both package identities in a warning and the routing view.
+The compatibility key `pi-subagents.agents` is also accepted.
 
-Project-configured packages are ignored until the project is trusted. Object-form package filters do not filter agent definitions, but `autoload: false` disables them with the package's other automatic resources.
+## Saved routing
 
-Declared package directories must stay inside the installed package and cannot cross symlinks. Package scans also cap manifest paths, recursion depth, directories, Markdown files, individual file size, and aggregate Markdown bytes. Each file uses YAML frontmatter for its name and description, followed by the agent system prompt:
+Use `/subagents agents` to edit routes, or write:
 
-```md
----
-name: reviewer
-description: Review changes for correctness and regressions.
----
-
-You are a strict code reviewer.
-```
-
-Select a named agent with `subagent_spawn.agent`. Its system prompt and saved routing are applied automatically. Explicit `harness`, `model`, or `reasoning_effort` parameters override the saved routing for that run. The parent model can call `subagent_agents` to discover profile names and routing only when needed; the catalog is not injected into unrelated model turns.
-
-Without a named agent or explicit routing, the extension uses the `pi` harness and inherits the parent model and thinking level.
-
-## Agent routing
-
-Run `/subagents` and open **Agent routing**, or use `/subagents agents` directly. The view lists resolved user and project agents and supports:
-
-- `↑`/`↓`: select an agent
-- `Tab`: switch between user and project mapping scope
-- `Enter`: assign harness, model, and thinking
-- `d`: remove the selected scope's mapping
-- `Esc`: close
-
-Mappings are stored separately from agent definitions:
-
-- User mappings: `~/.pi/agent/subagents.json`
-- Trusted project mappings: `<cwd>/.pi/subagents.json`
-
-Project mappings replace user mappings for the same agent. An omitted field uses the default: `pi` for the harness, the parent model for a Pi child, and the parent thinking level for a Pi child. Claude model shortcuts include `fable`, `sonnet`, `opus`, and `haiku`; full model IDs remain supported. Mapping files are written with user-only permissions. Invalid mapping files are ignored with a warning; the routing panel can back them up and reset them before editing.
+- user: `~/.pi/agent/subagents.json`;
+- trusted project: `<project>/.pi/subagents.json`.
 
 ```json
 {
@@ -83,55 +100,23 @@ Project mappings replace user mappings for the same agent. An omitted field uses
   "agents": {
     "reviewer": {
       "harness": "claude",
-      "model": "opus",
+      "model": "sonnet",
       "thinking": "high"
-    },
-    "scout": {
-      "harness": "pi",
-      "model": "anthropic/claude-haiku-4-5",
-      "thinking": "low"
     }
   }
 }
 ```
 
-Project agent definitions and mappings are ignored when Pi does not trust the project or when the project `.pi`/`agents` path crosses a symlink boundary.
-
-## Tools
-
-- `subagent_spawn`: start a named or ad-hoc Pi/Claude Code subagent in the background.
-- `subagent_agents`: list named agents and their effective routing on demand.
-- `subagent_wait`: wait for one or more subagents and collect their output.
-- `subagent_cancel`: interrupt running subagents.
-- `subagent_check`: inspect one subagent without blocking.
-- `subagent_list`: list all tracked subagents.
-
-A maximum of four subagents may run concurrently across both harnesses. Unconsumed results are delivered to the parent session automatically when they settle.
-
-Example named spawn:
-
-```json
-{
-  "agent": "reviewer",
-  "prompt": "Review the current branch and report actionable findings.",
-  "name": "Review current branch"
-}
-```
+Precedence is explicit spawn arguments, project route, user route, agent defaults, then parent Pi defaults. Writes are atomic with private file/directory permissions. Invalid routing files must be explicitly backed up and reset from the routing UI before they can be replaced.
 
 ## Commands
 
-- `/subagents`: choose between running-subagent inspection and agent routing.
-- `/subagents runs`: open the running-subagent picker and takeover view directly.
-- `/subagents agents`: open agent routing directly.
-- `/btw [question]`: run a one-off Pi side question without adding its answer to the parent model context.
+- `/subagents` — choose run inspection or routing in TUI mode.
+- `/subagents runs` — open the live run overlay.
+- `/subagents agents` — open the routing editor.
+- `/btw <question>` — ask a one-off Pi side question using the shared cap. Its answer is shown to the human and persisted as a custom entry, but never enters parent-model context or triggers a parent turn.
 
-`/btw` always uses the Pi harness and inherits the parent model and thinking level.
-
-## Permissions and isolation
-
-Subagents are autonomous and run with the selected harness's normal host permissions. Only use trusted working directories. Child sessions cannot spawn more subagents or workflows and cannot ask the user interactive questions.
-
-Claude Code runs headlessly with permission prompts bypassed. Pi child sessions load normal global/package resources and only load project resources when Pi trusts the project.
+The run overlay supports arrows, Enter, refresh (`r`), cancel (`c`), takeover (`t`), and Escape. The routing overlay supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape.
 
 ## Development
 
@@ -139,11 +124,18 @@ Claude Code runs headlessly with permission prompts bypassed. Pi child sessions 
 npm install
 npm run check
 npm test
+npm run build
 npm run pack:dry
 ```
 
-The live Claude test is opt-in and uses the local Claude Code account:
+Opt-in Claude live test:
 
 ```bash
-npm run test:live
+PI_SUBAGENTS_CLAUDE_LIVE=1 npm test
 ```
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) and [CLEANROOM.md](./CLEANROOM.md).
+
+## License
+
+MIT © Yoann TERUEL
