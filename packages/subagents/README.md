@@ -58,7 +58,7 @@ Mappings are stored separately from agent definitions:
 - User mappings: `~/.pi/agent/subagents.json`
 - Trusted project mappings: `<cwd>/.pi/subagents.json`
 
-Project mappings replace user mappings for the same agent. An omitted field uses the default: `pi` for the harness, the parent model for a Pi child, and the parent thinking level for a Pi child. Mapping files are written with user-only permissions. Invalid mapping files are ignored with a warning; the routing panel can back them up and reset them before editing.
+Project mappings replace user mappings for the same agent. An omitted field uses the default: `pi` for the harness, the parent model for a Pi child, and the parent thinking level for a Pi child. Claude model shortcuts include `fable`, `sonnet`, `opus`, and `haiku`; full model IDs remain supported. Mapping files are written with user-only permissions. Invalid mapping files are ignored with a warning; the routing panel can back them up and reset them before editing.
 
 ```json
 {

@@ -20,6 +20,7 @@ import { REASONING_EFFORTS } from "../domain.ts";
 
 const DEFAULT_VALUE = "<default>";
 const CUSTOM_VALUE = "<custom…>";
+const CLAUDE_MODEL_ALIASES = ["fable", "sonnet", "opus", "haiku"] as const;
 
 type RoutingPanelAction =
   | { readonly type: "edit"; readonly agent: string; readonly scope: AgentScope }
@@ -188,7 +189,7 @@ async function selectModel(
 ): Promise<string | undefined | null> {
   const candidates =
     harness === "claude"
-      ? ["sonnet", "opus", "haiku"]
+      ? [...CLAUDE_MODEL_ALIASES]
       : availablePiModels(ctx);
   const choices = [DEFAULT_VALUE, ...candidates, CUSTOM_VALUE];
   const currentValue = current?.model ?? DEFAULT_VALUE;
@@ -201,7 +202,9 @@ async function selectModel(
   if (selected !== CUSTOM_VALUE) return selected;
   const custom = await ctx.ui.input(
     "Custom model",
-    harness === "claude" ? "sonnet, opus, haiku, or model id" : "provider/model-id",
+    harness === "claude"
+      ? "fable, sonnet, opus, haiku, or model id"
+      : "provider/model-id",
   );
   const value = custom?.trim();
   return value || null;

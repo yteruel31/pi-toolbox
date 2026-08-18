@@ -29,7 +29,7 @@ export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
   workingDir:
     "Trusted working directory for the autonomous child (default: current working directory)",
   model:
-    'Optional model override interpreted by the chosen harness (pi: "provider/model-id" or model id; claude: model alias like "sonnet"/"opus"). Omit to use the profile mapping, then the harness default.',
+    'Optional model override interpreted by the chosen harness (pi: "provider/model-id" or model id; claude: model alias like "fable"/"sonnet"/"opus"). Omit to use the profile mapping, then the harness default.',
   reasoningEffort:
     "Optional thinking override on the shared scale. Omit to use the profile mapping, then the harness default (Pi inherits the parent level).",
 };
