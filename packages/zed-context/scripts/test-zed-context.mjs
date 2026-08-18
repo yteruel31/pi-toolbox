@@ -293,6 +293,7 @@ try {
 	const extensionManifest = await readFile(join(packageRoot, "zed-extension", "extension.toml"), "utf8");
 	assert(extensionManifest.includes("[language_servers.pi-selection-bridge]"), "the packaged Zed extension should declare the bridge language server");
 	assert(extensionManifest.includes("\"TypeScript\""), "the packaged Zed extension should activate for common languages");
+	assert(extensionManifest.includes("\"Caddyfile\""), "the packaged Zed extension should activate for Caddyfiles");
 	const extensionSource = await readFile(join(packageRoot, "zed-extension", "src", "lib.rs"), "utf8");
 	assert(extensionSource.includes("\"lsp\".to_string()"), "the Zed extension should launch the helper in LSP mode");
 

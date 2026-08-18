@@ -55,6 +55,7 @@ languages = [
   "SQL",
   "GraphQL",
   "Dockerfile",
+  "Caddyfile",
   "Makefile",
   "Proto",
   "Terraform",
@@ -107,6 +108,7 @@ languages = [
 "SQL" = "sql"
 "GraphQL" = "graphql"
 "Dockerfile" = "dockerfile"
+"Caddyfile" = "caddyfile"
 "Makefile" = "makefile"
 "Proto" = "protobuf"
 "Terraform" = "terraform"
