@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
   Key,
   matchesKey,
@@ -9,25 +9,18 @@ import {
 
 import type { RoutingEntry } from "../agents/types.js";
 import type { RoutingDataPort, RunsDataPort } from "./binding.js";
-import {
-  formatKeyHints,
-  type RoutingKeyAction,
-  type RunsKeyAction,
-} from "./keys.js";
+import type { RoutingKeyAction, RunsKeyAction } from "./keys.js";
+import { renderRoutingPanel, renderRunsPanel } from "./pi-panel-renderer.js";
 import {
   ROUTING_KEY_HINTS,
-  routingListLines,
   type RoutingEditSession,
   type RoutingViewIntent,
 } from "./routing-view.js";
 import {
   RUN_DETAIL_KEY_HINTS,
   RUNS_LIST_KEY_HINTS,
-  runDetailLines,
-  runsListLines,
   type RunsViewIntent,
 } from "./runs-view.js";
-import { fitLine } from "./text.js";
 import {
   createRoutingViewModel,
   createRunsViewModel,
@@ -35,7 +28,7 @@ import {
   type RunsViewModel,
 } from "./view-models.js";
 
-const PANEL_ROWS = 20;
+const PANEL_ROWS = 24;
 
 /** Open the live run inspector as a fresh experimental Pi overlay. */
 export async function openPiRunsOverlay(
@@ -45,8 +38,8 @@ export async function openPiRunsOverlay(
   if (ctx.mode !== "tui") return;
   let handle: OverlayHandle | undefined;
   await ctx.ui.custom<void>(
-    (tui, _theme, _keybindings, done) =>
-      new RunsOverlayComponent(tui, data, done, {
+    (tui, theme, _keybindings, done) =>
+      new RunsOverlayComponent(tui, theme, data, done, {
         confirm: (title) => ctx.ui.confirm("Cancel subagent?", title),
         takeover(active) {
           if (active) handle?.focus();
@@ -56,9 +49,9 @@ export async function openPiRunsOverlay(
     {
       overlay: true,
       overlayOptions: {
-        width: "65%",
-        minWidth: 48,
-        maxHeight: "80%",
+        width: 88,
+        minWidth: 56,
+        maxHeight: "86%",
         anchor: "right-center",
         margin: 1,
       },
@@ -77,14 +70,14 @@ export async function openPiRoutingOverlay(
 ): Promise<void> {
   if (ctx.mode !== "tui") return;
   await ctx.ui.custom<void>(
-    (tui, _theme, _keybindings, done) =>
-      new RoutingOverlayComponent(tui, data, ctx, done),
+    (tui, theme, _keybindings, done) =>
+      new RoutingOverlayComponent(tui, theme, data, ctx, done),
     {
       overlay: true,
       overlayOptions: {
-        width: "72%",
-        minWidth: 58,
-        maxHeight: "80%",
+        width: 100,
+        minWidth: 64,
+        maxHeight: "86%",
         anchor: "center",
         margin: 1,
       },
@@ -98,6 +91,7 @@ class RunsOverlayComponent implements Component {
 
   constructor(
     private readonly tui: TUI,
+    private readonly theme: Theme,
     data: RunsDataPort,
     private readonly done: () => void,
     private readonly actions: {
@@ -115,16 +109,14 @@ class RunsOverlayComponent implements Component {
   }
 
   render(width: number): string[] {
-    const state = this.model.getState();
-    const hints = state.mode === "detail" ? RUN_DETAIL_KEY_HINTS : RUNS_LIST_KEY_HINTS;
-    const body = state.mode === "detail"
-      ? runDetailLines(state, width, PANEL_ROWS)
-      : runsListLines(state, width, PANEL_ROWS);
-    return [
-      fitLine("Subagent runs", width),
-      ...body,
-      fitLine(formatKeyHints(hints), width),
-    ];
+    return renderRunsPanel(
+      this.theme,
+      this.model.getState(),
+      width,
+      PANEL_ROWS,
+      RUNS_LIST_KEY_HINTS,
+      RUN_DETAIL_KEY_HINTS,
+    );
   }
 
   handleInput(data: string): void {
@@ -168,6 +160,7 @@ class RoutingOverlayComponent implements Component {
 
   constructor(
     private readonly tui: TUI,
+    private readonly theme: Theme,
     data: RoutingDataPort,
     private readonly ctx: ExtensionContext,
     private readonly done: () => void,
@@ -186,11 +179,13 @@ class RoutingOverlayComponent implements Component {
   }
 
   render(width: number): string[] {
-    return [
-      fitLine("Named-agent routing", width),
-      ...routingListLines(this.model.getState(), width, PANEL_ROWS),
-      fitLine(formatKeyHints(ROUTING_KEY_HINTS), width),
-    ];
+    return renderRoutingPanel(
+      this.theme,
+      this.model.getState(),
+      width,
+      PANEL_ROWS,
+      ROUTING_KEY_HINTS,
+    );
   }
 
   handleInput(data: string): void {
