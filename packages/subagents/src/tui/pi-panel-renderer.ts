@@ -1,0 +1,410 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+
+import type { RouteFieldProvenance, RoutingScope } from "../agents/types.js";
+import type { RunInspection, RunListEntry, RunStatus } from "../shared/types.js";
+import type { KeyHint } from "./keys.js";
+import type { RoutingAgentRow, RoutingViewState } from "./routing-view.js";
+import type { RunsViewState } from "./runs-view.js";
+import { formatElapsed, wrapText } from "./text.js";
+
+export function renderRunsPanel(
+  theme: Theme,
+  state: RunsViewState,
+  width: number,
+  maxRows: number,
+  listHints: readonly KeyHint[],
+  detailHints: readonly KeyHint[],
+): string[] {
+  const hints = state.mode === "detail" ? detailHints : listHints;
+  const content = state.mode === "detail"
+    ? renderRunDetail(theme, state, Math.max(1, width - 2), Math.max(1, maxRows - 4))
+    : renderRunsList(theme, state, Math.max(1, width - 2), Math.max(1, maxRows - 4));
+  return frame(theme, "SUBAGENT RUNS", content, renderHints(theme, hints), width, maxRows);
+}
+
+export function renderRoutingPanel(
+  theme: Theme,
+  state: RoutingViewState,
+  width: number,
+  maxRows: number,
+  hints: readonly KeyHint[],
+): string[] {
+  const innerWidth = Math.max(1, width - 2);
+  const bodyRows = Math.max(1, maxRows - 4);
+  const content = renderRoutingList(theme, state, innerWidth, bodyRows);
+  return frame(theme, "AGENT ROUTING", content, renderHints(theme, hints), width, maxRows);
+}
+
+function renderRunsList(
+  theme: Theme,
+  state: RunsViewState,
+  width: number,
+  maxRows: number,
+): string[] {
+  const counts = countStatuses(state.runs);
+  const summary = [
+    statusCount(theme, "running", counts.running),
+    statusCount(theme, "queued", counts.queued),
+    statusCount(theme, "completed", counts.completed),
+    statusCount(theme, "failed", counts.failed + counts.cancelled),
+  ].join(theme.fg("dim", "  ·  "));
+  const lines = [padAnsi(summary, width), divider(theme, width)];
+  const noticeRows = state.notice ? 1 : 0;
+  const available = Math.max(0, maxRows - lines.length - noticeRows);
+
+  if (state.runs.length === 0) {
+    lines.push(...emptyState(
+      theme,
+      "No runs yet",
+      "Ask Pi to spawn a background task. It will appear here live.",
+      width,
+      available,
+    ));
+  } else {
+    const viewport = pairedViewport(state.runs.length, state.selectedIndex, available);
+    if (viewport.start > 0) {
+      lines.push(padAnsi(theme.fg("dim", `  ↑ ${viewport.start} earlier`), width));
+    }
+    for (let index = viewport.start; index < viewport.end; index += 1) {
+      const run = state.runs[index];
+      if (run) lines.push(...runRow(theme, run, index === state.selectedIndex, width));
+    }
+    if (viewport.end < state.runs.length) {
+      lines.push(padAnsi(theme.fg("dim", `  ↓ ${state.runs.length - viewport.end} later`), width));
+    }
+  }
+  if (state.notice) lines.push(noticeLine(theme, state.notice, width));
+  return lines.slice(0, maxRows);
+}
+
+function runRow(
+  theme: Theme,
+  run: RunListEntry,
+  selected: boolean,
+  width: number,
+): string[] {
+  const glyph = theme.fg(statusColor(run.status), statusGlyph(run.status));
+  const marker = selected ? theme.fg("accent", "▸") : " ";
+  const identity = `${marker} ${glyph} ${theme.fg("accent", run.id)}  ${theme.fg("text", run.title)}`;
+  const status = theme.fg(statusColor(run.status), run.status.toUpperCase());
+  const first = columns(identity, `${status}  ${theme.fg("dim", formatElapsed(run.elapsedMs))}`, width);
+  const harness = theme.fg("muted", run.harness.toUpperCase());
+  const model = theme.fg(run.model ? "text" : "dim", run.model ?? "parent model");
+  const second = padAnsi(`    ${harness}${theme.fg("dim", "  ·  ")}${model}`, width);
+  return selected
+    ? [theme.bg("selectedBg", first), theme.bg("selectedBg", second)]
+    : [first, second];
+}
+
+function renderRunDetail(
+  theme: Theme,
+  state: RunsViewState,
+  width: number,
+  maxRows: number,
+): string[] {
+  const detail = state.detail;
+  if (!detail) return [];
+  const inspection = detail.inspection;
+  if (!inspection) {
+    return emptyState(theme, "Loading run", detail.runId, width, maxRows);
+  }
+
+  const lines: string[] = [];
+  const glyph = theme.fg(statusColor(inspection.status), statusGlyph(inspection.status));
+  lines.push(columns(
+    `${glyph} ${theme.fg("accent", inspection.id)}  ${theme.bold(inspection.title)}`,
+    theme.fg(statusColor(inspection.status), inspection.status.toUpperCase()),
+    width,
+  ));
+  lines.push(padAnsi(
+    `${theme.fg("muted", inspection.harness.toUpperCase())}${theme.fg("dim", "  ·  ")}${theme.fg(inspection.model ? "text" : "dim", inspection.model ?? "parent model")}${theme.fg("dim", `  ·  ${formatElapsed(inspection.elapsedMs)}`)}`,
+    width,
+  ));
+  if (inspection.cancelRequested) {
+    lines.push(noticeLine(theme, "Cancellation requested", width));
+  }
+  if (inspection.usage) {
+    const tokens = inspection.usage.input + inspection.usage.output;
+    lines.push(padAnsi(
+      theme.fg("dim", `${inspection.usage.turns} turns  ·  ${tokens.toLocaleString()} tokens  ·  $${inspection.usage.costUsd.toFixed(4)}`),
+      width,
+    ));
+  }
+  lines.push(sectionLabel(theme, "ACTIVITY", width));
+
+  const reservedForOutput = inspection.resultPreview === undefined ? 0 : 3;
+  const activityBudget = Math.max(1, maxRows - lines.length - reservedForOutput - (state.notice ? 1 : 0));
+  const activity = inspection.activity.slice(-activityBudget);
+  if (inspection.activityDropped > 0 || inspection.activity.length > activity.length) {
+    const hidden = inspection.activityDropped + inspection.activity.length - activity.length;
+    lines.push(padAnsi(theme.fg("dim", `  ┊ ${hidden} earlier updates`), width));
+  }
+  if (activity.length === 0) {
+    lines.push(padAnsi(theme.fg("dim", "  ┊ Waiting for the first update…"), width));
+  } else {
+    for (const entry of activity) {
+      lines.push(padAnsi(`${theme.fg("borderMuted", "  ┊")} ${theme.fg("muted", entry.text)}`, width));
+    }
+  }
+
+  if (inspection.resultPreview !== undefined && lines.length < maxRows) {
+    lines.push(sectionLabel(theme, "OUTPUT", width));
+    const outputRows = Math.max(1, maxRows - lines.length - (state.notice ? 1 : 0));
+    const wrapped = wrapText(inspection.resultPreview || "No output returned.", Math.max(1, width - 2));
+    const visible = wrapped.slice(-outputRows);
+    if (wrapped.length > visible.length) {
+      visible[0] = `… ${wrapped.length - visible.length + 1} earlier lines`;
+    }
+    for (const output of visible) {
+      lines.push(padAnsi(`  ${theme.fg("text", output)}`, width));
+    }
+  }
+  if (detail.takeover && lines.length < maxRows) {
+    lines.push(padAnsi(theme.bg("selectedBg", theme.fg("accent", "  TAKEOVER ACTIVE  ·  keys captured")), width));
+  }
+  if (state.notice && lines.length < maxRows) lines.push(noticeLine(theme, state.notice, width));
+  return lines.slice(0, maxRows);
+}
+
+function renderRoutingList(
+  theme: Theme,
+  state: RoutingViewState,
+  width: number,
+  maxRows: number,
+): string[] {
+  const mapped = state.rows.reduce(
+    (count, row) => count + (scopeEntry(row, state.scope) ? 1 : 0),
+    0,
+  );
+  const lines = [
+    tabs(theme, state.scope, state.projectTrusted, width),
+    padAnsi(
+      `${theme.fg("text", `${state.rows.length} agents`)}${theme.fg("dim", "  ·  ")}${theme.fg(mapped > 0 ? "accent" : "dim", `${mapped} saved here`)}${theme.fg("dim", "  ·  ◆ mapped")}`,
+      width,
+    ),
+  ];
+
+  const invalidReason = state.invalid[state.scope];
+  if (invalidReason) {
+    lines.push(noticeLine(theme, `Invalid ${state.scope} routing: ${invalidReason}`, width));
+  }
+  if (state.resettingScope) {
+    lines.push(noticeLine(theme, `Resetting ${state.resettingScope} routing…`, width));
+  }
+  lines.push(divider(theme, width));
+
+  const noticeRows = state.notice ? 1 : 0;
+  const available = Math.max(0, maxRows - lines.length - noticeRows);
+  if (state.rows.length === 0) {
+    lines.push(...emptyState(
+      theme,
+      "No named agents found",
+      "Install an agent package or add an agent markdown file.",
+      width,
+      available,
+    ));
+  } else {
+    const viewport = pairedViewport(state.rows.length, state.selectedIndex, available);
+    if (viewport.start > 0) {
+      lines.push(padAnsi(theme.fg("dim", `  ↑ ${viewport.start} earlier`), width));
+    }
+    for (let index = viewport.start; index < viewport.end; index += 1) {
+      const row = state.rows[index];
+      if (row) lines.push(...routingRow(theme, row, state.scope, index === state.selectedIndex, width));
+    }
+    if (viewport.end < state.rows.length) {
+      lines.push(padAnsi(theme.fg("dim", `  ↓ ${state.rows.length - viewport.end} later`), width));
+    }
+  }
+  if (state.notice) lines.push(noticeLine(theme, state.notice, width));
+  return lines.slice(0, maxRows);
+}
+
+function routingRow(
+  theme: Theme,
+  row: RoutingAgentRow,
+  scope: RoutingScope,
+  selected: boolean,
+  width: number,
+): string[] {
+  const saved = scopeEntry(row, scope) !== undefined;
+  const marker = selected ? theme.fg("accent", "▸") : " ";
+  const mapped = theme.fg(saved ? "accent" : "dim", saved ? "◆" : "·");
+  const name = theme.fg("text", row.name);
+  const harness = theme.fg(row.route.harness === "claude" ? "accent" : "muted", row.route.harness.toUpperCase());
+  const first = columns(`${marker} ${mapped} ${name}`, harness, width);
+  const route = `${row.route.model ?? "parent model"}  ·  ${row.route.thinking ?? "parent thinking"}`;
+  const provenance = `H:${sourceLabel(row.route.provenance.harness)} M:${sourceLabel(row.route.provenance.model)} T:${sourceLabel(row.route.provenance.thinking)}`;
+  const second = columns(
+    `    ${theme.fg("muted", row.definitionScope)}${theme.fg("dim", "  ·  ")}${theme.fg("text", route)}`,
+    theme.fg("dim", provenance),
+    width,
+  );
+  return selected
+    ? [theme.bg("selectedBg", first), theme.bg("selectedBg", second)]
+    : [first, second];
+}
+
+function frame(
+  theme: Theme,
+  title: string,
+  content: readonly string[],
+  footer: string,
+  requestedWidth: number,
+  maxRows: number,
+): string[] {
+  const width = Math.max(1, requestedWidth);
+  if (width < 4) {
+    return content.slice(0, maxRows).map((line) => truncateToWidth(line, width, ""));
+  }
+  const innerWidth = width - 2;
+  const titleText = ` ${theme.bold(theme.fg("accent", title))} `;
+  const topFill = "─".repeat(Math.max(0, width - visibleWidth(titleText) - 3));
+  const top = `${theme.fg("borderAccent", "╭─")}${titleText}${theme.fg("borderAccent", `${topFill}╮`)}`;
+  const bottom = theme.fg("borderAccent", `╰${"─".repeat(innerWidth)}╯`);
+  const availableContent = Math.max(0, maxRows - 4);
+  const boundedContent = content.slice(0, availableContent);
+  const lines = [
+    top,
+    ...boundedContent.map((line) => framedLine(theme, line, innerWidth)),
+    `${theme.fg("borderMuted", "├")}${theme.fg("borderMuted", "─".repeat(innerWidth))}${theme.fg("borderMuted", "┤")}`,
+    framedLine(theme, footer, innerWidth),
+    bottom,
+  ];
+  return lines.slice(0, maxRows).map((line) => truncateToWidth(line, width, ""));
+}
+
+function framedLine(theme: Theme, line: string, width: number): string {
+  return `${theme.fg("borderMuted", "│")}${padAnsi(line, width)}${theme.fg("borderMuted", "│")}`;
+}
+
+function tabs(theme: Theme, scope: RoutingScope, projectTrusted: boolean, width: number): string {
+  const user = scope === "user"
+    ? theme.bg("selectedBg", theme.bold(theme.fg("accent", " USER ")))
+    : theme.fg("dim", " USER ");
+  const projectLabel = projectTrusted ? " PROJECT " : " PROJECT · UNTRUSTED ";
+  const project = scope === "project"
+    ? theme.bg("selectedBg", theme.bold(theme.fg("accent", projectLabel)))
+    : theme.fg(projectTrusted ? "dim" : "warning", projectLabel);
+  return padAnsi(` ${user}  ${project}`, width);
+}
+
+function renderHints(theme: Theme, hints: readonly KeyHint[]): string {
+  return hints.map((hint) =>
+    `${theme.fg("accent", hint.key)} ${theme.fg("dim", hint.description)}`
+  ).join(theme.fg("borderMuted", "  ·  "));
+}
+
+function sectionLabel(theme: Theme, label: string, width: number): string {
+  const styled = ` ${theme.fg("accent", label)} `;
+  return `${styled}${theme.fg("borderMuted", "─".repeat(Math.max(0, width - visibleWidth(styled))))}`;
+}
+
+function divider(theme: Theme, width: number): string {
+  return theme.fg("borderMuted", "─".repeat(Math.max(0, width)));
+}
+
+function noticeLine(theme: Theme, notice: string, width: number): string {
+  return padAnsi(`${theme.fg("warning", "!")} ${theme.fg("warning", notice)}`, width);
+}
+
+function emptyState(
+  theme: Theme,
+  title: string,
+  description: string,
+  width: number,
+  maxRows: number,
+): string[] {
+  if (maxRows <= 0) return [];
+  const lines = [
+    padAnsi(theme.bold(theme.fg("muted", `  ${title}`)), width),
+    padAnsi(theme.fg("dim", `  ${description}`), width),
+  ];
+  return lines.slice(0, maxRows);
+}
+
+function statusCount(theme: Theme, status: RunStatus, count: number): string {
+  return `${theme.fg(statusColor(status), statusGlyph(status))} ${theme.fg(count > 0 ? "text" : "dim", `${count} ${status === "failed" ? "issues" : status}`)}`;
+}
+
+function countStatuses(runs: readonly RunListEntry[]): Record<RunStatus, number> {
+  const counts: Record<RunStatus, number> = {
+    queued: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0,
+  };
+  for (const run of runs) counts[run.status] += 1;
+  return counts;
+}
+
+function statusColor(status: RunStatus): "dim" | "accent" | "success" | "error" | "warning" {
+  switch (status) {
+    case "queued": return "dim";
+    case "running": return "accent";
+    case "completed": return "success";
+    case "failed": return "error";
+    case "cancelled": return "warning";
+  }
+}
+
+function statusGlyph(status: RunStatus): string {
+  switch (status) {
+    case "queued": return "○";
+    case "running": return "●";
+    case "completed": return "✓";
+    case "failed": return "×";
+    case "cancelled": return "⊘";
+  }
+}
+
+function sourceLabel(source: RouteFieldProvenance): string {
+  switch (source) {
+    case "explicit": return "arg";
+    case "saved-project": return "project";
+    case "saved-user": return "user";
+    case "agent-default": return "agent";
+    case "parent": return "parent";
+  }
+}
+
+function scopeEntry(row: RoutingAgentRow, scope: RoutingScope): object | undefined {
+  return scope === "user" ? row.userEntry : row.projectEntry;
+}
+
+function pairedViewport(
+  length: number,
+  selectedIndex: number,
+  maxRows: number,
+): { start: number; end: number } {
+  if (length <= 0 || maxRows <= 0) return { start: 0, end: 0 };
+  const selected = Math.min(Math.max(0, selectedIndex), length - 1);
+  let itemCount = Math.max(1, Math.min(length, Math.floor(maxRows / 2)));
+  let start = Math.min(Math.max(0, selected - Math.floor(itemCount / 2)), length - itemCount);
+  let end = start + itemCount;
+  while (itemCount > 1) {
+    const rows = itemCount * 2 + (start > 0 ? 1 : 0) + (end < length ? 1 : 0);
+    if (rows <= maxRows) break;
+    itemCount -= 1;
+    start = Math.min(Math.max(0, selected - Math.floor(itemCount / 2)), length - itemCount);
+    end = start + itemCount;
+  }
+  return { start, end };
+}
+
+function columns(left: string, right: string, width: number, gap = 2): string {
+  if (width <= 0) return "";
+  const boundedRight = truncateToWidth(right, Math.max(0, width - gap), "");
+  const rightWidth = visibleWidth(boundedRight);
+  const leftWidth = Math.max(0, width - rightWidth - gap);
+  const boundedLeft = truncateToWidth(left, leftWidth, leftWidth > 1 ? "…" : "");
+  const spacing = " ".repeat(Math.max(gap, width - visibleWidth(boundedLeft) - rightWidth));
+  return truncateToWidth(`${boundedLeft}${spacing}${boundedRight}`, width, "");
+}
+
+function padAnsi(text: string, width: number): string {
+  const bounded = truncateToWidth(text, Math.max(0, width), "");
+  return `${bounded}${" ".repeat(Math.max(0, width - visibleWidth(bounded)))}`;
+}
