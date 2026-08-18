@@ -1,8 +1,8 @@
 {
   "name": "pi-zed-context",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Attach Zed editor selections to Pi prompts with an explicit selected-line count.",
+  "description": "Automatically attach Zed editor selections to Pi prompts with an explicit selected-line count.",
   "keywords": [
     "pi-package",
     "pi",
@@ -25,6 +25,7 @@
     "bin",
     "src",
     "scripts/test-zed-context.mjs",
+    "zed-extension",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
@@ -7,6 +7,8 @@ export const CAPTURE_VERSION = 1;
 export const STATE_DIR_ENV = "PI_ZED_CONTEXT_STATE_DIR";
 export const MAX_CONTEXT_BYTES = 50 * 1024;
 export const MAX_CONTEXT_LINES = 2_000;
+export const MAX_CAPTURE_AGE_MS = 24 * 60 * 60 * 1_000;
+const PRODUCER_LEASE_MAX_AGE_MS = 15_000;
 
 export interface ZedCapture {
 	version: typeof CAPTURE_VERSION;
@@ -17,6 +19,10 @@ export interface ZedCapture {
 	lineCount: number;
 	cursorRow?: number;
 	capturedAt: number;
+	source?: "lsp" | "task";
+	producerPid?: number;
+	producerId?: string;
+	truncated?: boolean;
 }
 
 export interface BoundedSelection {
@@ -85,15 +91,29 @@ export function parseCapture(value: unknown): ZedCapture | undefined {
 		!isString(candidate.file) ||
 		typeof candidate.text !== "string" ||
 		!Number.isInteger(candidate.lineCount) ||
-		(candidate.lineCount ?? 0) < 1 ||
+		(candidate.lineCount ?? -1) < 0 ||
 		!Number.isFinite(candidate.capturedAt)
 	) return undefined;
+	if ((candidate.lineCount === 0) !== (candidate.text.length === 0)) return undefined;
 	if (candidate.cursorRow !== undefined && !Number.isFinite(candidate.cursorRow)) return undefined;
+	if (candidate.source !== undefined && candidate.source !== "lsp" && candidate.source !== "task") return undefined;
+	if (candidate.producerPid !== undefined && (!Number.isInteger(candidate.producerPid) || candidate.producerPid < 1)) return undefined;
+	if (candidate.producerId !== undefined && !isString(candidate.producerId)) return undefined;
+	if (candidate.source === "lsp" && (candidate.producerPid === undefined || candidate.producerId === undefined)) return undefined;
+	if (candidate.truncated !== undefined && typeof candidate.truncated !== "boolean") return undefined;
 	return candidate as ZedCapture;
 }
 
+function canonicalPath(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return resolve(path);
+	}
+}
+
 function isInsideOrEqual(parent: string, child: string): boolean {
-	const path = relative(resolve(parent), resolve(child));
+	const path = relative(canonicalPath(parent), canonicalPath(child));
 	return path === "" || (!path.startsWith(`..${sep}`) && path !== "..");
 }
 
@@ -109,38 +129,95 @@ function repositoryRoot(cwd: string): string | undefined {
 
 export function captureMatchesCwd(capture: ZedCapture, cwd: string): boolean {
 	const root = repositoryRoot(cwd);
-	if (root) return isInsideOrEqual(root, capture.file);
-	return resolve(cwd) === resolve(capture.workspace) || isInsideOrEqual(cwd, capture.file);
+	if (root) {
+		const relatedWorkspace = isInsideOrEqual(capture.workspace, root) || isInsideOrEqual(root, capture.workspace);
+		return relatedWorkspace && isInsideOrEqual(root, capture.file);
+	}
+	return canonicalPath(cwd) === canonicalPath(capture.workspace) || isInsideOrEqual(cwd, capture.file);
+}
+
+function ensurePrivateStateDirectory(directory: string): void {
+	mkdirSync(directory, { recursive: true, mode: 0o700 });
+	const metadata = lstatSync(directory);
+	if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+		throw new Error(`Unsafe Zed context state directory: ${directory}`);
+	}
+	if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
+		throw new Error(`Zed context state directory is owned by another user: ${directory}`);
+	}
+	chmodSync(directory, 0o700);
+}
+
+function privateStateDirectory(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const directory = stateDirectory(env);
+	try {
+		const metadata = lstatSync(directory);
+		if (metadata.isSymbolicLink() || !metadata.isDirectory()) return undefined;
+		if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) return undefined;
+		if ((metadata.mode & 0o077) !== 0) return undefined;
+		return directory;
+	} catch {
+		return undefined;
+	}
+}
+
+function persistCapture(capture: ZedCapture, env: NodeJS.ProcessEnv): ZedCapture {
+	const directory = stateDirectory(env);
+	ensurePrivateStateDirectory(directory);
+	const key = createHash("sha256").update(capture.workspace).digest("hex").slice(0, 24);
+	const destination = resolve(directory, `${key}.json`);
+	const temporary = resolve(directory, `.${key}.${process.pid}.${randomUUID()}.tmp`);
+	writeFileSync(temporary, `${JSON.stringify(capture)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+	try {
+		renameSync(temporary, destination);
+	} finally {
+		rmSync(temporary, { force: true });
+	}
+	removeStaleCaptures(directory, capture.capturedAt);
+	return capture;
 }
 
 export function writeCapture(
 	input: { workspace: string; file: string; text: string; cursorRow?: number },
 	env: NodeJS.ProcessEnv = process.env,
 ): ZedCapture {
-	const workspace = resolve(input.workspace);
-	const file = resolve(input.file);
+	const workspace = canonicalPath(input.workspace);
+	const file = canonicalPath(input.file);
 	if (!input.text) throw new Error("Zed did not provide selected text");
+	if (!isInsideOrEqual(workspace, file)) throw new Error("Selected file is outside the Zed worktree");
+	const bounded = boundSelection(input.text);
 
-	const capture: ZedCapture = {
+	return persistCapture({
 		version: CAPTURE_VERSION,
 		id: randomUUID(),
 		workspace,
 		file,
-		text: input.text,
+		text: bounded.text,
 		lineCount: countSelectedLines(input.text),
 		cursorRow: input.cursorRow,
 		capturedAt: Date.now(),
-	};
-	const directory = stateDirectory(env);
-	mkdirSync(directory, { recursive: true, mode: 0o700 });
-	chmodSync(directory, 0o700);
-	const key = createHash("sha256").update(workspace).digest("hex").slice(0, 24);
-	const destination = resolve(directory, `${key}.json`);
-	const temporary = resolve(directory, `.${key}.${process.pid}.${randomUUID()}.tmp`);
-	writeFileSync(temporary, `${JSON.stringify(capture)}\n`, { encoding: "utf8", mode: 0o600 });
-	renameSync(temporary, destination);
-	removeStaleCaptures(directory, capture.capturedAt);
-	return capture;
+		source: "task",
+		truncated: bounded.truncated || undefined,
+	}, env);
+}
+
+export function writeClearCapture(
+	input: { workspace: string; file: string },
+	env: NodeJS.ProcessEnv = process.env,
+): ZedCapture {
+	const workspace = canonicalPath(input.workspace);
+	const file = canonicalPath(input.file);
+	if (!isInsideOrEqual(workspace, file)) throw new Error("Selected file is outside the Zed worktree");
+	return persistCapture({
+		version: CAPTURE_VERSION,
+		id: randomUUID(),
+		workspace,
+		file,
+		text: "",
+		lineCount: 0,
+		capturedAt: Date.now(),
+		source: "task",
+	}, env);
 }
 
 function removeStaleCaptures(directory: string, now: number): void {
@@ -150,7 +227,7 @@ function removeStaleCaptures(directory: string, now: number): void {
 			if (!entry.endsWith(".json")) continue;
 			const path = resolve(directory, entry);
 			try {
-				if (statSync(path).mtimeMs < staleBefore) rmSync(path, { force: true });
+				if (lstatSync(path).mtimeMs < staleBefore) rmSync(path, { force: true });
 			} catch {
 				// Another capture may be replacing the file concurrently.
 			}
@@ -160,11 +237,36 @@ function removeStaleCaptures(directory: string, now: number): void {
 	}
 }
 
+export function isLiveLspCapture(capture: ZedCapture, env: NodeJS.ProcessEnv = process.env): boolean {
+	if (capture.source !== "lsp" || capture.producerPid === undefined || capture.producerId === undefined) return false;
+	const directory = privateStateDirectory(env);
+	if (!directory) return false;
+	const key = createHash("sha256").update(capture.producerId).digest("hex").slice(0, 32);
+	const leasePath = resolve(directory, `.lease-${key}.json`);
+	try {
+		const metadata = lstatSync(leasePath);
+		if (metadata.isSymbolicLink() || !metadata.isFile() || (metadata.mode & 0o077) !== 0) return false;
+		if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) return false;
+		const lease = JSON.parse(readFileSync(leasePath, "utf8")) as Record<string, unknown>;
+		if (
+			lease.producerId !== capture.producerId ||
+			lease.producerPid !== capture.producerPid ||
+			typeof lease.updatedAt !== "number" ||
+			lease.updatedAt < Date.now() - PRODUCER_LEASE_MAX_AGE_MS
+		) return false;
+		process.kill(capture.producerPid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export function latestCapture(
 	cwd: string,
-	options: { after?: number; excludeIds?: ReadonlySet<string>; env?: NodeJS.ProcessEnv } = {},
+	options: { after?: number; allowLiveBeforeAfter?: boolean; excludeIds?: ReadonlySet<string>; env?: NodeJS.ProcessEnv } = {},
 ): ZedCapture | undefined {
-	const directory = stateDirectory(options.env);
+	const directory = privateStateDirectory(options.env);
+	if (!directory) return undefined;
 	let newest: ZedCapture | undefined;
 
 	try {
@@ -172,11 +274,22 @@ export function latestCapture(
 			if (!entry.endsWith(".json")) continue;
 			try {
 				const path = resolve(directory, entry);
-				if (statSync(path).size > 2 * 1024 * 1024) continue;
+				const metadata = lstatSync(path);
+				if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size > 2 * 1024 * 1024) continue;
+				if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) continue;
+				if ((metadata.mode & 0o077) !== 0) continue;
 				const parsed = parseCapture(JSON.parse(readFileSync(path, "utf8")));
-				if (!parsed || options.excludeIds?.has(parsed.id) || !captureMatchesCwd(parsed, cwd)) continue;
-				if (options.after !== undefined && parsed.capturedAt < options.after) continue;
-				if (!newest || parsed.capturedAt > newest.capturedAt) newest = parsed;
+				if (!parsed) continue;
+				if (parsed.capturedAt < Date.now() - MAX_CAPTURE_AGE_MS) {
+					rmSync(path, { force: true });
+					continue;
+				}
+				if (!captureMatchesCwd(parsed, cwd)) continue;
+				if (
+					!newest ||
+					parsed.capturedAt > newest.capturedAt ||
+					(parsed.capturedAt === newest.capturedAt && parsed.lineCount === 0 && newest.lineCount > 0)
+				) newest = parsed;
 			} catch {
 				// Ignore incomplete, stale, or foreign state files.
 			}
@@ -185,6 +298,11 @@ export function latestCapture(
 		return undefined;
 	}
 
+	if (!newest || options.excludeIds?.has(newest.id)) return undefined;
+	if (options.after !== undefined && newest.capturedAt <= options.after) {
+		if (options.allowLiveBeforeAfter && isLiveLspCapture(newest, options.env)) return newest;
+		return undefined;
+	}
 	return newest;
 }
 
