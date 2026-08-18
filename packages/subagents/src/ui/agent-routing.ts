@@ -119,7 +119,12 @@ class AgentRoutingDashboard implements Component {
       const routing = effectiveAgentRouting(this.catalog, agent.name);
       const selected = index === this.selection.index;
       const prefix = selected ? theme.fg("accent", "> ") : "  ";
-      const source = theme.fg("dim", `[${agent.scope}]`);
+      const source = theme.fg(
+        "dim",
+        agent.packageSource
+          ? `[package · ${agent.packageSource}]`
+          : `[${agent.scope}]`,
+      );
       const effectiveSource = routing.scope ? ` · ${routing.scope} mapping` : " · defaults";
       const route = `${routing.harness} · ${routing.model ?? "default model"} · ${routing.thinking ?? "default thinking"}${effectiveSource}`;
       const text = `${prefix}${selected ? theme.fg("accent", agent.name) : agent.name} ${source}  ${theme.fg("muted", route)}`;
@@ -127,7 +132,7 @@ class AgentRoutingDashboard implements Component {
     }
 
     if (this.catalog.agents.length === 0) {
-      lines.push(theme.fg("warning", "No agents found in user or project scope."));
+      lines.push(theme.fg("warning", "No agents found in packages, user, or project scope."));
     }
     lines.push("");
     lines.push(

@@ -415,7 +415,7 @@ export default function (pi: ExtensionAPI) {
     name: "subagent_agents",
     label: "List Subagent Agents",
     description:
-      "List named subagent profiles discovered in user and trusted current-project scope, including their effective harness, model, and thinking routing. Use this before spawning when you need to discover the configured specialist names.",
+      "List named subagent profiles discovered from installed packages and user or trusted current-project scope, including their effective harness, model, and thinking routing. Use this before spawning when you need to discover the configured specialist names.",
     promptSnippet:
       "List configured named subagent profiles and their effective routing",
     promptGuidelines: [
