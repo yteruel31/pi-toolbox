@@ -292,8 +292,27 @@ try {
 
 	const extensionManifest = await readFile(join(packageRoot, "zed-extension", "extension.toml"), "utf8");
 	assert(extensionManifest.includes("[language_servers.pi-selection-bridge]"), "the packaged Zed extension should declare the bridge language server");
-	assert(extensionManifest.includes("\"TypeScript\""), "the packaged Zed extension should activate for common languages");
-	assert(extensionManifest.includes("\"Caddyfile\""), "the packaged Zed extension should activate for Caddyfiles");
+	const languageList = extensionManifest.match(/languages = \[\n(?<body>(?:\s+\"[^\"]+\",\n)+)\]/)?.groups?.body;
+	assert(languageList, "the packaged Zed extension should contain a language allowlist");
+	const configuredLanguages = [...languageList.matchAll(/^\s+\"([^\"]+)\",$/gm)].map((match) => match[1]);
+	assert(configuredLanguages.includes("TypeScript"), "the packaged Zed extension should activate for common languages");
+	for (const language of [
+		"Batch",
+		"Caddyfile",
+		"Editorconfig",
+		"Go Mod",
+		"HCL",
+		"ini",
+		"JSON Lines",
+		"PO",
+		"PowerShell",
+		"Python requirements",
+		"Shell Script",
+		"SSH Config",
+		"Vue.js",
+	]) {
+		assert(configuredLanguages.includes(language), `the packaged Zed extension should activate for ${language}`);
+	}
 	const extensionSource = await readFile(join(packageRoot, "zed-extension", "src", "lib.rs"), "utf8");
 	assert(extensionSource.includes("\"lsp\".to_string()"), "the Zed extension should launch the helper in LSP mode");
 

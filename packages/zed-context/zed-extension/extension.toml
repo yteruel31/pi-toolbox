@@ -15,6 +15,7 @@ languages = [
   "C++",
   "C#",
   "Go",
+  "Go Mod",
   "Zig",
   "JavaScript",
   "TypeScript",
@@ -22,7 +23,7 @@ languages = [
   "HTML",
   "CSS",
   "SCSS",
-  "Vue",
+  "Vue.js",
   "Svelte",
   "Astro",
   "Python",
@@ -30,7 +31,7 @@ languages = [
   "PHP",
   "Perl",
   "Lua",
-  "Shell",
+  "Shell Script",
   "Fish",
   "Java",
   "Kotlin",
@@ -45,18 +46,27 @@ languages = [
   "Dart",
   "JSON",
   "JSONC",
+  "JSON Lines",
   "YAML",
   "TOML",
+  "ini",
+  "Editorconfig",
   "XML",
   "Markdown",
   "LaTeX",
   "Typst",
   "Nix",
+  "HCL",
   "SQL",
   "GraphQL",
   "Dockerfile",
   "Caddyfile",
   "Makefile",
+  "Batch",
+  "PowerShell",
+  "PO",
+  "SSH Config",
+  "Python requirements",
   "Proto",
   "Terraform",
 ]
@@ -68,6 +78,7 @@ languages = [
 "C++" = "cpp"
 "C#" = "csharp"
 "Go" = "go"
+"Go Mod" = "gomod"
 "Zig" = "zig"
 "JavaScript" = "javascript"
 "TypeScript" = "typescript"
@@ -75,7 +86,7 @@ languages = [
 "HTML" = "html"
 "CSS" = "css"
 "SCSS" = "scss"
-"Vue" = "vue"
+"Vue.js" = "vue"
 "Svelte" = "svelte"
 "Astro" = "astro"
 "Python" = "python"
@@ -83,7 +94,7 @@ languages = [
 "PHP" = "php"
 "Perl" = "perl"
 "Lua" = "lua"
-"Shell" = "shellscript"
+"Shell Script" = "shellscript"
 "Fish" = "fish"
 "Java" = "java"
 "Kotlin" = "kotlin"
@@ -98,17 +109,26 @@ languages = [
 "Dart" = "dart"
 "JSON" = "json"
 "JSONC" = "jsonc"
+"JSON Lines" = "jsonl"
 "YAML" = "yaml"
 "TOML" = "toml"
+"ini" = "ini"
+"Editorconfig" = "editorconfig"
 "XML" = "xml"
 "Markdown" = "markdown"
 "LaTeX" = "latex"
 "Typst" = "typst"
 "Nix" = "nix"
+"HCL" = "hcl"
 "SQL" = "sql"
 "GraphQL" = "graphql"
 "Dockerfile" = "dockerfile"
 "Caddyfile" = "caddyfile"
 "Makefile" = "makefile"
+"Batch" = "bat"
+"PowerShell" = "powershell"
+"PO" = "po"
+"SSH Config" = "ssh_config"
+"Python requirements" = "pip-requirements"
 "Proto" = "protobuf"
 "Terraform" = "terraform"
