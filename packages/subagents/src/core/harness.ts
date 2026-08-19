@@ -26,6 +26,8 @@ export interface HarnessRunRequest {
   prompt: string;
   /** Optional named-agent system prompt, delivered before the task. */
   systemPrompt: string | undefined;
+  /** Optional exact tool allowlist supplied by the named agent. */
+  tools: readonly string[] | undefined;
   /** Directory the child runs in; validated by the spawn tool layer. */
   workingDir: string | undefined;
   /** Requested model id/alias; undefined means inherit the parent default. */

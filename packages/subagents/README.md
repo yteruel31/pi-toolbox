@@ -66,10 +66,13 @@ description: Review changes for correctness and regressions.
 harness: pi
 model: anthropic/claude-sonnet-4-5
 thinking: high
+tools: read, grep, find, ls
 ---
 
 You are a strict reviewer. Return concrete findings with file references.
 ```
+
+The optional `tools` field is a comma-separated exact allowlist. Pi profiles use Pi tool names such as `read`, `grep`, `find`, and `ls`; Claude profiles use Claude Code names such as `Read`, `Grep`, and `Glob`. The selected harness exposes only the listed tools, while the Pi harness still applies its stricter built-in exclusions for orchestration and interactive-question tools. Invalid, empty, duplicate, or oversized tool lists invalidate that agent definition rather than silently broadening access.
 
 User definitions replace package definitions; trusted project definitions replace both. Scans are bounded and reject symlink traversal or package paths outside their real package root.
 

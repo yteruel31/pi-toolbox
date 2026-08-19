@@ -49,6 +49,7 @@ export interface ClaudeQueryOptions {
   model?: string;
   effort?: ClaudeEffortLevel;
   thinking?: { type: "disabled" };
+  tools?: string[];
   systemPrompt: {
     type: "preset";
     preset: "claude_code";
@@ -342,7 +343,7 @@ function addUsage(left: number | undefined, right: number | undefined): number {
 
 /** Build the SDK options for one run. Exported for contract tests. */
 export function buildClaudeOptions(
-  request: Pick<HarnessRunRequest, "systemPrompt" | "workingDir" | "model" | "thinkingLevel">,
+  request: Pick<HarnessRunRequest, "systemPrompt" | "tools" | "workingDir" | "model" | "thinkingLevel">,
   abortController: AbortController,
 ): ClaudeQueryOptions {
   const { effort, thinking } = mapThinkingLevel(request.thinkingLevel);
@@ -360,6 +361,7 @@ export function buildClaudeOptions(
     abortController,
   };
   if (request.workingDir !== undefined) options.cwd = request.workingDir;
+  if (request.tools !== undefined) options.tools = [...request.tools];
   const model = normalizeClaudeModel(request.model);
   if (model !== undefined) options.model = model;
   if (effort !== undefined) options.effort = effort;

@@ -246,6 +246,7 @@ describe("Pi extension composition", () => {
       "description: Review code.",
       "harness: pi",
       "thinking: low",
+      "tools: read, grep, find, ls",
       "---",
       "Be exact and cite files.",
     ].join("\n"));
@@ -281,6 +282,7 @@ describe("Pi extension composition", () => {
     expect(piHarness.requests[0]).toMatchObject({
       prompt: "review now",
       systemPrompt: "Be exact and cite files.",
+      tools: ["read", "grep", "find", "ls"],
       model: "fake/routed",
       thinkingLevel: "high",
     });

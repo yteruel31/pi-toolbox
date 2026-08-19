@@ -24,6 +24,8 @@ export interface AgentDefinition {
   description: string;
   /** Markdown body, delivered to the harness as the system prompt. */
   systemPrompt: string;
+  /** Optional exact tool allowlist from the agent frontmatter. */
+  tools?: string[];
   /** Optional frontmatter defaults, below saved routing in precedence. */
   defaults: {
     harness?: HarnessKind;

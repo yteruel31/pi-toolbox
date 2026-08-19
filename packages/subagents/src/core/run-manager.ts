@@ -118,6 +118,8 @@ export interface SpawnRunRequest {
   title?: string;
   /** Optional named-agent system prompt, passed through to the harness. */
   systemPrompt?: string;
+  /** Optional exact tool allowlist, passed through to the harness. */
+  tools?: readonly string[];
   workingDir?: string;
   model?: string;
   thinkingLevel?: ThinkingLevel;
@@ -287,6 +289,7 @@ export class RunManager {
           runId: run.id,
           prompt: request.prompt,
           systemPrompt: request.systemPrompt,
+          tools: request.tools,
           workingDir: request.workingDir,
           model: request.model,
           thinkingLevel: request.thinkingLevel,

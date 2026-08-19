@@ -5,10 +5,13 @@ import { parseAgentMarkdown } from "./frontmatter.js";
 import { isNotFound, nodeFileSystem, type AgentFileSystem } from "./fs-seam.js";
 import {
   AGENT_NAME_PATTERN,
+  AGENT_TOOL_NAME_PATTERN,
   MAX_AGENT_DESCRIPTION_CHARS,
   MAX_AGENT_FILE_BYTES,
   MAX_AGENT_MODEL_CHARS,
   MAX_AGENT_NAME_CHARS,
+  MAX_AGENT_TOOL_NAME_CHARS,
+  MAX_AGENT_TOOLS,
   MAX_MANIFEST_AGENT_DIRS,
   MAX_PACKAGE_JSON_BYTES,
   MAX_SCAN_DEPTH,
@@ -494,6 +497,28 @@ function validateAgent(frontmatter: Record<string, string>, body: string): Agent
     return { ok: false, reason: "system prompt exceeds the length limit" };
   }
 
+  let tools: string[] | undefined;
+  if (Object.prototype.hasOwnProperty.call(frontmatter, "tools")) {
+    const rawTools = frontmatter.tools?.trim() ?? "";
+    if (!rawTools) return { ok: false, reason: "tools allowlist is empty" };
+    const parsedTools = rawTools.split(",").map((tool) => tool.trim());
+    if (parsedTools.some((tool) => !tool)) {
+      return { ok: false, reason: "tools allowlist contains an empty name" };
+    }
+    if (parsedTools.length > MAX_AGENT_TOOLS) {
+      return { ok: false, reason: "tools allowlist exceeds the count limit" };
+    }
+    if (parsedTools.some((tool) =>
+      tool.length > MAX_AGENT_TOOL_NAME_CHARS || !AGENT_TOOL_NAME_PATTERN.test(tool)
+    )) {
+      return { ok: false, reason: "tools allowlist contains an invalid name" };
+    }
+    if (new Set(parsedTools).size !== parsedTools.length) {
+      return { ok: false, reason: "tools allowlist contains a duplicate name" };
+    }
+    tools = parsedTools;
+  }
+
   const defaults: AgentDefinition["defaults"] = {};
   const harness = frontmatter.harness?.trim();
   if (harness) {
@@ -513,7 +538,13 @@ function validateAgent(frontmatter: Record<string, string>, body: string): Agent
 
   return {
     ok: true,
-    agent: { name, description, systemPrompt: body, defaults },
+    agent: {
+      name,
+      description,
+      systemPrompt: body,
+      ...(tools ? { tools } : {}),
+      defaults,
+    },
   };
 }
 

@@ -72,7 +72,7 @@ Headless execution uses `bypassPermissions` and `allowDangerouslySkipPermissions
 
 ## Agent discovery and routing
 
-Discovery happens only for `subagent_agents`, spawn resolution, or routing UI refresh. Sources merge package → user → trusted project.
+Discovery happens only for `subagent_agents`, spawn resolution, or routing UI refresh. Sources merge package → user → trusted project. An optional comma-separated `tools` frontmatter scalar is validated as a bounded exact allowlist and passed through the run manager to both harnesses. Pi intersects it with active tools and keeps a runtime denial backstop; Claude passes it as the SDK's base `tools` set.
 
 Package roots come from Pi's `SettingsManager` and `DefaultPackageManager`, not guessed cache paths. Package settings preserve effective user/project order and honor `autoload: false`. Manifest agent paths must remain within a real non-symlink package root. User/project scans use fixed depth, directory, file, per-file byte, and aggregate-byte limits.
 

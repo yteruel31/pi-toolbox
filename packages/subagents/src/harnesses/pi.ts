@@ -76,6 +76,31 @@ export function isExcludedPiChildTool(name: string): boolean {
   );
 }
 
+export function isAllowedPiChildTool(
+  name: string,
+  requestedTools: readonly string[] | undefined,
+): boolean {
+  return (
+    !isExcludedPiChildTool(name) &&
+    (requestedTools === undefined || requestedTools.includes(name))
+  );
+}
+
+export function piChildToolDenial(
+  name: string,
+  requestedTools: readonly string[] | undefined,
+): { block: true; reason: string; terminate: true } | undefined {
+  if (isAllowedPiChildTool(name, requestedTools)) return undefined;
+  const outsideAllowlist = requestedTools !== undefined && !requestedTools.includes(name);
+  return {
+    block: true,
+    reason: outsideAllowlist
+      ? `Tool ${JSON.stringify(truncateText(name, 100))} is not allowed by this named agent.`
+      : `Tool ${JSON.stringify(truncateText(name, 100))} is disabled in Pi child sessions.`,
+    terminate: true,
+  };
+}
+
 export interface PiModelLike {
   provider: string;
   id: string;
@@ -114,6 +139,7 @@ export interface PiResourceFactoryInput {
   agentDir: string;
   projectTrusted: boolean;
   systemPrompt: string | undefined;
+  tools: readonly string[] | undefined;
 }
 
 export type PiResourceFactory = (
@@ -203,6 +229,7 @@ export class PiHarness implements SubagentHarness {
       agentDir: this.agentDir,
       projectTrusted,
       systemPrompt: request.systemPrompt,
+      tools: request.tools,
     });
 
     let session: PiSessionLike | undefined;
@@ -292,7 +319,7 @@ export class PiHarness implements SubagentHarness {
         excludeTools: PI_CHILD_EXCLUDED_TOOLS,
       });
 
-      removeDiscoveredExcludedTools(session);
+      configureChildTools(session, request.tools);
 
       unsubscribe = session.subscribe((event) => {
         observePiEvent(request, observations, event, {
@@ -446,14 +473,7 @@ export async function createOfficialPiResources(
       {
         name: "pi-subagents-child-safety",
         factory: (pi) => {
-          pi.on("tool_call", (event) => {
-            if (!isExcludedPiChildTool(event.toolName)) return;
-            return {
-              block: true,
-              reason: `Tool ${JSON.stringify(truncateText(event.toolName, 100))} is disabled in Pi child sessions.`,
-              terminate: true,
-            };
-          });
+          pi.on("tool_call", (event) => piChildToolDenial(event.toolName, input.tools));
         },
       },
     ],
@@ -496,16 +516,25 @@ export async function createOfficialPiSession(
   return session as PiSessionLike;
 }
 
-function removeDiscoveredExcludedTools(session: PiSessionLike): void {
+function configureChildTools(
+  session: PiSessionLike,
+  requestedTools: readonly string[] | undefined,
+): void {
   if (
     session.getActiveToolNames === undefined ||
     session.setActiveToolsByName === undefined
   ) {
+    if (requestedTools !== undefined) {
+      throw new SubagentError(
+        "pi_tool_restriction_unavailable",
+        "The Pi child session cannot enforce this named agent's tool allowlist.",
+      );
+    }
     return;
   }
   const active = session.getActiveToolNames();
-  const filtered = active.filter((name) => !isExcludedPiChildTool(name));
-  if (filtered.length !== active.length) {
+  const filtered = active.filter((name) => isAllowedPiChildTool(name, requestedTools));
+  if (requestedTools !== undefined || filtered.length !== active.length) {
     session.setActiveToolsByName(filtered);
   }
 }

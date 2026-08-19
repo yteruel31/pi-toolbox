@@ -211,7 +211,7 @@ export function makeRequest(
   overrides: Partial<
     Pick<
       HarnessRunRequest,
-      "prompt" | "systemPrompt" | "workingDir" | "model"
+      "prompt" | "systemPrompt" | "tools" | "workingDir" | "model"
     > & { thinkingLevel: ThinkingLevel }
   > = {},
 ): CapturedRequest {
@@ -224,6 +224,7 @@ export function makeRequest(
     runId: "run-1",
     prompt: overrides.prompt ?? "do the task",
     systemPrompt: overrides.systemPrompt,
+    tools: overrides.tools,
     workingDir: overrides.workingDir,
     model: overrides.model,
     thinkingLevel: overrides.thinkingLevel,

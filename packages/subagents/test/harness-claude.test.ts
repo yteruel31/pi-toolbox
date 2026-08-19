@@ -39,6 +39,7 @@ describe("claude harness option wiring", () => {
     const { request } = makeRequest({
       prompt: "review the diff",
       systemPrompt: "You are a strict reviewer.",
+      tools: ["Read", "Grep", "Glob"],
       workingDir: "/tmp/project",
       model: "opus",
       thinkingLevel: "high",
@@ -60,6 +61,7 @@ describe("claude harness option wiring", () => {
       preset: "claude_code",
       append: "You are a strict reviewer.",
     });
+    expect(options.tools).toEqual(["Read", "Grep", "Glob"]);
     expect(options.permissionMode).toBe("bypassPermissions");
     expect(options.allowDangerouslySkipPermissions).toBe(true);
     expect(options.settingSources).toEqual([]);
@@ -81,6 +83,7 @@ describe("claude harness option wiring", () => {
     expect(fake.calls[0]!.options!.cwd).toBeUndefined();
     expect(fake.calls[0]!.options!.model).toBeUndefined();
     expect(fake.calls[0]!.options!.effort).toBeUndefined();
+    expect(fake.calls[0]!.options!.tools).toBeUndefined();
   });
 
   it("treats a whitespace-only system prompt as absent", async () => {
