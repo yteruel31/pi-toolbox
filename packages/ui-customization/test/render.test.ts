@@ -79,8 +79,8 @@ describe("structured footer rendering", () => {
     expect(statusLine).toContain("subagents raw");
   });
 
-  it.each([50, 60])("keeps owner statuses when width %i cannot guarantee their columns", (width) => {
-    const lines = renderFooter(model(), theme, width);
+  it("keeps owner statuses when compact rendering cannot guarantee their columns", () => {
+    const lines = renderFooter(model(), theme, 50);
     const statusLine = lines.at(-1)!;
     expect(statusLine).toContain("MCP raw");
     expect(statusLine).toContain("subagents raw");
@@ -96,9 +96,21 @@ describe("structured footer rendering", () => {
     expect(lines.join("\n")).not.toContain("SUB-AGENTS");
   });
 
-  it("prioritizes context occupancy before optional usage details", () => {
-    const lines = renderFooter(model({ extensionStatuses: new Map() }), theme, 80);
-    expect(lines[1]).toContain("97.9%");
+  it("hides zero-valued subagent states", () => {
+    const lines = renderFooter(model({ extensionStatuses: new Map() }), theme, 200);
+    expect(lines[1]).toContain("✓ 1 done");
+    expect(lines[1]).not.toContain("0 run");
+    expect(lines[1]).not.toContain("0 err");
+  });
+
+  it("shows context occupancy without token traffic totals", () => {
+    const lines = renderFooter(model({ extensionStatuses: new Map() }), theme, 200);
+    expect(lines[1]).toContain("97.9% 69k/71k");
+    expect(lines[1]).toContain("CH98.8% $4.210");
+    expect(lines[1]).not.toContain("↑14M");
+    expect(lines[1]).not.toContain("↓192k");
+    expect(lines[1]).not.toContain("R69k");
+    expect(lines[1]).not.toContain("W1.0k");
   });
 
   it("does not show a cache hit rate when caching is unused", () => {
