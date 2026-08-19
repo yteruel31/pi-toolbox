@@ -91,8 +91,6 @@ export function createRunsViewModel(
           options.onIntent?.(intent);
           dispose();
           return;
-        case "confirm-cancel":
-          options.onIntent?.(intent);
       }
     },
   });

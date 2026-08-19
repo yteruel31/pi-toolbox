@@ -27,6 +27,7 @@ import {
   type RoutingViewIntent,
 } from "./routing-view.js";
 import {
+  RUN_CANCEL_KEY_HINTS,
   RUN_DETAIL_KEY_HINTS,
   RUNS_LIST_KEY_HINTS,
   type RunsViewIntent,
@@ -54,9 +55,7 @@ export async function openPiRunsOverlay(
   if (ctx.mode !== "tui") return;
   await ctx.ui.custom<void>(
     (tui, theme, _keybindings, done) =>
-      new RunsOverlayComponent(tui, theme, data, done, {
-        confirm: (title) => ctx.ui.confirm("Cancel subagent?", title),
-      }),
+      new RunsOverlayComponent(tui, theme, data, done),
     {
       overlay: true,
       overlayOptions: FULL_SCREEN_PANEL_OPTIONS,
@@ -101,9 +100,6 @@ export class RunsOverlayComponent implements Component, Focusable {
     private readonly theme: Theme,
     data: RunsDataPort,
     private readonly done: () => void,
-    private readonly actions: {
-      confirm(title: string): Promise<boolean>;
-    },
   ) {
     this.editor = new Editor(tui, {
       borderColor: (text) => theme.fg("borderAccent", text),
@@ -139,14 +135,31 @@ export class RunsOverlayComponent implements Component, Focusable {
       state,
       width,
       this.tui.terminal.rows,
-      RUNS_LIST_KEY_HINTS,
-      RUN_DETAIL_KEY_HINTS,
+      state.pendingCancelId ? RUN_CANCEL_KEY_HINTS : RUNS_LIST_KEY_HINTS,
+      state.pendingCancelId ? RUN_CANCEL_KEY_HINTS : RUN_DETAIL_KEY_HINTS,
       editorLines,
     );
   }
 
   handleInput(data: string): void {
     const state = this.model.getState();
+    if (state.pendingCancelId) {
+      if (matchesKey(data, "y") || matchesKey(data, Key.enter)) {
+        this.model.dispatch({
+          kind: "cancel-confirmed",
+          runId: state.pendingCancelId,
+          confirmed: true,
+        });
+      } else if (matchesKey(data, "n") || matchesKey(data, Key.escape)) {
+        this.model.dispatch({
+          kind: "cancel-confirmed",
+          runId: state.pendingCancelId,
+          confirmed: false,
+        });
+      }
+      this.tui.requestRender();
+      return;
+    }
     if (state.mode === "detail") {
       if (matchesKey(data, Key.escape)) {
         if (this.editor.isShowingAutocomplete()) this.editor.handleInput(data);
@@ -182,13 +195,8 @@ export class RunsOverlayComponent implements Component, Focusable {
     this.model.dispose();
   }
 
-  private handleIntent(model: RunsViewModel, intent: RunsViewIntent): void {
+  private handleIntent(_model: RunsViewModel, intent: RunsViewIntent): void {
     switch (intent.kind) {
-      case "confirm-cancel":
-        void this.actions.confirm(`${intent.runId}: ${intent.title}`).then((confirmed) => {
-          model.dispatch({ kind: "cancel-confirmed", runId: intent.runId, confirmed });
-        });
-        return;
       case "close":
         this.done();
         return;
@@ -333,6 +341,7 @@ function detailRunsAction(data: string): RunsKeyAction | undefined {
 
 function isRunEditorVisible(state: RunsViewState): boolean {
   return state.mode === "detail" &&
+    !state.pendingCancelId &&
     state.detail?.inspection?.messaging.editable === true;
 }
 

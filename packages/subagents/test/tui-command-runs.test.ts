@@ -190,7 +190,8 @@ describe("runs reducer", () => {
       kind: "key",
       action: "cancel-run",
     });
-    expect(result.intents[0]?.kind).toBe("confirm-cancel");
+    expect(result.intents).toEqual([]);
+    expect(result.state.pendingCancelId).toBe("run-1");
     state = result.state;
 
     result = reduceRunsView(state, {

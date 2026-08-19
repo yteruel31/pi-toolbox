@@ -76,7 +76,7 @@ function renderRunsList(
     statusCount(theme, "failed", counts.failed + counts.cancelled),
   ].join(theme.fg("dim", "  ·  "));
   const lines = [padAnsi(summary, width), divider(theme, width)];
-  const noticeRows = state.notice ? 1 : 0;
+  const noticeRows = state.pendingCancelId ? 3 : state.notice ? 1 : 0;
   const available = Math.max(0, maxRows - lines.length - noticeRows);
 
   if (state.runs.length === 0) {
@@ -100,7 +100,11 @@ function renderRunsList(
       lines.push(padAnsi(theme.fg("dim", `  ↓ ${state.runs.length - viewport.end} later`), width));
     }
   }
-  if (state.notice) lines.push(noticeLine(theme, state.notice, width));
+  if (state.pendingCancelId) {
+    lines.push(...cancelConfirmationBlock(theme, state, width));
+  } else if (state.notice) {
+    lines.push(noticeLine(theme, state.notice, width));
+  }
   return lines.slice(0, maxRows);
 }
 
@@ -153,7 +157,9 @@ function renderRunDetail(
         `${inspection.usage.turns} turns  ·  ${(inspection.usage.input + inspection.usage.output).toLocaleString()} tokens  ·  $${inspection.usage.costUsd.toFixed(4)}`,
       ), width)
     : undefined;
-  const inputBlock = runInputBlock(theme, inspection, detail.submitting, editorLines, width);
+  const inputBlock = state.pendingCancelId
+    ? cancelConfirmationBlock(theme, state, width)
+    : runInputBlock(theme, inspection, detail.submitting, editorLines, width);
   const noticeBlock = state.notice ? [noticeLine(theme, state.notice, width)] : [];
 
   // Tiny terminals keep identity and input/read-only state, sacrificing
@@ -181,6 +187,30 @@ function renderRunDetail(
     ...noticeBlock,
     ...inputBlock,
   ].slice(0, maxRows);
+}
+
+function cancelConfirmationBlock(
+  theme: Theme,
+  state: RunsViewState,
+  width: number,
+): string[] {
+  const runId = state.pendingCancelId;
+  if (!runId) return [];
+  const run = state.runs.find((candidate) => candidate.id === runId);
+  const title = state.detail?.runId === runId
+    ? state.detail.inspection?.title ?? run?.title
+    : run?.title;
+  return [
+    sectionLabel(theme, "CONFIRM CANCELLATION", width),
+    padAnsi(
+      `  ${theme.fg("warning", `Stop ${runId}${title ? ` · ${title}` : ""}?`)}`,
+      width,
+    ),
+    padAnsi(
+      `  ${theme.fg("accent", "y / enter")} ${theme.fg("dim", "cancel run")}  ·  ${theme.fg("accent", "n / esc")} ${theme.fg("dim", "keep running")}`,
+      width,
+    ),
+  ];
 }
 
 function runInputBlock(
