@@ -32,10 +32,13 @@ export const MAX_PACKAGE_JSON_BYTES = 256 * 1024;
 export const MAX_AGENT_NAME_CHARS = 64;
 export const MAX_AGENT_DESCRIPTION_CHARS = 500;
 export const MAX_AGENT_MODEL_CHARS = 200;
+export const MAX_AGENT_TOOLS = 64;
+export const MAX_AGENT_TOOL_NAME_CHARS = 100;
 export const MAX_SYSTEM_PROMPT_CHARS = 32 * 1024;
 
-/** Agent names must be short, path-safe identifiers. */
+/** Agent and tool names must be short, path-safe identifiers. */
 export const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const AGENT_TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
 /** Bounds on diagnostics. */
 export const MAX_WARNINGS = 25;

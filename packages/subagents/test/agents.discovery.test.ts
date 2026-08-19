@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import {
   FileAgentDiscovery,
   MAX_AGENT_FILE_BYTES,
+  MAX_AGENT_TOOL_NAME_CHARS,
+  MAX_AGENT_TOOLS,
   MAX_MANIFEST_AGENT_DIRS,
   MAX_SCAN_DEPTH,
   MAX_WARNINGS,
@@ -95,7 +97,7 @@ describe("FileAgentDiscovery", () => {
       "reviewer",
       "project",
       "Project prompt.",
-      "harness: claude\nmodel: opus\nthinking: high\n",
+      "harness: claude\nmodel: opus\nthinking: high\ntools: Read, Grep, Glob\n",
     );
 
     const discovery = new FileAgentDiscovery({
@@ -119,6 +121,7 @@ describe("FileAgentDiscovery", () => {
     expect(reviewer).toMatchObject({
       description: "project",
       systemPrompt: "Project prompt.",
+      tools: ["Read", "Grep", "Glob"],
       defaults: { harness: "claude", model: "opus", thinking: "high" },
       source: { scope: "project" },
     });
@@ -230,6 +233,40 @@ describe("FileAgentDiscovery", () => {
     expect(result.warnings.at(-1)).toMatch(/suppressed/);
   });
 
+  it("accepts tool allowlists exactly at the count and name-length limits", async () => {
+    const root = await workspace();
+    const agentDir = join(root, "agent-home");
+    const base = join(agentDir, "agents");
+    const exactCount = Array.from(
+      { length: MAX_AGENT_TOOLS },
+      (_, index) => `tool-${index}`,
+    );
+    const exactLength = "t".repeat(MAX_AGENT_TOOL_NAME_CHARS);
+    await agentFile(
+      join(base, "exact-count.md"),
+      "exact-count",
+      "valid",
+      "body",
+      `tools: ${exactCount.join(", ")}\n`,
+    );
+    await agentFile(
+      join(base, "exact-length.md"),
+      "exact-length",
+      "valid",
+      "body",
+      `tools: ${exactLength}\n`,
+    );
+
+    const result = await new FileAgentDiscovery({ agentDir }).discover({
+      cwd: join(root, "project"),
+      projectTrusted: false,
+    });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.agents.find((agent) => agent.name === "exact-count")?.tools).toEqual(exactCount);
+    expect(result.agents.find((agent) => agent.name === "exact-length")?.tools).toEqual([exactLength]);
+  });
+
   it("skips invalid files independently and bounds frontmatter metadata", async () => {
     const root = await workspace();
     const agentDir = join(root, "agent-home");
@@ -239,6 +276,24 @@ describe("FileAgentDiscovery", () => {
     await agentFile(join(base, "bad-name.md"), "../bad", "bad");
     await agentFile(join(base, "bad-harness.md"), "bad-harness", "bad", "body", "harness: other\n");
     await agentFile(join(base, "bad-thinking.md"), "bad-thinking", "bad", "body", "thinking: enormous\n");
+    await agentFile(join(base, "empty-tools.md"), "empty-tools", "bad", "body", "tools:   \n");
+    await agentFile(join(base, "empty-tool-name.md"), "empty-tool-name", "bad", "body", "tools: read,,bash\n");
+    await agentFile(join(base, "bad-tool-name.md"), "bad-tool-name", "bad", "body", "tools: read, bad tool\n");
+    await agentFile(join(base, "duplicate-tool.md"), "duplicate-tool", "bad", "body", "tools: read, read\n");
+    await agentFile(
+      join(base, "too-many-tools.md"),
+      "too-many-tools",
+      "bad",
+      "body",
+      `tools: ${Array.from({ length: MAX_AGENT_TOOLS + 1 }, (_, index) => `tool-${index}`).join(", ")}\n`,
+    );
+    await agentFile(
+      join(base, "long-tool-name.md"),
+      "long-tool-name",
+      "bad",
+      "body",
+      `tools: ${"t".repeat(MAX_AGENT_TOOL_NAME_CHARS + 1)}\n`,
+    );
 
     const result = await new FileAgentDiscovery({ agentDir }).discover({
       cwd: join(root, "project"),

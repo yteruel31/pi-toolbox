@@ -10,7 +10,9 @@ import {
   PI_TOOL_WATCHDOG_MS,
   PiHarness,
   createOfficialPiResources,
+  isAllowedPiChildTool,
   isExcludedPiChildTool,
+  piChildToolDenial,
   type PiModelLike,
   type PiResourceFactoryInput,
   type PiSessionCreateInput,
@@ -41,7 +43,7 @@ function makeRunRequest(
   overrides: Partial<
     Pick<
       HarnessRunRequest,
-      "prompt" | "systemPrompt" | "workingDir" | "model" | "thinkingLevel"
+      "prompt" | "systemPrompt" | "tools" | "workingDir" | "model" | "thinkingLevel"
     >
   > = {},
 ): CapturedRunRequest {
@@ -60,6 +62,7 @@ function makeRunRequest(
       runId: "run-1",
       prompt: overrides.prompt ?? "inspect the project",
       systemPrompt: overrides.systemPrompt,
+      tools: overrides.tools,
       workingDir: overrides.workingDir,
       model: overrides.model,
       thinkingLevel: overrides.thinkingLevel,
@@ -286,6 +289,7 @@ describe("Pi child session wiring", () => {
         agentDir: "/home/test/.pi/agent",
         projectTrusted: true,
         systemPrompt: "You are a reviewer.",
+        tools: undefined,
       },
     ]);
     expect(fixture.sessionInputs).toHaveLength(1);
@@ -298,6 +302,33 @@ describe("Pi child session wiring", () => {
     expect(fixture.sessionInputs[0]!.excludeTools).toEqual(
       PI_CHILD_EXCLUDED_TOOLS,
     );
+  });
+
+  it("intersects named-agent tools with active tools and safety exclusions", async () => {
+    const fixture = makeHarness();
+    fixture.session.activeTools = ["read", "bash", "subagent_spawn", "ask_user"];
+    fixture.session.promptImpl = async () => {
+      fixture.session.emit(assistantMessage("done"));
+    };
+    const { request } = makeRunRequest({
+      tools: ["read", "subagent_spawn", "missing"],
+    });
+
+    await fixture.harness.run(request);
+
+    expect(fixture.session.activeTools).toEqual(["read"]);
+    expect(fixture.session.activeToolUpdates).toEqual([["read"]]);
+  });
+
+  it("fails closed when a named-agent tool allowlist cannot be enforced", async () => {
+    const fixture = makeHarness();
+    Object.defineProperty(fixture.session, "getActiveToolNames", { value: undefined });
+    Object.defineProperty(fixture.session, "setActiveToolsByName", { value: undefined });
+    const { request } = makeRunRequest({ tools: ["read"] });
+
+    await expect(fixture.harness.run(request)).rejects.toMatchObject({
+      code: "pi_tool_restriction_unavailable",
+    });
   });
 
   it("steers the existing active AgentSession through the public API", async () => {
@@ -682,6 +713,26 @@ describe("Pi child tool exclusion", () => {
     expect(isExcludedPiChildTool("multi_tool_use.parallel")).toBe(true);
     expect(isExcludedPiChildTool("read")).toBe(false);
   });
+
+  it("uses the same fail-closed policy for runtime tool-call enforcement", () => {
+    expect(isAllowedPiChildTool("read", ["read", "grep"])).toBe(true);
+    expect(isAllowedPiChildTool("bash", ["read", "grep"])).toBe(false);
+    expect(isAllowedPiChildTool("subagent_spawn", ["subagent_spawn"])).toBe(false);
+    expect(isAllowedPiChildTool("bash", undefined)).toBe(true);
+    expect(isAllowedPiChildTool("ask_user", undefined)).toBe(false);
+
+    expect(piChildToolDenial("read", ["read", "grep"])).toBeUndefined();
+    expect(piChildToolDenial("bash", ["read", "grep"])).toEqual({
+      block: true,
+      reason: 'Tool "bash" is not allowed by this named agent.',
+      terminate: true,
+    });
+    expect(piChildToolDenial("subagent_spawn", ["subagent_spawn"])).toEqual({
+      block: true,
+      reason: 'Tool "subagent_spawn" is disabled in Pi child sessions.',
+      terminate: true,
+    });
+  });
 });
 
 describe("official Pi resource construction", () => {
@@ -706,12 +757,14 @@ describe("official Pi resource construction", () => {
         agentDir,
         projectTrusted: false,
         systemPrompt: "Named agent prompt",
+        tools: undefined,
       });
       const trusted = await createOfficialPiResources({
         cwd,
         agentDir,
         projectTrusted: true,
         systemPrompt: undefined,
+        tools: undefined,
       });
       const untrustedSession = untrusted.sessionManager as {
         isPersisted(): boolean;

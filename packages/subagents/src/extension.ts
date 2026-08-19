@@ -247,6 +247,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         title: params.name,
         harness,
         systemPrompt: resolution.agent?.systemPrompt,
+        tools: resolution.agent?.tools,
         workingDir,
         model: resolution.route.model,
         thinkingLevel: resolution.route.thinking,
@@ -270,6 +271,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       const rows = catalog.agents.map((agent) => ({
         name: agent.name,
         description: agent.description,
+        tools: agent.tools,
         source: agent.source.scope,
         package: agent.source.packageName,
         harness: routes.get(agent.name)?.harness,
