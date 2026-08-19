@@ -318,16 +318,16 @@ function listRunsAction(data: string): RunsKeyAction | undefined {
   if (matchesKey(data, Key.down)) return "down";
   if (matchesKey(data, Key.enter)) return "enter";
   if (matchesKey(data, Key.escape)) return "escape";
-  if (matchesKey(data, Key.ctrl("r"))) return "refresh";
-  if (matchesKey(data, Key.ctrl("x"))) return "cancel-run";
+  if (matchesKey(data, "r")) return "refresh";
+  if (matchesKey(data, "x")) return "cancel-run";
   return undefined;
 }
 
 function detailRunsAction(data: string): RunsKeyAction | undefined {
   if (matchesKey(data, Key.pageUp)) return "page-up";
   if (matchesKey(data, Key.pageDown)) return "page-down";
-  if (matchesKey(data, Key.ctrl("r"))) return "refresh";
-  if (matchesKey(data, Key.ctrl("x"))) return "cancel-run";
+  if (matchesKey(data, "r")) return "refresh";
+  if (matchesKey(data, "x")) return "cancel-run";
   return undefined;
 }
 
