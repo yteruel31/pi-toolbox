@@ -96,9 +96,14 @@ describe("structured footer rendering", () => {
     expect(lines.join("\n")).not.toContain("SUB-AGENTS");
   });
 
-  it("prioritizes context occupancy before optional usage details", () => {
-    const lines = renderFooter(model({ extensionStatuses: new Map() }), theme, 80);
-    expect(lines[1]).toContain("97.9%");
+  it("shows context occupancy without token traffic totals", () => {
+    const lines = renderFooter(model({ extensionStatuses: new Map() }), theme, 200);
+    expect(lines[1]).toContain("97.9% 69k/71k");
+    expect(lines[1]).toContain("CH98.8% $4.210");
+    expect(lines[1]).not.toContain("↑14M");
+    expect(lines[1]).not.toContain("↓192k");
+    expect(lines[1]).not.toContain("R69k");
+    expect(lines[1]).not.toContain("W1.0k");
   });
 
   it("does not show a cache hit rate when caching is unused", () => {

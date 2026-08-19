@@ -52,10 +52,6 @@ function contextValue(model: FooterModel): string {
   const tokens = model.context.tokens === null ? "?" : formatTokens(model.context.tokens);
   const percent = model.context.percent === null ? "?" : `${model.context.percent.toFixed(1)}%`;
   const parts = [`${percent} ${tokens}/${formatTokens(model.context.contextWindow)}`];
-  if (model.usage.input) parts.push(`↑${formatTokens(model.usage.input)}`);
-  if (model.usage.output) parts.push(`↓${formatTokens(model.usage.output)}`);
-  if (model.usage.cacheRead) parts.push(`R${formatTokens(model.usage.cacheRead)}`);
-  if (model.usage.cacheWrite) parts.push(`W${formatTokens(model.usage.cacheWrite)}`);
   if ((model.usage.cacheRead > 0 || model.usage.cacheWrite > 0) && model.usage.latestCacheHitRate !== undefined) {
     parts.push(`CH${model.usage.latestCacheHitRate.toFixed(1)}%`);
   }
@@ -105,7 +101,7 @@ function createColumns(model: FooterModel, theme: Theme): Column[] {
     label: "CONTEXT",
     value: theme.fg(contextColor(model.context.percent), contextValue(model)),
     minWidth: 18,
-    maxWidth: 64,
+    maxWidth: 40,
     priority: 6,
   });
 
