@@ -279,15 +279,15 @@ function reduceDetailKey(
 export const RUNS_LIST_KEY_HINTS: readonly KeyHint[] = [
   { key: "↑↓", description: "move" },
   { key: "enter", description: "open" },
-  { key: "ctrl+r", description: "refresh" },
-  { key: "ctrl+x", description: "cancel" },
+  { key: "r", description: "refresh" },
+  { key: "x", description: "cancel" },
   { key: "esc", description: "close" },
 ];
 
 export const RUN_DETAIL_KEY_HINTS: readonly KeyHint[] = [
   { key: "pgup/pgdn", description: "scroll" },
-  { key: "ctrl+r", description: "refresh" },
-  { key: "ctrl+x", description: "cancel" },
+  { key: "r", description: "refresh" },
+  { key: "x", description: "cancel" },
   { key: "esc", description: "back" },
 ];
 

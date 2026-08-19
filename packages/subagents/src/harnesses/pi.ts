@@ -439,6 +439,9 @@ export async function createOfficialPiResources(
     cwd: input.cwd,
     agentDir: input.agentDir,
     settingsManager,
+    // Child sessions must not execute extensions configured for the parent.
+    // The inline safety extension below still loads when noExtensions is true.
+    noExtensions: true,
     extensionFactories: [
       {
         name: "pi-subagents-child-safety",

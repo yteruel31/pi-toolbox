@@ -685,7 +685,7 @@ describe("Pi child tool exclusion", () => {
 });
 
 describe("official Pi resource construction", () => {
-  it("uses an in-memory session manager and gates project resources by trust", async () => {
+  it("uses an in-memory session manager and isolates parent extensions", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-harness-resources-"));
     const cwd = join(root, "project");
     const agentDir = join(root, "agent");
@@ -730,21 +730,21 @@ describe("official Pi resource construction", () => {
       expect(untrustedLoader.getAppendSystemPrompt()).toContain(
         "Named agent prompt",
       );
-      expect(
-        untrustedLoader
-          .getExtensions()
-          .extensions.some((extension) => extension.path.includes("project.ts")),
-      ).toBe(false);
-      expect(
-        untrustedLoader
-          .getExtensions()
-          .extensions.some((extension) => extension.path.includes("user.ts")),
-      ).toBe(true);
-      expect(
-        trustedLoader
-          .getExtensions()
-          .extensions.some((extension) => extension.path.includes("project.ts")),
-      ).toBe(true);
+      const untrustedExtensions = untrustedLoader.getExtensions().extensions;
+      const trustedExtensions = trustedLoader.getExtensions().extensions;
+      for (const extensions of [untrustedExtensions, trustedExtensions]) {
+        expect(
+          extensions.some((extension) => extension.path.includes("project.ts")),
+        ).toBe(false);
+        expect(
+          extensions.some((extension) => extension.path.includes("user.ts")),
+        ).toBe(false);
+        expect(
+          extensions.some((extension) =>
+            extension.path.includes("pi-subagents-child-safety")
+          ),
+        ).toBe(true);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

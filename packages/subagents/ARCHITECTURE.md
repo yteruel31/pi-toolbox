@@ -62,7 +62,7 @@ A request includes prompt, optional named-agent system prompt, resolved cwd/mode
 
 The Pi adapter creates an isolated in-process session with `SessionManager.inMemory`. It resolves requested models against the parent's model-registry facade through a narrow adapter, passes the full resolved model plus inherited thinking, and lets `createAgentSession` construct its canonical auth/provider runtime. It uses a trust-gated resource loader. Child tools matching subagent, workflow, multi-tool orchestration, or interactive-question names are excluded both initially and dynamically.
 
-Each child tool call receives its own inactivity timer. Only progress from the same call resets that timer. The public `AgentSession.steer()` method supplies active input while the prompt is running. Agent events produce bounded assistant and tool start/update/end transcript records, including serialized arguments and results. Abort, listener removal, timers, active-control closure, child session disposal, and prompt rejection are handled through one cleanup path.
+Each child tool call receives its own inactivity timer. Only progress from the same call resets that timer. The child resource loader sets `noExtensions: true`, so user, project, and package extensions from the parent are never executed; only the inline child-safety factory is loaded. The public `AgentSession.steer()` method supplies active input while the prompt is running. Agent events produce bounded assistant and tool start/update/end transcript records, including serialized arguments and results. Abort, listener removal, timers, active-control closure, child session disposal, and prompt rejection are handled through one cleanup path.
 
 ### Claude harness
 
@@ -100,7 +100,7 @@ On session start it restores state and builds both harnesses plus the manager. T
 
 Reducers and view models are terminal-independent. Concrete bindings translate Pi keys with `matchesKey`, call `requestRender`, keep every line width-bounded, subscribe to live manager changes, and dispose subscriptions exactly once.
 
-`/subagents runs` opens a fresh full-terminal overlay. Enter moves directly from the list to a bounded structured transcript; Escape returns to the list and then closes. Active runs embed the official Pi `Editor`, with container-level `Focusable` propagation, while settled/unsupported runs show an explicit read-only reason. PageUp/PageDown maintain an entry-level scroll offset; new events follow only at the tail. Printable input always reaches the editor, while refresh/cancel use Ctrl+R/Ctrl+X.
+`/subagents runs` opens a fresh full-terminal overlay. Enter moves directly from the list to a bounded structured transcript; Escape returns to the list and then closes. Active runs embed the official Pi `Editor`, with container-level `Focusable` propagation, while settled/unsupported runs show an explicit read-only reason. PageUp/PageDown maintain an entry-level scroll offset; new events follow only at the tail. Plain `r` refreshes and plain `x` requests cancellation before other input is forwarded to the editor.
 
 `/subagents agents` opens a fresh full-terminal routing overlay with user/project scope, edit/delete, trust gating, and explicit invalid-file backup/reset. The route field editor is an internal panel state rather than a nested `ctx.ui.select`/`ctx.ui.editor` flow, so Enter transitions within the same overlay and Escape returns to the mapping list. Overlays are not reused after close.
 

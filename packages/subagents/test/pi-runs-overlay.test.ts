@@ -57,9 +57,10 @@ function run(status: RunListEntry["status"] = "running"): RunListEntry {
 }
 
 describe("concrete interactive runs overlay", () => {
-  it("focuses the Pi Editor, routes printable shortcuts to it, submits, scrolls, and becomes read-only", async () => {
+  it("focuses the Pi Editor, handles plain run shortcuts, submits, scrolls, and becomes read-only", async () => {
     let inspection = activeInspection();
     let listener: (() => void) | undefined;
+    let inspectCount = 0;
     const sent: string[] = [];
     const cancelled: string[] = [];
     let component!: Component & { focused: boolean };
@@ -92,7 +93,10 @@ describe("concrete interactive runs overlay", () => {
     } as unknown as ExtensionContext;
     const port: RunsDataPort = {
       list: () => [run(inspection.status)],
-      inspect: () => inspection,
+      inspect: () => {
+        inspectCount += 1;
+        return inspection;
+      },
       sendMessage: async (_id, text) => { sent.push(text); },
       cancel: (id) => { cancelled.push(id); },
       subscribe(next) {
@@ -107,19 +111,23 @@ describe("concrete interactive runs overlay", () => {
     let rendered = component.render(100).join("\n");
     expect(rendered).toContain(CURSOR_MARKER);
 
+    const inspectCountBeforeRefresh = inspectCount;
     component.handleInput?.("r");
+    await vi.waitFor(() => expect(inspectCount).toBeGreaterThan(inspectCountBeforeRefresh));
     component.handleInput?.("c");
     component.handleInput?.("t");
     rendered = component.render(100).join("\n");
-    expect(rendered).toContain("rct");
-    expect(cancelled).toEqual([]);
+    expect(rendered).toContain("ct");
 
     // Shift+Enter inserts a newline; it must not submit.
     component.handleInput?.("\x1b[13;2u");
     expect(sent).toEqual([]);
     component.handleInput?.("more");
     component.handleInput?.("\r");
-    await vi.waitFor(() => expect(sent).toEqual(["rct\nmore"]));
+    await vi.waitFor(() => expect(sent).toEqual(["ct\nmore"]));
+
+    component.handleInput?.("x");
+    await vi.waitFor(() => expect(cancelled).toEqual(["run-1"]));
 
     component.handleInput?.("\x1b[5~");
     expect(component.render(100).join("\n")).toContain("newer event");
