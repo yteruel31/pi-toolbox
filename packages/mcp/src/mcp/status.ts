@@ -74,16 +74,41 @@ export function mcpStatusSnapshot(runtime: McpRuntime): McpStatusServer[] {
 	});
 }
 
+/** Aggregate server totals behind the footer text; `total` is every configured server. */
+export interface McpStatusCounts {
+	total: number;
+	/** Every server that is not disabled, connected or not. */
+	enabled: number;
+	connected: number;
+	authRequired: number;
+	/** `error` plus `invalid` states. */
+	errors: number;
+	disabled: number;
+}
+
+export function mcpStatusCounts(servers: readonly McpStatusServer[]): McpStatusCounts {
+	return {
+		total: servers.length,
+		enabled: servers.filter((server) => server.state !== "disabled").length,
+		connected: servers.filter((server) => server.state === "connected").length,
+		authRequired: servers.filter((server) => server.state === "auth-required").length,
+		errors: servers.filter((server) => server.state === "error" || server.state === "invalid").length,
+		disabled: servers.filter((server) => server.state === "disabled").length,
+	};
+}
+
 export function mcpStatusText(servers: readonly McpStatusServer[]): string | undefined {
 	if (!servers.length) return undefined;
-	const enabled = servers.filter((server) => server.state !== "disabled").length;
-	const connected = servers.filter((server) => server.state === "connected").length;
-	const auth = servers.filter((server) => server.state === "auth-required").length;
-	const errors = servers.filter((server) => server.state === "error" || server.state === "invalid").length;
-	const disabled = servers.filter((server) => server.state === "disabled").length;
-	let text = `MCP ${connected}/${enabled}`;
-	if (auth) text += ` · ${auth} auth`;
-	if (errors) text += ` · ${errors} err`;
-	if (disabled) text += ` · ${disabled} off`;
+	const counts = mcpStatusCounts(servers);
+	let text = `MCP ${counts.connected}/${counts.enabled}`;
+	if (counts.authRequired) text += ` · ${counts.authRequired} auth`;
+	if (counts.errors) text += ` · ${counts.errors} err`;
+	if (counts.disabled) text += ` · ${counts.disabled} off`;
 	return text;
 }
+
+/** Event bus channel carrying `McpStatusEvent` for footer/status consumers. */
+export const MCP_STATUS_CHANNEL = "pi-toolbox:mcp:status";
+
+/** Versioned status payload; `counts: null` clears stale state (session start, shutdown). */
+export type McpStatusEvent = { v: 1; counts: McpStatusCounts } | { v: 1; counts: null };

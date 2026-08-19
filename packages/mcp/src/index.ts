@@ -5,7 +5,7 @@ import { McpRuntime, registerMcpTool } from "./runtime.js";
 import { appStatusText } from "./apps/status.js";
 import { DirectToolRegistry } from "./mcp/direct-tools.js";
 import { registerMcpCommand } from "./mcp-command.js";
-import { mcpStatusSnapshot, mcpStatusText } from "./mcp/status.js";
+import { MCP_STATUS_CHANNEL, mcpStatusCounts, mcpStatusSnapshot, mcpStatusText, type McpStatusEvent } from "./mcp/status.js";
 
 /** Registers lazy entry points; no process, socket, listener, timer, or network occurs at load. */
 export default function mcpExtension(pi: ExtensionAPI): void {
@@ -31,10 +31,15 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		return next;
 	};
 	const directTools = new DirectToolRegistry(pi);
+	/** Broadcast is advisory: consumers own rendering, this extension keeps owning its own statuses. */
+	const emitStatus = (event: McpStatusEvent): void => {
+		pi.events?.emit(MCP_STATUS_CHANNEL, event);
+	};
 	const quiesce = (): Promise<void> => enqueueLifecycle(async () => {
 		const previous = runtime;
 		runtime = undefined;
 		unsubscribeStatus?.(); unsubscribeStatus = undefined;
+		emitStatus({ v: 1, counts: null });
 		directTools.detach(previous);
 		await previous?.close();
 	});
@@ -50,6 +55,7 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		if (previous) await previous.close();
 		ctx?.ui.setStatus("mcp-ui", undefined);
 		ctx?.ui.setStatus("mcp-status", undefined);
+		emitStatus({ v: 1, counts: null });
 		runtime = new McpRuntime(loadMcpConfig(), undefined, undefined, undefined, {
 			context: ctx,
 			onUiStatus: (status) => {
@@ -62,6 +68,7 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 			if (runtime !== current) return;
 			const servers = mcpStatusSnapshot(current);
 			const text = mcpStatusText(servers);
+			emitStatus({ v: 1, counts: mcpStatusCounts(servers) });
 			const warning = servers.some((server) => server.state === "auth-required" || server.state === "error" || server.state === "invalid");
 			ctx?.ui.setStatus("mcp-status", text ? ctx.ui.theme.fg(warning ? "warning" : "muted", text) : undefined);
 		};
@@ -79,12 +86,15 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		await previous?.close();
 		ctx?.ui.setStatus("mcp-ui", undefined);
 		ctx?.ui.setStatus("mcp-status", undefined);
+		emitStatus({ v: 1, counts: null });
 		});
 	});
 }
 
 export { DEFAULT_UI_SETTINGS, getMcpConfigPaths, loadMcpConfig } from "./config.js";
 export type { ConfigDiagnostic, DirectToolsSetting, McpConfig, McpGatewaySettings, McpServerControls, McpServerDefinition, McpUiSettings } from "./config.js";
+export { MCP_STATUS_CHANNEL, mcpStatusCounts } from "./mcp/status.js";
+export type { McpStatusCounts, McpStatusEvent } from "./mcp/status.js";
 export { GatewayClient } from "./gateway/client.js";
 export { TailscaleAdapter } from "./tailscale.js";
 export { McpAppController } from "./apps/controller.js";
