@@ -1,27 +1,17 @@
-/**
- * Runs view: list of active/settled runs with refresh, cancellation, and a
- * takeover/detail view showing bounded progress and final output.
- *
- * Pure reducer + line producers. Side effects leave the reducer as typed
- * intents; fresh data enters as events. The concrete binding maps intents to
- * RunManager/ctx.ui calls (`request-refresh` → manager.list(), `request-
- * cancel` → manager.cancel(), `confirm-cancel` → ctx.ui.confirm(), `focus-
- * takeover` → OverlayHandle.focus()/unfocus()) and re-dispatches results as
- * events. Nothing in here touches a terminal.
- */
-
 import { isSettledStatus } from "../shared/types.js";
 import type { RunInspection, RunListEntry } from "../shared/types.js";
 import type { KeyHint, RunsKeyAction } from "./keys.js";
 import {
+  boundNotice,
   fitHeadTailLines,
   fitLine,
   fitViewport,
   formatElapsed,
-  boundNotice,
   statusGlyph,
   wrapText,
 } from "./text.js";
+
+const TRANSCRIPT_PAGE_ENTRIES = 5;
 
 export interface RunsViewState {
   runs: readonly RunListEntry[];
@@ -31,13 +21,14 @@ export interface RunsViewState {
     | {
         runId: string;
         inspection: RunInspection | undefined;
-        /** True while the detail panel has captured the keyboard. */
-        takeover: boolean;
+        /** Number of newer transcript entries hidden below the viewport. */
+        scrollOffset: number;
+        /** New events follow the tail only while this remains true. */
+        tailFollow: boolean;
+        submitting: boolean;
       }
     | undefined;
-  /** Run awaiting cancellation confirmation, if any. */
   pendingCancelId: string | undefined;
-  /** Bounded transient message shown in the view. */
   notice: string | undefined;
   closed: boolean;
 }
@@ -46,14 +37,15 @@ export type RunsViewEvent =
   | { kind: "key"; action: RunsKeyAction }
   | { kind: "runs-updated"; runs: readonly RunListEntry[] }
   | { kind: "inspection-updated"; inspection: RunInspection }
-  | { kind: "cancel-confirmed"; runId: string; confirmed: boolean };
+  | { kind: "cancel-confirmed"; runId: string; confirmed: boolean }
+  | { kind: "submission-started"; runId: string }
+  | { kind: "submission-finished"; runId: string; error?: string };
 
 export type RunsViewIntent =
   | { kind: "request-refresh" }
   | { kind: "request-inspection"; runId: string }
   | { kind: "confirm-cancel"; runId: string; title: string }
   | { kind: "request-cancel"; runId: string }
-  | { kind: "focus-takeover"; runId: string; active: boolean }
   | { kind: "close" };
 
 export interface RunsViewStep {
@@ -100,6 +92,13 @@ export function reduceRunsView(
       return step(applyInspectionUpdate(state, event.inspection));
     case "cancel-confirmed":
       return applyCancelConfirmation(state, event.runId, event.confirmed);
+    case "submission-started":
+      return step(updateSubmission(state, event.runId, true));
+    case "submission-finished":
+      return step({
+        ...updateSubmission(state, event.runId, false),
+        notice: event.error ? boundNotice(event.error) : undefined,
+      });
     case "key":
       return state.mode === "detail"
         ? reduceDetailKey(state, event.action)
@@ -111,12 +110,10 @@ function applyRunsUpdate(
   state: RunsViewState,
   runs: readonly RunListEntry[],
 ): RunsViewState {
-  // Keep the selection anchored to the same run id across refreshes.
   const selectedId = selectedRun(state)?.id;
-  const nextIndex =
-    selectedId === undefined
-      ? 0
-      : runs.findIndex((run) => run.id === selectedId);
+  const nextIndex = selectedId === undefined
+    ? 0
+    : runs.findIndex((run) => run.id === selectedId);
   const next: RunsViewState = {
     ...state,
     runs,
@@ -130,8 +127,38 @@ function applyInspectionUpdate(
   state: RunsViewState,
   inspection: RunInspection,
 ): RunsViewState {
-  if (!state.detail || state.detail.runId !== inspection.id) return state;
-  return { ...state, detail: { ...state.detail, inspection } };
+  const detail = state.detail;
+  if (!detail || detail.runId !== inspection.id) return state;
+  const previousTotal = detail.inspection
+    ? detail.inspection.transcriptDropped + detail.inspection.transcript.length
+    : 0;
+  const nextTotal = inspection.transcriptDropped + inspection.transcript.length;
+  const added = Math.max(0, nextTotal - previousTotal);
+  const scrollOffset = detail.tailFollow
+    ? 0
+    : Math.min(Math.max(0, nextTotal - 1), detail.scrollOffset + added);
+  return {
+    ...state,
+    detail: {
+      ...detail,
+      inspection,
+      scrollOffset,
+      tailFollow: scrollOffset === 0,
+    },
+  };
+}
+
+function updateSubmission(
+  state: RunsViewState,
+  runId: string,
+  submitting: boolean,
+): RunsViewState {
+  if (!state.detail || state.detail.runId !== runId) return state;
+  return {
+    ...state,
+    detail: { ...state.detail, submitting },
+    notice: submitting ? undefined : state.notice,
+  };
 }
 
 function applyCancelConfirmation(
@@ -150,8 +177,9 @@ function applyCancelConfirmation(
 
 function requestCancel(state: RunsViewState, runId: string): RunsViewStep {
   const run = state.runs.find((candidate) => candidate.id === runId);
-  const inspection =
-    state.detail?.runId === runId ? state.detail.inspection : undefined;
+  const inspection = state.detail?.runId === runId
+    ? state.detail.inspection
+    : undefined;
   const status = inspection?.status ?? run?.status;
   const title = inspection?.title ?? run?.title ?? runId;
   if (status && isSettledStatus(status)) {
@@ -171,15 +199,9 @@ function reduceListKey(
 ): RunsViewStep {
   switch (action) {
     case "up":
-      return step({
-        ...state,
-        selectedIndex: clampIndex(state, state.selectedIndex - 1),
-      });
+      return step({ ...state, selectedIndex: clampIndex(state, state.selectedIndex - 1) });
     case "down":
-      return step({
-        ...state,
-        selectedIndex: clampIndex(state, state.selectedIndex + 1),
-      });
+      return step({ ...state, selectedIndex: clampIndex(state, state.selectedIndex + 1) });
     case "enter": {
       const run = selectedRun(state);
       if (!run) return step(state);
@@ -187,7 +209,13 @@ function reduceListKey(
         {
           ...state,
           mode: "detail",
-          detail: { runId: run.id, inspection: undefined, takeover: false },
+          detail: {
+            runId: run.id,
+            inspection: undefined,
+            scrollOffset: 0,
+            tailFollow: true,
+            submitting: false,
+          },
           notice: undefined,
         },
         [{ kind: "request-inspection", runId: run.id }],
@@ -197,10 +225,10 @@ function reduceListKey(
       return step({ ...state, notice: undefined }, [{ kind: "request-refresh" }]);
     case "cancel-run": {
       const run = selectedRun(state);
-      if (!run) return step(state);
-      return requestCancel(state, run.id);
+      return run ? requestCancel(state, run.id) : step(state);
     }
-    case "takeover":
+    case "page-up":
+    case "page-down":
       return step(state);
     case "escape":
       return step({ ...state, closed: true }, [{ kind: "close" }]);
@@ -213,24 +241,26 @@ function reduceDetailKey(
 ): RunsViewStep {
   const detail = state.detail;
   if (!detail) return step({ ...state, mode: "list" });
+  const transcriptLength = detail.inspection?.transcript.length ?? 0;
   switch (action) {
-    case "escape": {
-      // Layered exit: takeover → detail → list. Closing the view entirely
-      // still requires escape from the list.
-      if (detail.takeover) {
-        return step(
-          { ...state, detail: { ...detail, takeover: false } },
-          [{ kind: "focus-takeover", runId: detail.runId, active: false }],
-        );
-      }
-      return step({ ...state, mode: "list", detail: undefined });
-    }
-    case "takeover": {
-      const active = !detail.takeover;
-      return step(
-        { ...state, detail: { ...detail, takeover: active } },
-        [{ kind: "focus-takeover", runId: detail.runId, active }],
+    case "escape":
+      return step({ ...state, mode: "list", detail: undefined, notice: undefined });
+    case "page-up": {
+      const scrollOffset = Math.min(
+        Math.max(0, transcriptLength - 1),
+        detail.scrollOffset + TRANSCRIPT_PAGE_ENTRIES,
       );
+      return step({
+        ...state,
+        detail: { ...detail, scrollOffset, tailFollow: scrollOffset === 0 },
+      });
+    }
+    case "page-down": {
+      const scrollOffset = Math.max(0, detail.scrollOffset - TRANSCRIPT_PAGE_ENTRIES);
+      return step({
+        ...state,
+        detail: { ...detail, scrollOffset, tailFollow: scrollOffset === 0 },
+      });
     }
     case "refresh":
       return step({ ...state, notice: undefined }, [
@@ -246,22 +276,18 @@ function reduceDetailKey(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Line producers (plain text, hard-bounded to width/maxRows)
-// ---------------------------------------------------------------------------
-
 export const RUNS_LIST_KEY_HINTS: readonly KeyHint[] = [
   { key: "↑↓", description: "move" },
-  { key: "enter", description: "detail" },
-  { key: "r", description: "refresh" },
-  { key: "c", description: "cancel" },
+  { key: "enter", description: "open" },
+  { key: "ctrl+r", description: "refresh" },
+  { key: "ctrl+x", description: "cancel" },
   { key: "esc", description: "close" },
 ];
 
 export const RUN_DETAIL_KEY_HINTS: readonly KeyHint[] = [
-  { key: "t", description: "takeover" },
-  { key: "r", description: "refresh" },
-  { key: "c", description: "cancel" },
+  { key: "pgup/pgdn", description: "scroll" },
+  { key: "ctrl+r", description: "refresh" },
+  { key: "ctrl+x", description: "cancel" },
   { key: "esc", description: "back" },
 ];
 
@@ -272,35 +298,29 @@ export function formatRunRow(
 ): string {
   const marker = selected ? "›" : " ";
   const model = run.model ? ` ${run.model}` : "";
-  const row = `${marker} ${statusGlyph(run.status)} ${run.id} [${run.harness}] ${run.title} · ${run.status} ${formatElapsed(run.elapsedMs)}${model}`;
-  return fitLine(row, width);
+  return fitLine(
+    `${marker} ${statusGlyph(run.status)} ${run.id} [${run.harness}] ${run.title} · ${run.status} ${formatElapsed(run.elapsedMs)}${model}`,
+    width,
+  );
 }
 
-/** Render the list mode as bounded plain-text lines. */
 export function runsListLines(
   state: RunsViewState,
   width: number,
   maxRows: number,
 ): string[] {
   if (width <= 0 || maxRows <= 0) return [];
-  const notice = state.notice
-    ? [fitLine(`! ${state.notice}`, width)]
-    : [];
+  const notice = state.notice ? [fitLine(`! ${state.notice}`, width)] : [];
   const available = Math.max(0, maxRows - notice.length);
-  const rows =
-    state.runs.length === 0
-      ? [fitLine("No subagent runs yet.", width)]
-      : state.runs.map((run, index) =>
-          formatRunRow(run, index === state.selectedIndex, width),
-        );
-  const visible =
-    state.runs.length === 0
-      ? rows.slice(0, available)
-      : fitViewport(rows, state.selectedIndex, width, available);
+  const rows = state.runs.length === 0
+    ? [fitLine("No subagent runs yet.", width)]
+    : state.runs.map((run, index) => formatRunRow(run, index === state.selectedIndex, width));
+  const visible = state.runs.length === 0
+    ? rows.slice(0, available)
+    : fitViewport(rows, state.selectedIndex, width, available);
   return [...visible, ...notice].slice(0, maxRows);
 }
 
-/** Render the detail/takeover mode as bounded plain-text lines. */
 export function runDetailLines(
   state: RunsViewState,
   width: number,
@@ -314,35 +334,35 @@ export function runDetailLines(
     lines.push(fitLine(`${detail.runId} · loading…`, width));
   } else {
     const model = inspection.model ? ` · ${inspection.model}` : "";
-    lines.push(
-      fitLine(
-        `${statusGlyph(inspection.status)} ${inspection.id} [${inspection.harness}] ${inspection.title}`,
-        width,
-      ),
-    );
-    lines.push(
-      fitLine(
-        `${inspection.status}${inspection.cancelRequested ? " (cancel requested)" : ""} · ${formatElapsed(inspection.elapsedMs)}${model}`,
-        width,
-      ),
-    );
-    if (inspection.activity.length > 0 || inspection.activityDropped > 0) {
-      lines.push(fitLine("activity:", width));
-      if (inspection.activityDropped > 0) {
-        lines.push(
-          fitLine(`… ${inspection.activityDropped} earlier entries`, width),
-        );
-      }
-      for (const entry of inspection.activity) {
-        lines.push(fitLine(`• ${entry.text}`, width));
+    lines.push(fitLine(
+      `${statusGlyph(inspection.status)} ${inspection.id} [${inspection.harness}] ${inspection.title}`,
+      width,
+    ));
+    lines.push(fitLine(
+      `${inspection.status}${inspection.cancelRequested ? " (cancel requested)" : ""} · ${formatElapsed(inspection.elapsedMs)}${model}`,
+      width,
+    ));
+    if (inspection.transcriptDropped > 0) {
+      lines.push(fitLine(`… ${inspection.transcriptDropped} earlier transcript entries`, width));
+    }
+    for (const entry of inspection.transcript) {
+      switch (entry.kind) {
+        case "status": lines.push(fitLine(`· ${entry.text}`, width)); break;
+        case "user": lines.push(...wrapText(`user: ${entry.text}`, width)); break;
+        case "assistant": lines.push(...wrapText(`assistant: ${entry.text}`, width)); break;
+        case "tool":
+          lines.push(fitLine(`tool ${entry.toolName} ${entry.phase}${entry.callId ? ` (${entry.callId})` : ""}`, width));
+          if (entry.input) lines.push(...wrapText(`input: ${entry.input}`, width));
+          if (entry.output) lines.push(...wrapText(`output: ${entry.output}`, width));
       }
     }
-    if (inspection.resultPreview !== undefined) {
-      lines.push(fitLine("output:", width));
-      lines.push(...wrapText(inspection.resultPreview, width));
-    }
+    lines.push(fitLine(
+      inspection.messaging.editable
+        ? "message editor available"
+        : inspection.messaging.reason ?? "transcript is read-only",
+      width,
+    ));
   }
-  if (detail.takeover) lines.push(fitLine("[takeover: keys captured]", width));
   if (state.notice) lines.push(fitLine(`! ${state.notice}`, width));
   return fitHeadTailLines(lines, width, maxRows, inspection ? 2 : 1);
 }

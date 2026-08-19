@@ -25,7 +25,11 @@ import {
   WaitAbortedError,
   describeError,
 } from "../shared/errors.js";
-import { truncateText, toDisplayTitle } from "../shared/truncate.js";
+import {
+  sanitizeTerminalText,
+  truncateText,
+  toDisplayTitle,
+} from "../shared/truncate.js";
 import {
   isSettledStatus,
   type CancelEntry,
@@ -40,13 +44,19 @@ import {
   type RunResult,
   type RunSnapshot,
   type RunStatus,
+  type RunTranscriptEntry,
+  type RunTranscriptInput,
   type RunUsage,
   type SettledRunStatus,
   type ThinkingLevel,
   type WaitEntry,
   type WaitReport,
 } from "../shared/types.js";
-import type { HarnessRunOutcome, SubagentHarness } from "./harness.js";
+import type {
+  HarnessActiveControl,
+  HarnessRunOutcome,
+  SubagentHarness,
+} from "./harness.js";
 
 /** Injected side-effect hooks. All optional; all must never throw upward. */
 export interface RunManagerHooks {
@@ -74,6 +84,12 @@ export interface RunManagerOptions {
   maxActivityEntries?: number;
   /** Max characters per activity entry. Default 400. */
   maxActivityTextChars?: number;
+  /** Max retained structured transcript entries per run. Default 120. */
+  maxTranscriptEntries?: number;
+  /** Max characters retained in each transcript text field. Default 4000. */
+  maxTranscriptTextChars?: number;
+  /** Max user-message characters sent through an active transport. Default 100000. */
+  maxActiveMessageChars?: number;
   /** Max characters of retained final text per run. Default 50000. */
   maxResultTextChars?: number;
   /** Max characters of retained error diagnostics per run. Default 2000. */
@@ -137,7 +153,11 @@ interface InternalRun {
   errorText: string | undefined;
   usage: RunUsage | undefined;
   abort: AbortController;
+  supportsActiveMessages: boolean;
+  activeControl: HarnessActiveControl | undefined;
+  controlDisposed: boolean;
   activity: BoundedLog<RunActivityEntry>;
+  transcript: BoundedLog<RunTranscriptEntry>;
   /** Wake callbacks of pending wait() calls. Cleared exactly once at settle. */
   waiters: Set<() => void>;
   /** Count of pending wait() calls holding this run out of the queue. */
@@ -150,6 +170,9 @@ export class RunManager {
   private readonly maxActiveRuns: number;
   private readonly maxActivityEntries: number;
   private readonly maxActivityTextChars: number;
+  private readonly maxTranscriptEntries: number;
+  private readonly maxTranscriptTextChars: number;
+  private readonly maxActiveMessageChars: number;
   private readonly maxResultTextChars: number;
   private readonly maxErrorTextChars: number;
   private readonly maxResultPreviewChars: number;
@@ -169,6 +192,9 @@ export class RunManager {
     this.maxActiveRuns = options.maxActiveRuns ?? 4;
     this.maxActivityEntries = options.maxActivityEntries ?? 20;
     this.maxActivityTextChars = options.maxActivityTextChars ?? 400;
+    this.maxTranscriptEntries = options.maxTranscriptEntries ?? 120;
+    this.maxTranscriptTextChars = options.maxTranscriptTextChars ?? 4_000;
+    this.maxActiveMessageChars = options.maxActiveMessageChars ?? 100_000;
     this.maxResultTextChars = options.maxResultTextChars ?? 50_000;
     this.maxErrorTextChars = options.maxErrorTextChars ?? 2_000;
     this.maxResultPreviewChars = options.maxResultPreviewChars ?? 700;
@@ -201,8 +227,8 @@ export class RunManager {
       serial,
       title:
         request.title !== undefined && request.title.trim() !== ""
-          ? toDisplayTitle(request.title)
-          : toDisplayTitle(prompt),
+          ? toDisplayTitle(sanitizeTerminalText(request.title))
+          : toDisplayTitle(sanitizeTerminalText(prompt)),
       harness: request.harness.kind,
       status: "queued",
       createdAt: this.clock(),
@@ -219,10 +245,25 @@ export class RunManager {
       errorText: undefined,
       usage: undefined,
       abort: new AbortController(),
+      supportsActiveMessages: request.harness.supportsActiveMessages,
+      activeControl: undefined,
+      controlDisposed: false,
       activity: new BoundedLog(this.maxActivityEntries),
+      transcript: new BoundedLog(this.maxTranscriptEntries),
       waiters: new Set(),
       reservations: 0,
     };
+    run.transcript.push(this.normalizeTranscriptEntry({
+      kind: "user",
+      at: run.createdAt,
+      text: prompt,
+    }));
+    run.transcript.push(this.normalizeTranscriptEntry({
+      kind: "status",
+      at: run.createdAt,
+      status: "queued",
+      text: "Run queued",
+    }));
     this.runs.set(run.id, run);
     this.creationOrder.push(run.id);
 
@@ -233,6 +274,12 @@ export class RunManager {
 
   private startRun(run: InternalRun, request: SpawnRunRequest): void {
     run.status = "running";
+    run.transcript.push(this.normalizeTranscriptEntry({
+      kind: "status",
+      at: this.clock(),
+      status: "running",
+      text: "Run started",
+    }));
     let promise: Promise<HarnessRunOutcome>;
     try {
       promise = Promise.resolve(
@@ -245,12 +292,14 @@ export class RunManager {
           thinkingLevel: request.thinkingLevel,
           signal: run.abort.signal,
           reportProgress: (text) => this.recordProgress(run, text),
+          reportTranscript: (entry) => this.recordTranscript(run, entry),
           reportEffectiveModel: (model) => {
             if (!this.isSettled(run)) {
-              run.effectiveModel = truncateText(String(model), 200);
+              run.effectiveModel = truncateText(sanitizeTerminalText(String(model)), 200);
               this.hooks.onChange?.();
             }
           },
+          setActiveControl: (control) => this.attachActiveControl(run, control),
         }),
       );
     } catch (err) {
@@ -269,9 +318,82 @@ export class RunManager {
     if (this.isSettled(run)) return;
     run.activity.push({
       at: this.clock(),
-      text: truncateText(String(text), this.maxActivityTextChars),
+      text: truncateText(
+        sanitizeTerminalText(String(text)),
+        this.maxActivityTextChars,
+      ),
     });
     this.hooks.onChange?.();
+  }
+
+  private recordTranscript(
+    run: InternalRun,
+    entry: RunTranscriptInput,
+  ): void {
+    if (this.isSettled(run)) return;
+    run.transcript.push(this.normalizeTranscriptEntry({
+      ...entry,
+      at: this.clock(),
+    } as RunTranscriptEntry));
+    this.hooks.onChange?.();
+  }
+
+  private normalizeTranscriptEntry(entry: RunTranscriptEntry): RunTranscriptEntry {
+    const bound = (value: string) => truncateText(
+      sanitizeTerminalText(String(value)),
+      this.maxTranscriptTextChars,
+    );
+    switch (entry.kind) {
+      case "status":
+        return {
+          kind: "status",
+          at: entry.at,
+          text: bound(entry.text),
+          ...(entry.status ? { status: entry.status } : {}),
+        };
+      case "user":
+      case "assistant":
+        return { kind: entry.kind, at: entry.at, text: bound(entry.text) };
+      case "tool":
+        return {
+          kind: "tool",
+          at: entry.at,
+          toolName: bound(entry.toolName),
+          phase: entry.phase,
+          ...(entry.callId ? { callId: bound(entry.callId) } : {}),
+          ...(entry.input !== undefined ? { input: bound(entry.input) } : {}),
+          ...(entry.output !== undefined ? { output: bound(entry.output) } : {}),
+        };
+    }
+  }
+
+  private attachActiveControl(
+    run: InternalRun,
+    control: HarnessActiveControl,
+  ): boolean {
+    if (this.isSettled(run) || run.controlDisposed || run.activeControl) {
+      this.disposeControlSafely(control);
+      return false;
+    }
+    run.activeControl = control;
+    this.hooks.onChange?.();
+    return true;
+  }
+
+  private disposeActiveControl(run: InternalRun): void {
+    if (run.controlDisposed) return;
+    run.controlDisposed = true;
+    const control = run.activeControl;
+    run.activeControl = undefined;
+    if (control) this.disposeControlSafely(control);
+  }
+
+  private disposeControlSafely(control: HarnessActiveControl): void {
+    try {
+      void Promise.resolve(control.dispose()).catch(() => undefined);
+    } catch {
+      // A broken transport cleanup must not block lifecycle settlement.
+    }
   }
 
   // ------------------------------------------------------------ settlement
@@ -283,11 +405,16 @@ export class RunManager {
   private settleFromOutcome(run: InternalRun, outcome: HarnessRunOutcome): void {
     if (this.isSettled(run)) return;
     const finalText = truncateText(
-      typeof outcome?.finalText === "string" ? outcome.finalText : "",
+      sanitizeTerminalText(
+        typeof outcome?.finalText === "string" ? outcome.finalText : "",
+      ),
       this.maxResultTextChars,
     );
     if (outcome?.effectiveModel !== undefined) {
-      run.effectiveModel = truncateText(outcome.effectiveModel, 200);
+      run.effectiveModel = truncateText(
+        sanitizeTerminalText(outcome.effectiveModel),
+        200,
+      );
     }
     run.usage = outcome?.usage;
     if (run.cancelRequested) {
@@ -302,7 +429,10 @@ export class RunManager {
 
   private settleFromError(run: InternalRun, err: unknown): void {
     if (this.isSettled(run)) return;
-    const diagnostics = truncateText(describeError(err), this.maxErrorTextChars);
+    const diagnostics = truncateText(
+      sanitizeTerminalText(describeError(err)),
+      this.maxErrorTextChars,
+    );
     if (run.cancelRequested || this.isAbortLike(err, run)) {
       this.settle(run, "cancelled", "", diagnostics);
     } else {
@@ -323,19 +453,27 @@ export class RunManager {
     errorText: string | undefined,
   ): void {
     if (this.isSettled(run)) return;
+    const settledAt = this.clock();
+    run.transcript.push(this.normalizeTranscriptEntry({
+      kind: "status",
+      at: settledAt,
+      status,
+      text: `Run ${status}`,
+    }));
     run.status = status;
-    run.settledAt = this.clock();
+    run.settledAt = settledAt;
     run.settlementSeq = this.nextSettlementSeq++;
     run.finalText = finalText;
     run.errorText =
       errorText === undefined
         ? undefined
-        : truncateText(errorText, this.maxErrorTextChars);
+        : truncateText(sanitizeTerminalText(errorText), this.maxErrorTextChars);
 
     // Cleanup exactly once: wake and drop waiters; the abort controller is
     // left as-is (aborting a settled run is a no-op for the harness).
     const waiters = [...run.waiters];
     run.waiters.clear();
+    this.disposeActiveControl(run);
 
     // Delivery: queue unless suppressed or reserved by a pending wait().
     let queued = false;
@@ -462,6 +600,58 @@ export class RunManager {
     });
   }
 
+  // ---------------------------------------------------------- active input
+
+  /** Send one user message through the existing active child transport. */
+  async sendMessage(id: string, text: string): Promise<void> {
+    const run = this.runs.get(id);
+    if (!run) throw new UnknownRunError(id);
+    const message = truncateText(
+      sanitizeTerminalText(typeof text === "string" ? text : ""),
+      this.maxActiveMessageChars,
+    );
+    if (message.trim() === "") {
+      throw new InvalidArgumentError("Subagent messages cannot be empty.");
+    }
+    if (this.isSettled(run)) {
+      throw new InvalidArgumentError(
+        `Run ${id} is already ${run.status}; its transcript is read-only.`,
+      );
+    }
+    if (!run.supportsActiveMessages) {
+      throw new InvalidArgumentError(
+        `Run ${id} uses a harness that does not support active messages.`,
+      );
+    }
+    const control = run.activeControl;
+    if (!control || run.controlDisposed) {
+      throw new InvalidArgumentError(
+        `Run ${id} is active but its messaging transport is not ready.`,
+      );
+    }
+    try {
+      await control.sendMessage(message);
+    } catch (error) {
+      throw new InvalidArgumentError(
+        truncateText(
+          `Could not send a message to ${id}: ${describeError(error)}`,
+          this.maxErrorTextChars,
+        ),
+      );
+    }
+    if (this.isSettled(run) || run.controlDisposed || run.activeControl !== control) {
+      throw new InvalidArgumentError(
+        `Run ${id} settled before the message could be accepted.`,
+      );
+    }
+    run.transcript.push(this.normalizeTranscriptEntry({
+      kind: "user",
+      at: this.clock(),
+      text: message,
+    }));
+    this.hooks.onChange?.();
+  }
+
   // ---------------------------------------------------------------- cancel
 
   /**
@@ -489,6 +679,11 @@ export class RunManager {
       if (!run.cancelRequested) {
         run.cancelRequested = true;
         mutated = true;
+        run.transcript.push(this.normalizeTranscriptEntry({
+          kind: "status",
+          at: this.clock(),
+          text: "Cancellation requested",
+        }));
         run.abort.abort(new Error("cancelled by subagent_cancel"));
       }
       if (run.status === "queued") {
@@ -514,7 +709,15 @@ export class RunManager {
         ? `${run.status}: ${run.errorText}`
         : run.finalText ?? ""
       : undefined;
-    return {
+    const activity = Object.freeze(
+      run.activity.entries().map((entry) => Object.freeze({ ...entry })),
+    );
+    const transcript = Object.freeze(
+      run.transcript.entries().map((entry) => Object.freeze({ ...entry })),
+    );
+    const messaging = Object.freeze(this.messagingState(run));
+    const usage = run.usage ? Object.freeze({ ...run.usage }) : undefined;
+    return Object.freeze({
       id: run.id,
       title: run.title,
       harness: run.harness,
@@ -524,15 +727,43 @@ export class RunManager {
       elapsedMs: this.elapsedMs(run),
       cancelRequested: run.cancelRequested,
       model: run.effectiveModel ?? run.requestedModel,
-      usage: run.usage,
-      activity: run.activity.entries(),
+      usage,
+      activity,
       activityDropped: run.activity.dropped,
+      transcript,
+      transcriptDropped: run.transcript.dropped,
+      messaging,
       resultPreview:
         previewSource === undefined
           ? undefined
           : truncateText(previewSource, this.maxResultPreviewChars),
       consumption: run.consumption,
-    };
+    });
+  }
+
+  private messagingState(run: InternalRun): RunInspection["messaging"] {
+    if (this.isSettled(run)) {
+      return {
+        supported: run.supportsActiveMessages,
+        editable: false,
+        reason: `Run ${run.status}; transcript is read-only.`,
+      };
+    }
+    if (!run.supportsActiveMessages) {
+      return {
+        supported: false,
+        editable: false,
+        reason: "This harness does not support active messages.",
+      };
+    }
+    if (!run.activeControl || run.controlDisposed) {
+      return {
+        supported: true,
+        editable: false,
+        reason: "Messaging transport is starting.",
+      };
+    }
+    return { supported: true, editable: true };
   }
 
   /** All tracked runs in creation order. */
@@ -643,8 +874,10 @@ export class RunManager {
           finalText: run.finalText,
           errorText: run.errorText,
           usage: run.usage,
-          activity: [...run.activity.entries()],
+          activity: run.activity.entries().map((entry) => ({ ...entry })),
           activityDropped: run.activity.dropped,
+          transcript: run.transcript.entries().map((entry) => ({ ...entry })),
+          transcriptDropped: run.transcript.dropped,
         } satisfies PersistedRunRecord;
       }),
     };
@@ -680,10 +913,28 @@ export class RunManager {
         errorText: record.errorText,
         usage: record.usage,
         abort: new AbortController(),
+        supportsActiveMessages: false,
+        activeControl: undefined,
+        controlDisposed: true,
         activity: BoundedLog.from(
           this.maxActivityEntries,
-          record.activity,
+          record.activity.map((entry) => ({
+            at: entry.at,
+            text: truncateText(
+              sanitizeTerminalText(entry.text),
+              this.maxActivityTextChars,
+            ),
+          })),
           record.activityDropped,
+        ),
+        transcript: BoundedLog.from(
+          this.maxTranscriptEntries,
+          (record.transcript ?? record.activity.map((entry) => ({
+            kind: "status" as const,
+            at: entry.at,
+            text: entry.text,
+          }))).map((entry) => this.normalizeTranscriptEntry(entry)),
+          record.transcriptDropped ?? record.activityDropped,
         ),
         waiters: new Set(),
         reservations: 0,
@@ -716,12 +967,20 @@ export class RunManager {
   private settleInterrupted(run: InternalRun): void {
     // Same invariants as settle(), but bypasses the shutdown guard and uses
     // "failed" per SPEC restart semantics.
+    const settledAt = this.clock();
+    run.transcript.push(this.normalizeTranscriptEntry({
+      kind: "status",
+      at: settledAt,
+      status: "failed",
+      text: "Run interrupted by session reload",
+    }));
     run.status = "failed";
-    run.settledAt = this.clock();
+    run.settledAt = settledAt;
     run.settlementSeq = this.nextSettlementSeq++;
     run.finalText = "";
     run.errorText =
       "interrupted: the parent Pi session was restarted before this run finished; background runs are not resumed";
+    this.disposeActiveControl(run);
     if (run.autoDeliver && run.consumption === "none") {
       this.deliveryQueue.add(run.id);
     }

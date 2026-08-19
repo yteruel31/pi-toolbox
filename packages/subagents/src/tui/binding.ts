@@ -51,6 +51,8 @@ export interface BoundView extends TuiComponentLike, Disposable {}
 export interface RunsDataPort {
   list(): RunListEntry[];
   inspect(runId: string): RunInspection | undefined;
+  /** Send input through the selected run's existing active transport. */
+  sendMessage(runId: string, text: string): Promise<void>;
   /** Fire-and-forget cancellation intent; idempotent for settled runs. */
   cancel(runId: string): void;
   subscribe(listener: () => void): Unsubscribe;

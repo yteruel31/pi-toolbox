@@ -38,6 +38,7 @@ import type {
 } from "./shared/types.js";
 import type { RoutingDataPort, RunsDataPort } from "./tui/binding.js";
 import { openPiRoutingOverlay, openPiRunsOverlay } from "./tui/pi-views.js";
+import { statusText } from "./tui/status.js";
 
 const STATE_ENTRY = "pi-subagents-state-v1";
 const BTW_ENTRY = "pi-subagents-btw-v1";
@@ -99,14 +100,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   const updateStatus = (): void => {
     const current = sessionContext;
     if (!current?.hasUI || !manager) return;
-    const active = manager.activeCount();
-    const pending = manager.pendingDeliveryCount();
-    const text = active > 0
-      ? `${active} subagent${active === 1 ? "" : "s"} running`
-      : pending > 0
-        ? `${pending} subagent result${pending === 1 ? "" : "s"} ready`
-        : undefined;
-    current.ui.setStatus("subagents", text);
+    current.ui.setStatus("subagents", statusText(manager.list()));
   };
 
   const deliverIfIdle = (): void => {
@@ -349,6 +343,9 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       } catch {
         return undefined;
       }
+    },
+    sendMessage: async (id, text) => {
+      await requireSession().manager.sendMessage(id, text);
     },
     cancel: (id) => {
       requireSession().manager.cancel([id]);
@@ -671,10 +668,41 @@ function isPersistedState(value: unknown): value is PersistedRunState {
       record.activity.every((entry) =>
         isRecord(entry) && typeof entry.at === "number" && Number.isFinite(entry.at) && typeof entry.text === "string"
       ) &&
+      (record.transcript === undefined || (
+        Array.isArray(record.transcript) &&
+        record.transcript.length <= 1_000 &&
+        record.transcript.every(isPersistedTranscriptEntry)
+      )) &&
+      (record.transcriptDropped === undefined || (
+        typeof record.transcriptDropped === "number" &&
+        Number.isSafeInteger(record.transcriptDropped) &&
+        record.transcriptDropped >= 0
+      )) &&
       typeof record.activityDropped === "number" && Number.isSafeInteger(record.activityDropped) && record.activityDropped >= 0 &&
       ["none", "waited", "delivered", "suppressed"].includes(String(record.consumption))
     );
   });
+}
+
+function isPersistedTranscriptEntry(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.at !== "number" || !Number.isFinite(value.at)) {
+    return false;
+  }
+  if (value.kind === "status") {
+    return typeof value.text === "string" &&
+      (value.status === undefined || ["queued", "running", "completed", "failed", "cancelled"].includes(String(value.status)));
+  }
+  if (value.kind === "user" || value.kind === "assistant") {
+    return typeof value.text === "string";
+  }
+  if (value.kind === "tool") {
+    return typeof value.toolName === "string" &&
+      ["start", "update", "complete", "error"].includes(String(value.phase)) &&
+      (value.callId === undefined || typeof value.callId === "string") &&
+      (value.input === undefined || typeof value.input === "string") &&
+      (value.output === undefined || typeof value.output === "string");
+  }
+  return false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

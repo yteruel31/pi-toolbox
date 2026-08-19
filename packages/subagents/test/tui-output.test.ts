@@ -53,6 +53,13 @@ function inspect(): RunInspection {
       text: `activity ${index} ${"x".repeat(200)}`,
     })),
     activityDropped: 10,
+    transcript: [
+      { kind: "user", at: 1, text: "Please inspect 界" },
+      { kind: "assistant", at: 2, text: "Done 👨‍👩‍👧‍👦" },
+      { kind: "tool", at: 3, toolName: "read", phase: "complete", input: "file", output: "result" },
+    ],
+    transcriptDropped: 10,
+    messaging: { supported: true, editable: false, reason: "completed" },
     resultPreview: Array.from({ length: 20 }, () => "界".repeat(100)).join("\n"),
     consumption: "none",
   };
@@ -141,21 +148,22 @@ describe("status and widget summaries", () => {
     run("run-5", "cancelled"),
   ];
 
-  it("counts lifecycle states and pending delivery", () => {
-    expect(countRuns(runs, 2)).toEqual({
-      active: 2,
+  it("counts exact running, completed, and error semantics", () => {
+    expect(countRuns(runs)).toEqual({
+      running: 2,
       completed: 1,
-      failed: 1,
-      cancelled: 1,
-      pendingDelivery: 2,
+      error: 2,
     });
-    expect(countRuns([], -5).pendingDelivery).toBe(0);
   });
 
-  it("clears status when no run is active or awaiting delivery", () => {
-    expect(statusText([run("run-1", "completed")])).toBeUndefined();
-    expect(statusText([], 2)).toContain("2 to deliver");
-    expect(statusText(runs)).toContain("2 running");
+  it("persists status after settlement and advertises /subagents", () => {
+    expect(statusText([])).toBeUndefined();
+    expect(statusText([run("run-1", "completed")])).toBe(
+      "● 0 running · ✓ 1 completed · × 0 error · /subagents",
+    );
+    expect(statusText(runs)).toBe(
+      "● 2 running · ✓ 1 completed · × 2 error · /subagents",
+    );
   });
 
   it("shows active runs only and collapses overflow", () => {

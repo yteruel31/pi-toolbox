@@ -50,6 +50,11 @@ function inspection(
     usage: undefined,
     activity: [{ at: 1, text: "working" }],
     activityDropped: 0,
+    transcript: [{ kind: "status", at: 1, text: "working" }],
+    transcriptDropped: 0,
+    messaging: status === "running"
+      ? { supported: true, editable: true }
+      : { supported: true, editable: false, reason: "read-only" },
     resultPreview: status === "running" ? undefined : "done",
     consumption: "none",
   };
@@ -114,7 +119,7 @@ describe("runs reducer", () => {
     expect(state.selectedIndex).toBe(0);
   });
 
-  it("opens detail, refreshes it, toggles takeover, and exits in layers", () => {
+  it("opens detail directly, refreshes it, and escapes detail then list", () => {
     let state = initialRunsViewState([run("run-1")]);
     let result = reduceRunsView(state, { kind: "key", action: "enter" });
     expect(result.intents).toEqual([
@@ -140,26 +145,40 @@ describe("runs reducer", () => {
     ]);
     state = result.state;
 
-    result = reduceRunsView(state, { kind: "key", action: "takeover" });
-    expect(result.state.detail?.takeover).toBe(true);
-    expect(result.intents).toEqual([
-      { kind: "focus-takeover", runId: "run-1", active: true },
-    ]);
-
-    result = reduceRunsView(result.state, { kind: "key", action: "escape" });
-    expect(result.state.mode).toBe("detail");
-    expect(result.state.detail?.takeover).toBe(false);
-    expect(result.intents[0]).toEqual({
-      kind: "focus-takeover",
-      runId: "run-1",
-      active: false,
-    });
-
-    result = reduceRunsView(result.state, { kind: "key", action: "escape" });
+    result = reduceRunsView(state, { kind: "key", action: "escape" });
     expect(result.state.mode).toBe("list");
+    expect(result.state.detail).toBeUndefined();
     result = reduceRunsView(result.state, { kind: "key", action: "escape" });
     expect(result.state.closed).toBe(true);
     expect(result.intents).toEqual([{ kind: "close" }]);
+  });
+
+  it("preserves a scrolled transcript position and follows only at the tail", () => {
+    let state = reduceRunsView(initialRunsViewState([run("run-1")]), {
+      kind: "key",
+      action: "enter",
+    }).state;
+    const first = {
+      ...inspection("run-1"),
+      transcript: Array.from({ length: 12 }, (_, index) => ({
+        kind: "status" as const,
+        at: index,
+        text: `event ${index}`,
+      })),
+    };
+    state = reduceRunsView(state, { kind: "inspection-updated", inspection: first }).state;
+    state = reduceRunsView(state, { kind: "key", action: "page-up" }).state;
+    expect(state.detail).toMatchObject({ scrollOffset: 5, tailFollow: false });
+
+    const next = {
+      ...first,
+      transcript: [...first.transcript, { kind: "status" as const, at: 20, text: "new" }],
+    };
+    state = reduceRunsView(state, { kind: "inspection-updated", inspection: next }).state;
+    expect(state.detail).toMatchObject({ scrollOffset: 6, tailFollow: false });
+    state = reduceRunsView(state, { kind: "key", action: "page-down" }).state;
+    state = reduceRunsView(state, { kind: "key", action: "page-down" }).state;
+    expect(state.detail).toMatchObject({ scrollOffset: 0, tailFollow: true });
   });
 
   it("confirms active cancellation but never asks for settled runs", () => {
@@ -222,7 +241,8 @@ describe("runs line models", () => {
     const base = initialRunsViewState([run("run-1")]);
     const detail = {
       ...inspection("run-1", "completed"),
-      activity: Array.from({ length: 20 }, (_, index) => ({
+      transcript: Array.from({ length: 20 }, (_, index) => ({
+        kind: "assistant" as const,
         at: index,
         text: `progress ${index} ${"界".repeat(20)}`,
       })),
@@ -231,7 +251,13 @@ describe("runs line models", () => {
     const state = {
       ...base,
       mode: "detail" as const,
-      detail: { runId: "run-1", inspection: detail, takeover: true },
+      detail: {
+        runId: "run-1",
+        inspection: detail,
+        scrollOffset: 0,
+        tailFollow: true,
+        submitting: false,
+      },
     };
     const lines = runDetailLines(state, 30, 6);
     expect(lines).toHaveLength(6);

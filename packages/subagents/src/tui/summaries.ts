@@ -53,11 +53,19 @@ export function runInspectionSummaryText(inspection: RunInspection): string {
     ),
   ];
   if (inspection.model) lines.push(fitLine(`model: ${inspection.model}`, SUMMARY_WIDTH));
-  if (inspection.activityDropped > 0) {
-    lines.push(`… ${inspection.activityDropped} earlier activity entries`);
+  if (inspection.transcriptDropped > 0) {
+    lines.push(`… ${inspection.transcriptDropped} earlier transcript entries`);
   }
-  for (const entry of inspection.activity) {
-    lines.push(fitLine(`• ${entry.text}`, SUMMARY_WIDTH));
+  for (const entry of inspection.transcript) {
+    switch (entry.kind) {
+      case "status": lines.push(fitLine(`• ${entry.text}`, SUMMARY_WIDTH)); break;
+      case "user": lines.push(fitLine(`user: ${entry.text}`, SUMMARY_WIDTH)); break;
+      case "assistant": lines.push(fitLine(`assistant: ${entry.text}`, SUMMARY_WIDTH)); break;
+      case "tool":
+        lines.push(fitLine(`tool ${entry.toolName} ${entry.phase}${entry.callId ? ` (${entry.callId})` : ""}`, SUMMARY_WIDTH));
+        if (entry.input) lines.push(fitLine(`  input: ${entry.input}`, SUMMARY_WIDTH));
+        if (entry.output) lines.push(fitLine(`  output: ${entry.output}`, SUMMARY_WIDTH));
+    }
   }
   if (inspection.resultPreview !== undefined) {
     lines.push("output:");

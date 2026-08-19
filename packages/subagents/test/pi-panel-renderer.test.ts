@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 
 import type { RoutingAgentRow } from "../src/tui/routing-view.js";
@@ -189,7 +189,7 @@ describe("theme-native Pi panel renderer", () => {
     expect(output).toContain("RUNNING  12s");
   });
 
-  it("renders inspection activity and output as separate visual sections", () => {
+  it("renders user, assistant, status, and detailed tool transcript blocks", () => {
     const base = initialRunsViewState([
       {
         id: "run-1",
@@ -205,7 +205,9 @@ describe("theme-native Pi panel renderer", () => {
       mode: "detail" as const,
       detail: {
         runId: "run-1",
-        takeover: false,
+        scrollOffset: 0,
+        tailFollow: true,
+        submitting: false,
         inspection: {
           id: "run-1",
           title: "Inspect release behavior",
@@ -230,6 +232,22 @@ describe("theme-native Pi panel renderer", () => {
             { at: 1_000, text: "Checking release workflow" },
           ],
           activityDropped: 0,
+          transcript: [
+            { kind: "status" as const, at: 100, text: "Run started" },
+            { kind: "user" as const, at: 200, text: "Inspect the release" },
+            { kind: "assistant" as const, at: 300, text: "I will inspect it." },
+            {
+              kind: "tool" as const,
+              at: 400,
+              toolName: "read",
+              phase: "complete" as const,
+              callId: "tool-1",
+              input: "{ path: package.json }",
+              output: "version 1.0.0",
+            },
+          ],
+          transcriptDropped: 2,
+          messaging: { supported: true, editable: false, reason: "Run completed; transcript is read-only." },
           resultPreview: "Publishing remains disabled.",
           consumption: "none" as const,
         },
@@ -239,11 +257,91 @@ describe("theme-native Pi panel renderer", () => {
     const output = plain(lines);
 
     expectBounded(lines, 78, 24);
-    expect(output).toContain("ACTIVITY");
-    expect(output).toContain("Reading package manifests");
-    expect(output).toContain("OUTPUT");
-    expect(output).toContain("Publishing remains disabled.");
+    expect(output).toContain("YOU");
+    expect(output).toContain("Inspect the release");
+    expect(output).toContain("ASSISTANT");
+    expect(output).toContain("TOOL");
+    expect(output).toContain("input:");
+    expect(output).toContain("package.json");
+    expect(output).toContain("output:");
+    expect(output).toContain("version 1.0.0");
+    expect(output).toContain("READ ONLY");
     expect(output).toContain("2 turns  ·  150 tokens  ·  $0.0123");
+  });
+
+  it("preserves run identity and editor/read-only state at tiny heights", () => {
+    const base = initialRunsViewState([{
+      id: "run-9",
+      title: "Tiny 界 👨‍👩‍👧‍👦",
+      harness: "pi",
+      status: "running",
+      elapsedMs: 1,
+      model: undefined,
+    }]);
+    const inspection = {
+      id: "run-9",
+      title: "Tiny 界 👨‍👩‍👧‍👦",
+      harness: "pi" as const,
+      status: "running" as const,
+      createdAt: 0,
+      settledAt: undefined,
+      elapsedMs: 1,
+      cancelRequested: false,
+      model: undefined,
+      usage: undefined,
+      activity: [],
+      activityDropped: 0,
+      transcript: [{ kind: "assistant" as const, at: 1, text: "hello" }],
+      transcriptDropped: 0,
+      messaging: { supported: true, editable: true },
+      resultPreview: undefined,
+      consumption: "none" as const,
+    };
+    const state = {
+      ...base,
+      mode: "detail" as const,
+      detail: {
+        runId: "run-9",
+        inspection,
+        scrollOffset: 0,
+        tailFollow: true,
+        submitting: false,
+      },
+    };
+    const active = renderRunsPanel(
+      theme,
+      state,
+      36,
+      8,
+      RUNS_LIST_KEY_HINTS,
+      RUN_DETAIL_KEY_HINTS,
+      [`${CURSOR_MARKER}> continue`],
+    );
+    expectBounded(active, 36, 8);
+    expect(plain(active)).toContain("run-9");
+    expect(active.join("\n")).toContain(CURSOR_MARKER);
+
+    const settled = renderRunsPanel(
+      theme,
+      {
+        ...state,
+        detail: {
+          ...state.detail,
+          inspection: {
+            ...inspection,
+            status: "completed" as const,
+            settledAt: 2,
+            messaging: { supported: true, editable: false, reason: "read-only" },
+          },
+        },
+      },
+      36,
+      7,
+      RUNS_LIST_KEY_HINTS,
+      RUN_DETAIL_KEY_HINTS,
+    );
+    expect(plain(settled)).toContain("run-9");
+    expect(plain(settled)).toContain("read-only");
   });
 
   it("never violates the component contract at tiny widths", () => {

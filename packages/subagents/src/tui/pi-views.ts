@@ -1,9 +1,10 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
+  Editor,
   Key,
   matchesKey,
   type Component,
-  type OverlayHandle,
+  type Focusable,
   type OverlayOptions,
   type TUI,
 } from "@earendil-works/pi-tui";
@@ -29,6 +30,7 @@ import {
   RUN_DETAIL_KEY_HINTS,
   RUNS_LIST_KEY_HINTS,
   type RunsViewIntent,
+  type RunsViewState,
 } from "./runs-view.js";
 import {
   createRoutingViewModel,
@@ -50,23 +52,15 @@ export async function openPiRunsOverlay(
   data: RunsDataPort,
 ): Promise<void> {
   if (ctx.mode !== "tui") return;
-  let handle: OverlayHandle | undefined;
   await ctx.ui.custom<void>(
     (tui, theme, _keybindings, done) =>
       new RunsOverlayComponent(tui, theme, data, done, {
         confirm: (title) => ctx.ui.confirm("Cancel subagent?", title),
-        takeover(active) {
-          if (active) handle?.focus();
-          else handle?.unfocus();
-        },
       }),
     {
       overlay: true,
       overlayOptions: FULL_SCREEN_PANEL_OPTIONS,
-      onHandle: (next) => {
-        handle = next;
-        next.focus();
-      },
+      onHandle: (handle) => handle.focus(),
     },
   );
 }
@@ -87,9 +81,20 @@ export async function openPiRoutingOverlay(
   );
 }
 
-class RunsOverlayComponent implements Component {
+export class RunsOverlayComponent implements Component, Focusable {
   private readonly model: RunsViewModel;
+  private readonly editor: Editor;
+  private _focused = false;
   private disposed = false;
+
+  get focused(): boolean {
+    return this._focused;
+  }
+
+  set focused(value: boolean) {
+    this._focused = value;
+    this.syncEditorFocus();
+  }
 
   constructor(
     private readonly tui: TUI,
@@ -98,35 +103,74 @@ class RunsOverlayComponent implements Component {
     private readonly done: () => void,
     private readonly actions: {
       confirm(title: string): Promise<boolean>;
-      takeover(active: boolean): void;
     },
   ) {
+    this.editor = new Editor(tui, {
+      borderColor: (text) => theme.fg("borderAccent", text),
+      selectList: {
+        selectedPrefix: (text) => theme.fg("accent", text),
+        selectedText: (text) => theme.fg("accent", text),
+        description: (text) => theme.fg("muted", text),
+        scrollInfo: (text) => theme.fg("dim", text),
+        noMatch: (text) => theme.fg("warning", text),
+      },
+    }, { paddingX: 1 });
+    this.editor.onSubmit = (text) => void this.submitMessage(text);
     let model!: RunsViewModel;
     model = createRunsViewModel({
       data,
-      onChange: () => tui.requestRender(),
+      onChange: () => {
+        this.syncEditorFocus();
+        tui.requestRender();
+      },
       onIntent: (intent) => this.handleIntent(model, intent),
     });
     this.model = model;
   }
 
   render(width: number): string[] {
+    const state = this.model.getState();
+    this.syncEditorFocus();
+    const editorLines = isRunEditorVisible(state)
+      ? this.editor.render(Math.max(1, width - 6))
+      : undefined;
     return renderRunsPanel(
       this.theme,
-      this.model.getState(),
+      state,
       width,
       this.tui.terminal.rows,
       RUNS_LIST_KEY_HINTS,
       RUN_DETAIL_KEY_HINTS,
+      editorLines,
     );
   }
 
   handleInput(data: string): void {
-    const action = runsAction(data);
+    const state = this.model.getState();
+    if (state.mode === "detail") {
+      if (matchesKey(data, Key.escape)) {
+        if (this.editor.isShowingAutocomplete()) this.editor.handleInput(data);
+        else this.model.dispatch({ kind: "key", action: "escape" });
+        this.tui.requestRender();
+        return;
+      }
+      const action = detailRunsAction(data);
+      if (action) {
+        this.model.dispatch({ kind: "key", action });
+        return;
+      }
+      if (isRunEditorActive(state)) {
+        this.editor.handleInput(data);
+        this.tui.requestRender();
+      }
+      return;
+    }
+    const action = listRunsAction(data);
     if (action) this.model.dispatch({ kind: "key", action });
   }
 
   invalidate(): void {
+    this.editor.invalidate();
     this.model.refresh();
     this.tui.requestRender();
   }
@@ -134,6 +178,7 @@ class RunsOverlayComponent implements Component {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.editor.focused = false;
     this.model.dispose();
   }
 
@@ -144,15 +189,30 @@ class RunsOverlayComponent implements Component {
           model.dispatch({ kind: "cancel-confirmed", runId: intent.runId, confirmed });
         });
         return;
-      case "focus-takeover":
-        this.actions.takeover(intent.active);
-        return;
       case "close":
         this.done();
         return;
       default:
         return;
     }
+  }
+
+  private syncEditorFocus(): void {
+    const state = this.model?.getState();
+    const active = state ? isRunEditorActive(state) : false;
+    this.editor.focused = this._focused && active;
+    this.editor.disableSubmit = !active || Boolean(state?.detail?.submitting);
+  }
+
+  private async submitMessage(text: string): Promise<void> {
+    const submitted = text;
+    const accepted = await this.model.submitMessage(submitted);
+    if (this.disposed) return;
+    if (accepted && this.editor.getExpandedText() === submitted) {
+      this.editor.setText("");
+    }
+    this.syncEditorFocus();
+    this.tui.requestRender();
   }
 }
 
@@ -253,15 +313,31 @@ class RoutingOverlayComponent implements Component {
   }
 }
 
-function runsAction(data: string): RunsKeyAction | undefined {
+function listRunsAction(data: string): RunsKeyAction | undefined {
   if (matchesKey(data, Key.up)) return "up";
   if (matchesKey(data, Key.down)) return "down";
   if (matchesKey(data, Key.enter)) return "enter";
-  if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) return "escape";
-  if (matchesKey(data, "r")) return "refresh";
-  if (matchesKey(data, "c")) return "cancel-run";
-  if (matchesKey(data, "t")) return "takeover";
+  if (matchesKey(data, Key.escape)) return "escape";
+  if (matchesKey(data, Key.ctrl("r"))) return "refresh";
+  if (matchesKey(data, Key.ctrl("x"))) return "cancel-run";
   return undefined;
+}
+
+function detailRunsAction(data: string): RunsKeyAction | undefined {
+  if (matchesKey(data, Key.pageUp)) return "page-up";
+  if (matchesKey(data, Key.pageDown)) return "page-down";
+  if (matchesKey(data, Key.ctrl("r"))) return "refresh";
+  if (matchesKey(data, Key.ctrl("x"))) return "cancel-run";
+  return undefined;
+}
+
+function isRunEditorVisible(state: RunsViewState): boolean {
+  return state.mode === "detail" &&
+    state.detail?.inspection?.messaging.editable === true;
+}
+
+function isRunEditorActive(state: RunsViewState): boolean {
+  return isRunEditorVisible(state) && !state.detail?.submitting;
 }
 
 function routingAction(data: string): RoutingKeyAction | undefined {

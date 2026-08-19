@@ -60,12 +60,54 @@ export interface RunUsage {
   contextTokens: number;
 }
 
-/** One bounded progress record retained for inspection. */
+/** One bounded progress record retained for backwards-compatible inspection. */
 export interface RunActivityEntry {
   /** Milliseconds timestamp from the injected clock. */
   at: number;
   /** Bounded, sanitized display text. */
   text: string;
+}
+
+export type RunTranscriptEntry =
+  | {
+      kind: "status";
+      at: number;
+      text: string;
+      status?: RunStatus;
+    }
+  | {
+      kind: "user";
+      at: number;
+      text: string;
+    }
+  | {
+      kind: "assistant";
+      at: number;
+      text: string;
+    }
+  | {
+      kind: "tool";
+      at: number;
+      toolName: string;
+      phase: "start" | "update" | "complete" | "error";
+      callId?: string;
+      input?: string;
+      output?: string;
+    };
+
+export type RunTranscriptInput = RunTranscriptEntry extends infer Entry
+  ? Entry extends RunTranscriptEntry
+    ? Omit<Entry, "at">
+    : never
+  : never;
+
+export interface RunMessagingState {
+  /** Whether this harness can accept input while a run is active. */
+  supported: boolean;
+  /** Whether a live transport currently owns an input channel. */
+  editable: boolean;
+  /** Bounded explanation when input is unavailable. */
+  reason?: string;
 }
 
 /** Immutable public view of a tracked run. */
@@ -131,6 +173,11 @@ export interface RunInspection {
   activity: readonly RunActivityEntry[];
   /** How many activity entries were dropped by the bounded buffer. */
   activityDropped: number;
+  /** Detached bounded structured transcript in chronological order. */
+  transcript: readonly RunTranscriptEntry[];
+  /** How many older transcript entries were evicted from the bounded FIFO. */
+  transcriptDropped: number;
+  messaging: RunMessagingState;
   /** Bounded preview of the final text/diagnostics once settled. */
   resultPreview: string | undefined;
   consumption: ResultConsumption;
@@ -179,6 +226,9 @@ export interface PersistedRunRecord {
   usage: RunUsage | undefined;
   activity: RunActivityEntry[];
   activityDropped: number;
+  /** Optional for backwards-compatible restore of version-1 snapshots. */
+  transcript?: RunTranscriptEntry[];
+  transcriptDropped?: number;
 }
 
 /** Whole serialized manager state, written through the persistence hook. */

@@ -45,11 +45,11 @@ Children cannot call subagent/workflow orchestration tools or interactive user-q
 
 ### Pi
 
-Creates an isolated in-process Pi session with in-memory history. It inherits the parent model and thinking level unless routing or spawn arguments override them. Normal user/package resources load; project resources load only for the trusted current project. Child tool calls have independent three-minute inactivity watchdogs.
+Creates an isolated in-process Pi session with in-memory history. It inherits the parent model and thinking level unless routing or spawn arguments override them. Normal user/package resources load; project resources load only for the trusted current project. Child tool calls have independent three-minute inactivity watchdogs. While the child is active, the run detail editor sends continuation messages through `AgentSession.steer()`.
 
 ### Claude Code
 
-Uses `@anthropic-ai/claude-agent-sdk` in headless mode. It applies the requested cwd, model/alias, effort, and named-agent system prompt. Claude settings sources are disabled for isolation; `CLAUDE.md`, hooks, MCP configuration, and user/project Claude settings are therefore not loaded into the child. Authentication comes from the local Claude CLI or `ANTHROPIC_API_KEY`.
+Uses `@anthropic-ai/claude-agent-sdk` in headless streaming-input mode. It applies the requested cwd, model/alias, effort, and named-agent system prompt. While active, continuation messages are written to the same query's `AsyncIterable<SDKUserMessage>` input. Claude settings sources are disabled for isolation; `CLAUDE.md`, hooks, MCP configuration, and user/project Claude settings are therefore not loaded into the child. Authentication comes from the local Claude CLI or `ANTHROPIC_API_KEY`.
 
 ## Named agents
 
@@ -116,7 +116,9 @@ Precedence is explicit spawn arguments, project route, user route, agent default
 - `/subagents agents` — open the routing editor.
 - `/btw <question>` — ask a one-off Pi side question using the shared cap. Its answer is shown to the human and persisted as a custom entry, but never enters parent-model context or triggers a parent turn.
 
-Both TUI panels use the full terminal and the active Pi theme. The run panel supports arrows, Enter, refresh (`r`), cancel (`c`), takeover (`t`), and Escape. The routing panel supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape. Route editing stays inside the same panel: use arrows or Tab to select a field, left/right to change harness or thinking, type to edit the model, Enter to save, and Escape to return to the mapping list.
+Both TUI panels use the full terminal and the active Pi theme. In the run list, Enter opens the detailed structured transcript directly. Active Pi and Claude runs show a Pi `Editor`: Enter submits to that existing child, normal multiline/navigation editing stays available, PageUp/PageDown scroll the transcript, Ctrl+R refreshes, Ctrl+X requests cancellation, and Escape returns to the list. Settled runs remain inspectable but become read-only. The transcript distinguishes lifecycle, user, assistant, and tool events and retains bounded tool input/output with omission accounting.
+
+A persistent status below Pi's main editor summarizes running, completed, and errored runs and advertises `/subagents`; it remains after settlement until the session has no run records. The routing panel supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape. Route editing stays inside the same panel: use arrows or Tab to select a field, left/right to change harness or thinking, type to edit the model, Enter to save, and Escape to return to the mapping list.
 
 ## Development
 

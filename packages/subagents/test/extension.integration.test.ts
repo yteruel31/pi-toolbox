@@ -19,6 +19,7 @@ import { FileRoutingStore } from "../src/agents/routing-store.js";
 import { createPiSubagentsExtension } from "../src/extension.js";
 
 class ControlledHarness implements SubagentHarness {
+  readonly supportsActiveMessages = false;
   requests: HarnessRunRequest[] = [];
   private pending: Array<{
     resolve: (outcome: HarnessRunOutcome) => void;
@@ -138,6 +139,7 @@ describe("Pi extension composition", () => {
       createPiHarness: () => harness,
       createClaudeHarness: () => ({
         kind: "claude" as const,
+        supportsActiveMessages: false,
         run: (request) => harness.run(request),
       }),
     })(runtime.pi);

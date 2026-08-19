@@ -23,7 +23,9 @@ One manager exists per parent Pi session. It owns:
 - a global four-run active cap shared by Pi, Claude, and `/btw`;
 - monotonic `run-N` identifiers restored across session reloads;
 - exactly-once settlement under completion, cancellation, shutdown, and late-result races;
-- bounded activity, diagnostics, output, model metadata, and previews;
+- bounded activity plus a structured status/user/assistant/tool transcript with dropped-entry accounting;
+- an optional active-message control owned until settlement and disposed exactly once;
+- bounded diagnostics, output, model metadata, and previews;
 - explicit result consumption (`none`, `waited`, `delivered`, `suppressed`);
 - wait reservations that prevent auto-delivery from racing an explicit wait;
 - deterministic creation and settlement ordering;
@@ -44,21 +46,27 @@ The manager signals when delivery is possible. The adapter drains only while Pi 
 ```ts
 interface SubagentHarness {
   readonly kind: "pi" | "claude";
+  readonly supportsActiveMessages: boolean;
   run(request: HarnessRunRequest): Promise<HarnessRunOutcome>;
+}
+
+interface HarnessActiveControl {
+  sendMessage(text: string): Promise<void>;
+  dispose(): void | Promise<void>;
 }
 ```
 
-A request includes prompt, optional named-agent system prompt, resolved cwd/model/thinking, cancellation, bounded progress, and effective-model callbacks. A harness owns per-call resource cleanup and must settle after cancellation.
+A request includes prompt, optional named-agent system prompt, resolved cwd/model/thinking, cancellation, bounded progress/transcript callbacks, effective-model reporting, and a one-time active-control ownership handoff. `RunManager.sendMessage()` rejects empty, unknown, settled, unsupported, not-ready, and settlement-racing submissions. A harness owns per-call resource cleanup and must settle after cancellation; manager and harness cleanup share idempotent controls so the underlying session/query is disposed once.
 
 ### Pi harness
 
 The Pi adapter creates an isolated in-process session with `SessionManager.inMemory`. It resolves requested models against the parent's model-registry facade through a narrow adapter, passes the full resolved model plus inherited thinking, and lets `createAgentSession` construct its canonical auth/provider runtime. It uses a trust-gated resource loader. Child tools matching subagent, workflow, multi-tool orchestration, or interactive-question names are excluded both initially and dynamically.
 
-Each child tool call receives its own inactivity timer. Only progress from the same call resets that timer. Abort, listener removal, timers, child session disposal, and prompt rejection are handled through one cleanup path.
+Each child tool call receives its own inactivity timer. Only progress from the same call resets that timer. The public `AgentSession.steer()` method supplies active input while the prompt is running. Agent events produce bounded assistant and tool start/update/end transcript records, including serialized arguments and results. Abort, listener removal, timers, active-control closure, child session disposal, and prompt rejection are handled through one cleanup path.
 
 ### Claude harness
 
-The Claude adapter lazily loads `@anthropic-ai/claude-agent-sdk`, bridges cancellation to a per-call controller, consumes the async iterator exactly once, and maps SDK result/model usage into the shared result shape. It uses the stock Claude Code system prompt plus the selected named-agent prompt.
+The Claude adapter lazily loads `@anthropic-ai/claude-agent-sdk`, bridges cancellation to a per-call controller, and starts `query()` with a bounded producer implementing `AsyncIterable<SDKUserMessage>`. Accepted continuation messages enter that same producer; result accounting keeps the query alive only while accepted turns remain. The adapter consumes the query iterator once, closes it once, captures assistant/tool input/progress/result records, and maps the latest SDK result/model usage into the shared result shape. It uses the stock Claude Code system prompt plus the selected named-agent prompt.
 
 Headless execution uses `bypassPermissions` and `allowDangerouslySkipPermissions`. `settingSources: []` and `persistSession: false` prevent user/project Claude settings, hooks, and persisted child transcripts from altering the run. Missing SDK, executable, auth, incompatible SDK, result, and iterator failures become bounded typed diagnostics.
 
@@ -92,7 +100,11 @@ On session start it restores state and builds both harnesses plus the manager. T
 
 Reducers and view models are terminal-independent. Concrete bindings translate Pi keys with `matchesKey`, call `requestRender`, keep every line width-bounded, subscribe to live manager changes, and dispose subscriptions exactly once.
 
-`/subagents runs` opens a fresh full-terminal overlay with list/detail/cancel/refresh/takeover behavior. `/subagents agents` opens a fresh full-terminal routing overlay with user/project scope, edit/delete, trust gating, and explicit invalid-file backup/reset. The route field editor is an internal panel state rather than a nested `ctx.ui.select`/`ctx.ui.editor` flow, so Enter transitions within the same overlay and Escape returns to the mapping list. Overlays are not reused after close.
+`/subagents runs` opens a fresh full-terminal overlay. Enter moves directly from the list to a bounded structured transcript; Escape returns to the list and then closes. Active runs embed the official Pi `Editor`, with container-level `Focusable` propagation, while settled/unsupported runs show an explicit read-only reason. PageUp/PageDown maintain an entry-level scroll offset; new events follow only at the tail. Printable input always reaches the editor, while refresh/cancel use Ctrl+R/Ctrl+X.
+
+`/subagents agents` opens a fresh full-terminal routing overlay with user/project scope, edit/delete, trust gating, and explicit invalid-file backup/reset. The route field editor is an internal panel state rather than a nested `ctx.ui.select`/`ctx.ui.editor` flow, so Enter transitions within the same overlay and Escape returns to the mapping list. Overlays are not reused after close.
+
+The extension status slot is derived only through `tui/status.ts`: running is queued + running, completed is completed, and error is failed + cancelled. It persists while any run record exists and includes the `/subagents` discovery hint.
 
 `/btw` uses the same manager and Pi harness with automatic delivery disabled. The answer is persisted in a custom entry and shown through UI notification, never `sendMessage`.
 

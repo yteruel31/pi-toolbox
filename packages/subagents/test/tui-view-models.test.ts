@@ -51,6 +51,9 @@ function inspection(id: string): RunInspection {
     usage: undefined,
     activity: [],
     activityDropped: 0,
+    transcript: [],
+    transcriptDropped: 0,
+    messaging: { supported: true, editable: true },
     resultPreview: undefined,
     consumption: "none",
   };
@@ -134,6 +137,7 @@ describe("runs view model", () => {
     const port: RunsDataPort = {
       list: () => runs,
       inspect: (id) => inspection(id),
+      sendMessage: async () => undefined,
       cancel: (id) => cancelled.push(id),
       subscribe(next) {
         listener = next;
@@ -179,6 +183,26 @@ describe("runs view model", () => {
     model.dispose();
     expect(model.getState()).toBe(closedState);
     expect(unsubscribeCalls).toBe(1);
+  });
+
+  it("does not mutate disposed UI after a late message submission settles", async () => {
+    let resolveSend!: () => void;
+    const port: RunsDataPort = {
+      list: () => [run("run-1")],
+      inspect: (id) => inspection(id),
+      sendMessage: () => new Promise<void>((resolve) => { resolveSend = resolve; }),
+      cancel: () => undefined,
+      subscribe: () => () => undefined,
+    };
+    const model = createRunsViewModel({ data: port });
+    model.dispatch({ kind: "key", action: "enter" });
+    const pending = model.submitMessage("continue");
+    expect(model.getState().detail?.submitting).toBe(true);
+    model.dispose();
+    const disposedState = model.getState();
+    resolveSend();
+    await expect(pending).resolves.toBe(false);
+    expect(model.getState()).toBe(disposedState);
   });
 });
 
