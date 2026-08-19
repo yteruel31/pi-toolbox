@@ -36,7 +36,8 @@
       "./packages/session-title/src/index.ts",
       "./packages/mcp/src/index.ts",
       "./packages/subagents/src/index.ts",
-      "./packages/zed-context/src/index.ts"
+      "./packages/zed-context/src/index.ts",
+      "./packages/ui-customization/src/index.ts"
     ],
     "themes": [
       "./themes/*.json"

@@ -92,6 +92,14 @@ pi install npm:@yteruel31/pi-zed-context
 
 Automatically attach Zed editor selections to the next Pi prompt and show the explicit selected-line count in Pi's footer. The language-server bridge includes unsaved edits and works with local and remote Zed workspaces without a shortcut.
 
+### [`@yteruel31/pi-ui-customization`](./packages/ui-customization)
+
+```bash
+pi install npm:@yteruel31/pi-ui-customization
+```
+
+Replace Pi's built-in footer with a responsive structured view of session, MCP, path, context, model, thinking, subagent, and extension status information.
+
 ## Themes
 
 ### Fallout: New Vegas
@@ -110,3 +118,5 @@ npm run check:packages
 ```
 
 No npm publication workflow is enabled yet. The package manifests, validation commands, and Changesets configuration are kept ready for a future publishing step, while merges to `main` continue to use only the toolbox's existing GitHub release workflow.
+
+<!-- AI generated -->
