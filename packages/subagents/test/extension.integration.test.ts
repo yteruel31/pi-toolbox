@@ -57,6 +57,7 @@ interface FakeRuntime {
   commands: Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>;
   entries: Array<{ customType: string; data: unknown }>;
   messages: Array<{ message: unknown; options: unknown }>;
+  emitted: Array<{ channel: string; data: unknown }>;
 }
 
 function fakePi(): FakeRuntime {
@@ -65,6 +66,7 @@ function fakePi(): FakeRuntime {
   const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
   const entries: Array<{ customType: string; data: unknown }> = [];
   const messages: Array<{ message: unknown; options: unknown }> = [];
+  const emitted: Array<{ channel: string; data: unknown }> = [];
   const pi = {
     on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) {
       const list = handlers.get(event) ?? [];
@@ -83,8 +85,14 @@ function fakePi(): FakeRuntime {
     sendMessage(message: unknown, options: unknown) {
       messages.push({ message, options });
     },
+    events: {
+      emit(channel: string, data: unknown) {
+        emitted.push({ channel, data });
+      },
+      on: () => () => {},
+    },
   } as unknown as ExtensionAPI;
-  return { pi, handlers, tools, commands, entries, messages };
+  return { pi, handlers, tools, commands, entries, messages, emitted };
 }
 
 function fakeContext(cwd: string, entries: FakeRuntime["entries"]): ExtensionContext {
@@ -187,6 +195,34 @@ describe("Pi extension composition", () => {
     await emit(runtime, "session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
     expect(harness.requests[2]?.signal.aborted).toBe(true);
     await expect(execute(runtime, "subagent_list", {}, ctx)).rejects.toThrow("no active Pi session");
+  });
+
+  it("broadcasts versioned run counts without a UI and clears them on shutdown", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-status-"));
+    temporary.push(cwd);
+    const runtime = fakePi();
+    const harness = new ControlledHarness("pi");
+    createPiSubagentsExtension({
+      createPiHarness: () => harness,
+      createClaudeHarness: () => new ControlledHarness("claude"),
+    })(runtime.pi);
+
+    const ctx = fakeContext(cwd, runtime.entries);
+    expect(ctx.hasUI).toBe(false);
+    await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
+    const statusEvents = () => runtime.emitted.filter((event) => event.channel === "pi-toolbox:subagents:status");
+    expect(statusEvents().at(-1)?.data).toEqual({ v: 1, counts: { running: 0, completed: 0, error: 0 } });
+
+    await execute(runtime, "subagent_spawn", { prompt: "task" }, ctx);
+    expect(statusEvents().at(-1)?.data).toEqual({ v: 1, counts: { running: 1, completed: 0, error: 0 } });
+
+    harness.finish(0, "done");
+    await Promise.resolve();
+    await emit(runtime, "agent_settled", { type: "agent_settled" }, ctx);
+    expect(statusEvents().at(-1)?.data).toEqual({ v: 1, counts: { running: 0, completed: 1, error: 0 } });
+
+    await emit(runtime, "session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+    expect(statusEvents().at(-1)?.data).toEqual({ v: 1, counts: null });
   });
 
   it("wires package discovery and saved routing into named-agent spawn", async () => {

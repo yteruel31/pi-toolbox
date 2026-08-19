@@ -11,6 +11,7 @@ test("extension lifecycle stays network-idle until an MCP operation needs a conn
 	const events = new Map<string, (...args: any[]) => Promise<void>>();
 	let activeTools = ["mcp"];
 	const statuses: Array<{ id: string; value: string | undefined }> = [];
+	const emitted: Array<{ channel: string; data: unknown }> = [];
 	const context = { ui: {
 		setStatus: (id: string, value: string | undefined) => statuses.push({ id, value }),
 		theme: { fg: (_color: string, value: string) => value },
@@ -22,6 +23,7 @@ test("extension lifecycle stays network-idle until an MCP operation needs a conn
 		getAllTools: () => tools,
 		getActiveTools: () => activeTools,
 		setActiveTools: (names: string[]) => { activeTools = names; },
+		events: { emit: (channel: string, data: unknown) => emitted.push({ channel, data }), on: () => () => {} },
 	} as never);
 
 	assert.equal(commands.length, 2);
@@ -57,6 +59,10 @@ test("extension lifecycle stays network-idle until an MCP operation needs a conn
 		assert.ok(statuses.some((status) => status.id === "mcp-status" && status.value === "MCP 0/0 · 1 off"));
 		assert.equal(statuses.at(-1)?.id, "mcp-status");
 		assert.equal(statuses.at(-1)?.value, undefined);
+		assert.ok(emitted.every((event) => event.channel === "pi-toolbox:mcp:status"));
+		assert.deepEqual(emitted[0]?.data, { v: 1, counts: null }, "session start clears stale counts before the new runtime exists");
+		assert.deepEqual(emitted[1]?.data, { v: 1, counts: { total: 1, enabled: 0, connected: 0, authRequired: 0, errors: 0, disabled: 1 } });
+		assert.deepEqual(emitted.at(-1)?.data, { v: 1, counts: null }, "shutdown clears counts");
 	} finally {
 		globalThis.fetch = originalFetch;
 		if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;

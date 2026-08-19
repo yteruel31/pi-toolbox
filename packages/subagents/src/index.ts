@@ -1,7 +1,8 @@
 /** Public entry point for the extension factory and reusable contracts. */
 
 // Pi extension entry point
-export { createPiSubagentsExtension, default } from "./extension.js";
+export { SUBAGENTS_STATUS_CHANNEL, createPiSubagentsExtension, default } from "./extension.js";
+export type { SubagentsStatusEvent } from "./extension.js";
 
 // Core
 export { RunManager } from "./core/run-manager.js";

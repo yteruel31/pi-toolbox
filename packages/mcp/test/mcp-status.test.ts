@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_UI_SETTINGS } from "../src/config.js";
-import { mcpStatusSnapshot, mcpStatusText } from "../src/mcp/status.js";
+import { mcpStatusCounts, mcpStatusSnapshot, mcpStatusText } from "../src/mcp/status.js";
 
 function runtime() {
 	const states = [
@@ -50,4 +50,10 @@ test("snapshot includes connected, auth, disabled, invalid, metadata, and direct
 
 test("empty configuration clears the footer status", () => {
 	assert.equal(mcpStatusText([]), undefined);
+	assert.deepEqual(mcpStatusCounts([]), { total: 0, enabled: 0, connected: 0, authRequired: 0, errors: 0, disabled: 0 });
+});
+
+test("aggregate counts match the footer text they render", () => {
+	const snapshot = mcpStatusSnapshot(runtime());
+	assert.deepEqual(mcpStatusCounts(snapshot), { total: 5, enabled: 4, connected: 2, authRequired: 1, errors: 1, disabled: 1 });
 });

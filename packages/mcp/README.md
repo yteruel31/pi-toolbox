@@ -64,6 +64,8 @@ Run `/mcp` in TUI mode to open the server panel. It shows live connection, OAuth
 
 The footer uses the separate `mcp-status` slot to show a compact connected/enabled count and authentication or error totals. It updates on lifecycle transitions without connecting merely to calculate status. The existing `mcp-ui` slot remains reserved for the private MCP Apps publication link.
 
+Alongside that slot, every status recomputation broadcasts the same aggregate on the `pi.events` channel `pi-toolbox:mcp:status` as `{ v: 1, counts: McpStatusCounts }` (`total`, `enabled`, `connected`, `authRequired`, `errors`, `disabled`). `{ v: 1, counts: null }` is emitted on session start before a new runtime exists and on shutdown, so consumers discard stale counts. This package keeps owning the `mcp-status` slot; the channel is advisory.
+
 Panel keys: `↑/↓` navigate, `Enter` expand, `Space` toggle a direct tool, `d` enable/disable, `r` reconnect, `a` authenticate, `/` search, `Ctrl+S` save, and `Esc` cancel. When publication is unconfigured, `a` explains the requirement and `g` closes `/mcp` before opening the gateway panel.
 
 ## Gateway setup (U2)
@@ -102,3 +104,5 @@ The host uses the official bundled AppBridge, initializes it before loading an o
 ## App publication (U4b)
 
 Configure `/mcp-gateway` explicitly before using Apps. The first active App verifies the selected exposure, obtains one process-local capability, and publishes a bounded dashboard; concurrent Apps remain isolated below its proxy. Gateway protocol v3 supports controlled same-protocol reconfiguration through the private Unix socket and fails closed against older resident daemons. Tailscale mode requires injected identity; custom mode relies on the capability and the user's network/proxy policy. The capability is removed when the last App completes or expires, and the compact Pi status link is cleared. Pi startup remains resource-idle, no browser is opened, and capability URLs and backend credentials never enter model-visible results.
+
+<!-- AI generated -->

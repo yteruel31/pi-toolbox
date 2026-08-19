@@ -37,8 +37,17 @@ import type {
   RunUsage,
 } from "./shared/types.js";
 import type { RoutingDataPort, RunsDataPort } from "./tui/binding.js";
+import type { RunCounts } from "./tui/status.js";
 import { openPiRoutingOverlay, openPiRunsOverlay } from "./tui/pi-views.js";
-import { statusText } from "./tui/status.js";
+import { countRuns, statusText } from "./tui/status.js";
+
+/** Event bus channel carrying `SubagentsStatusEvent` for status-bar consumers. */
+export const SUBAGENTS_STATUS_CHANNEL = "pi-toolbox:subagents:status";
+
+/** Versioned run totals; `counts: null` clears stale state on shutdown. */
+export type SubagentsStatusEvent =
+  | { v: 1; counts: RunCounts }
+  | { v: 1; counts: null };
 
 const STATE_ENTRY = "pi-subagents-state-v1";
 const BTW_ENTRY = "pi-subagents-btw-v1";
@@ -97,10 +106,18 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     return { manager, ctx: sessionContext, piHarness, claudeHarness };
   };
 
+  const emitStatus = (event: SubagentsStatusEvent): void => {
+    pi.events?.emit(SUBAGENTS_STATUS_CHANNEL, event);
+  };
+
+  /** Counts are owned here and broadcast even without a UI; the text slot stays UI-only. */
   const updateStatus = (): void => {
+    if (!manager) return;
+    const runs = manager.list();
+    emitStatus({ v: 1, counts: countRuns(runs) });
     const current = sessionContext;
-    if (!current?.hasUI || !manager) return;
-    current.ui.setStatus("subagents", statusText(manager.list()));
+    if (!current?.hasUI) return;
+    current.ui.setStatus("subagents", statusText(runs));
   };
 
   const deliverIfIdle = (): void => {
@@ -179,6 +196,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     sessionContext = ctx;
     manager?.shutdown(`parent session ${event.reason}`);
     if (ctx.hasUI) ctx.ui.setStatus("subagents", undefined);
+    emitStatus({ v: 1, counts: null });
     manager = undefined;
     piHarness = undefined;
     claudeHarness = undefined;

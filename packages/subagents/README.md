@@ -118,7 +118,7 @@ Precedence is explicit spawn arguments, project route, user route, agent default
 
 Both TUI panels use the full terminal and the active Pi theme. In the run list, Enter opens the detailed structured transcript directly. Active Pi and Claude runs show a Pi `Editor`: Enter submits to that existing child, normal multiline/navigation editing stays available, PageUp/PageDown scroll the transcript, `r` refreshes with visible feedback, and `x` opens an in-panel cancellation confirmation (`y`/Enter confirms; `n`/Escape keeps the run active). Outside that confirmation, Escape returns to the list. Settled runs remain inspectable but become read-only. The transcript distinguishes lifecycle, user, assistant, and tool events and retains bounded tool input/output with omission accounting.
 
-A persistent status below Pi's main editor summarizes running, completed, and errored runs and advertises `/subagents`; it remains after settlement until the session has no run records. The routing panel supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape. Route editing stays inside the same panel: use arrows or Tab to select a field, left/right to change harness or thinking, type to edit the model, Enter to save, and Escape to return to the mapping list.
+A persistent status below Pi's main editor summarizes running, completed, and errored runs and advertises `/subagents`; it remains after settlement until the session has no run records. The same totals are broadcast on the `pi.events` channel `pi-toolbox:subagents:status` as `{ v: 1, counts: RunCounts }` (`running`, `completed`, `error`) whenever the status updates, including in headless sessions with no UI, with `{ v: 1, counts: null }` on shutdown so consumers discard stale counts. The routing panel supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape. Route editing stays inside the same panel: use arrows or Tab to select a field, left/right to change harness or thinking, type to edit the model, Enter to save, and Escape to return to the mapping list.
 
 ## Development
 
@@ -141,3 +141,5 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) and [CLEANROOM.md](./CLEANROOM.md).
 ## License
 
 MIT © Yoann TERUEL
+
+<!-- AI generated -->
