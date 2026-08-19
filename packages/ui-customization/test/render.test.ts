@@ -79,8 +79,8 @@ describe("structured footer rendering", () => {
     expect(statusLine).toContain("subagents raw");
   });
 
-  it.each([50, 60])("keeps owner statuses when width %i cannot guarantee their columns", (width) => {
-    const lines = renderFooter(model(), theme, width);
+  it("keeps owner statuses when compact rendering cannot guarantee their columns", () => {
+    const lines = renderFooter(model(), theme, 50);
     const statusLine = lines.at(-1)!;
     expect(statusLine).toContain("MCP raw");
     expect(statusLine).toContain("subagents raw");
@@ -94,6 +94,13 @@ describe("structured footer rendering", () => {
     }), theme, 200);
     expect(lines.join("\n")).not.toContain("MCPS");
     expect(lines.join("\n")).not.toContain("SUB-AGENTS");
+  });
+
+  it("hides zero-valued subagent states", () => {
+    const lines = renderFooter(model({ extensionStatuses: new Map() }), theme, 200);
+    expect(lines[1]).toContain("✓ 1 done");
+    expect(lines[1]).not.toContain("0 run");
+    expect(lines[1]).not.toContain("0 err");
   });
 
   it("shows context occupancy without token traffic totals", () => {

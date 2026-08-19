@@ -128,15 +128,15 @@ function createColumns(model: FooterModel, theme: Theme): Column[] {
 
   if (model.subagents && model.subagents.running + model.subagents.completed + model.subagents.error > 0) {
     const counts = model.subagents;
+    const values: string[] = [];
+    if (counts.running > 0) values.push(theme.fg("accent", `● ${counts.running} run`));
+    if (counts.completed > 0) values.push(theme.fg("success", `✓ ${counts.completed} done`));
+    if (counts.error > 0) values.push(theme.fg("error", `× ${counts.error} err`));
     columns.push({
       id: "subagents",
       label: "SUB-AGENTS",
-      value: [
-        theme.fg(counts.running > 0 ? "accent" : "muted", `● ${counts.running} run`),
-        theme.fg("success", `✓ ${counts.completed} done`),
-        theme.fg(counts.error > 0 ? "error" : "muted", `× ${counts.error} err`),
-      ].join(" "),
-      minWidth: 18,
+      value: values.join(" "),
+      minWidth: 10,
       maxWidth: 32,
       priority: 4,
     });
