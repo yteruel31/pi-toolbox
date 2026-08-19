@@ -4,7 +4,19 @@
  * the core never imports Pi or Claude SDK APIs.
  */
 
-import type { HarnessKind, RunUsage, ThinkingLevel } from "../shared/types.js";
+import type {
+  HarnessKind,
+  RunTranscriptInput,
+  RunUsage,
+  ThinkingLevel,
+} from "../shared/types.js";
+
+export interface HarnessActiveControl {
+  /** Send one non-empty user message through the existing child transport. */
+  sendMessage(text: string): Promise<void>;
+  /** Release the live input channel. Must be idempotent. */
+  dispose(): void | Promise<void>;
+}
 
 /** Everything a harness receives to execute one run. */
 export interface HarnessRunRequest {
@@ -32,8 +44,15 @@ export interface HarnessRunRequest {
    * after settlement are ignored. Never throws.
    */
   reportProgress(text: string): void;
+  /** Report a structured event. The manager sanitizes and bounds every field. */
+  reportTranscript(entry: RunTranscriptInput): void;
   /** Report the effective model once known. Calls after settlement ignored. */
   reportEffectiveModel(model: string): void;
+  /**
+   * Hand ownership of a live input channel to the manager. Returns false when
+   * the run already settled; the harness must then dispose the control.
+   */
+  setActiveControl(control: HarnessActiveControl): boolean;
 }
 
 /** What a harness returns when a run finishes on its own. */
@@ -53,6 +72,8 @@ export interface HarnessRunOutcome {
  */
 export interface SubagentHarness {
   readonly kind: HarnessKind;
+  /** Explicit capability flag; false means active details are read-only. */
+  readonly supportsActiveMessages: boolean;
   run(request: HarnessRunRequest): Promise<HarnessRunOutcome>;
 }
 

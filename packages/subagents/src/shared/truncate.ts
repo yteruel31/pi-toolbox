@@ -5,6 +5,8 @@
 
 const MARKER_PREFIX = "… [truncated ";
 const MARKER_SUFFIX = " chars]";
+const UNSAFE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
+const ESCAPE_CHARACTER = /\u001b/g;
 
 /**
  * Bound `text` to at most `maxChars` characters, appending a marker that
@@ -24,6 +26,16 @@ export function truncateText(text: string, maxChars: number): string {
   while (keep > 0 && keep + markerFor(keep).length > maxChars) keep--;
   if (keep <= 0) return text.slice(0, maxChars);
   return text.slice(0, keep) + markerFor(keep);
+}
+
+/**
+ * Remove terminal-control characters while retaining newlines and tabs as
+ * plain content. Removing ESC itself makes any remaining sequence inert.
+ */
+export function sanitizeTerminalText(text: string): string {
+  return text
+    .replace(ESCAPE_CHARACTER, "")
+    .replace(UNSAFE_CONTROL_CHARACTERS, "");
 }
 
 /** Collapse whitespace and bound a string for one-line display titles. */

@@ -8,19 +8,16 @@
 /** Actions understood by the chooser (runs vs agents). */
 export type ChooserKeyAction = "up" | "down" | "enter" | "escape";
 
-/**
- * Actions understood by the runs view. "cancel-run" is the cancellation
- * intent key (`c`), "refresh" re-polls run data (`r`), "takeover" toggles
- * keyboard capture of the detail panel (`t`).
- */
+/** Actions understood by the run list and transcript viewport. */
 export type RunsKeyAction =
   | "up"
   | "down"
+  | "page-up"
+  | "page-down"
   | "enter"
   | "escape"
   | "refresh"
-  | "cancel-run"
-  | "takeover";
+  | "cancel-run";
 
 /**
  * Actions understood by the routing editor, straight from SPEC.md:

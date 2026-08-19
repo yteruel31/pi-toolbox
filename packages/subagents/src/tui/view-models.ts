@@ -29,6 +29,8 @@ import type {
 export interface RunsViewModel extends ViewStore<RunsViewState, RunsViewEvent> {
   /** Pull both the run list and the open detail, if any, from the port. */
   refresh(): void;
+  /** Submit through the active run; false means rejected or disposed. */
+  submitMessage(text: string): Promise<boolean>;
 }
 
 export interface RunsViewModelOptions {
@@ -90,11 +92,35 @@ export function createRunsViewModel(
           dispose();
           return;
         case "confirm-cancel":
-        case "focus-takeover":
           options.onIntent?.(intent);
       }
     },
   });
+
+  const submitMessage = async (text: string): Promise<boolean> => {
+    if (disposed) return false;
+    const detail = store.getState().detail;
+    if (!detail || detail.submitting) return false;
+    const runId = detail.runId;
+    store.dispatch({ kind: "submission-started", runId });
+    try {
+      await options.data.sendMessage(runId, text);
+      if (disposed) return false;
+      store.dispatch({ kind: "submission-finished", runId });
+      refresh();
+      return true;
+    } catch (error) {
+      if (!disposed) {
+        store.dispatch({
+          kind: "submission-finished",
+          runId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        refresh();
+      }
+      return false;
+    }
+  };
 
   subscriptions.add(options.data.subscribe(refresh));
 
@@ -105,6 +131,7 @@ export function createRunsViewModel(
     getState: store.getState,
     dispatch: store.dispatch,
     refresh,
+    submitMessage,
     dispose,
   };
 }

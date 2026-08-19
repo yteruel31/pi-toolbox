@@ -14,15 +14,35 @@ export class ControlledRun {
   readonly request: HarnessRunRequest;
   readonly promise: Promise<HarnessRunOutcome>;
   aborted = false;
+  readonly messages: string[] = [];
+  controlDisposeCount = 0;
+  private controlClosed = false;
   private resolveFn!: (outcome: HarnessRunOutcome) => void;
   private rejectFn!: (err: unknown) => void;
 
-  constructor(request: HarnessRunRequest, rejectOnAbort: boolean) {
+  constructor(
+    request: HarnessRunRequest,
+    rejectOnAbort: boolean,
+    supportsActiveMessages: boolean,
+  ) {
     this.request = request;
     this.promise = new Promise((resolve, reject) => {
       this.resolveFn = resolve;
       this.rejectFn = reject;
     });
+    if (supportsActiveMessages) {
+      request.setActiveControl({
+        sendMessage: async (text) => {
+          if (this.controlClosed) throw new Error("fake control closed");
+          this.messages.push(text);
+        },
+        dispose: () => {
+          if (this.controlClosed) return;
+          this.controlClosed = true;
+          this.controlDisposeCount += 1;
+        },
+      });
+    }
     request.signal.addEventListener(
       "abort",
       () => {
@@ -48,6 +68,10 @@ export class ControlledRun {
   progress(text: string): void {
     this.request.reportProgress(text);
   }
+
+  transcript(entry: Parameters<HarnessRunRequest["reportTranscript"]>[0]): void {
+    this.request.reportTranscript(entry);
+  }
 }
 
 export interface FakeHarnessOptions {
@@ -56,10 +80,12 @@ export interface FakeHarnessOptions {
   rejectOnAbort?: boolean;
   /** Throw synchronously from run() instead of returning a promise. */
   throwOnRun?: Error;
+  supportsActiveMessages?: boolean;
 }
 
 export class FakeHarness implements SubagentHarness {
   readonly kind: HarnessKind;
+  readonly supportsActiveMessages: boolean;
   readonly runs: ControlledRun[] = [];
   private readonly rejectOnAbort: boolean;
   private readonly throwOnRun: Error | undefined;
@@ -68,11 +94,16 @@ export class FakeHarness implements SubagentHarness {
     this.kind = options.kind ?? "pi";
     this.rejectOnAbort = options.rejectOnAbort ?? false;
     this.throwOnRun = options.throwOnRun;
+    this.supportsActiveMessages = options.supportsActiveMessages ?? true;
   }
 
   run(request: HarnessRunRequest): Promise<HarnessRunOutcome> {
     if (this.throwOnRun) throw this.throwOnRun;
-    const controlled = new ControlledRun(request, this.rejectOnAbort);
+    const controlled = new ControlledRun(
+      request,
+      this.rejectOnAbort,
+      this.supportsActiveMessages,
+    );
     this.runs.push(controlled);
     return controlled.promise;
   }

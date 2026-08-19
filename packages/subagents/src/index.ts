@@ -12,6 +12,7 @@ export type {
   WaitOptions,
 } from "./core/run-manager.js";
 export type {
+  HarnessActiveControl,
   HarnessResolver,
   HarnessRunOutcome,
   HarnessRunRequest,
@@ -39,6 +40,8 @@ export type {
   ClaudeQueryOptions,
   ClaudeResultMessage,
   ClaudeSdkMessage,
+  ClaudeSdkUserInput,
+  ClaudeUserMessage,
   ClaudeStreamEventMessage,
   ClaudeSystemMessage,
   ClaudeToolProgressMessage,
@@ -81,6 +84,9 @@ export type {
   RunResult,
   RunSnapshot,
   RunStatus,
+  RunTranscriptEntry,
+  RunTranscriptInput,
+  RunMessagingState,
   RunUsage,
   SettledRunStatus,
   ThinkingLevel,
@@ -97,7 +103,11 @@ export {
   WaitAbortedError,
   describeError,
 } from "./shared/errors.js";
-export { truncateText, toDisplayTitle } from "./shared/truncate.js";
+export {
+  sanitizeTerminalText,
+  truncateText,
+  toDisplayTitle,
+} from "./shared/truncate.js";
 export { BoundedLog } from "./shared/bounded-log.js";
 
 // Pure TUI reducers, view models, and adapter contracts

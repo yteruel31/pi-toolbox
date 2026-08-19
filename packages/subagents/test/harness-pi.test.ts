@@ -33,6 +33,8 @@ interface CapturedRunRequest {
   controller: AbortController;
   progress: string[];
   models: string[];
+  transcript: Array<Parameters<HarnessRunRequest["reportTranscript"]>[0]>;
+  controls: Array<Parameters<HarnessRunRequest["setActiveControl"]>[0]>;
 }
 
 function makeRunRequest(
@@ -46,10 +48,14 @@ function makeRunRequest(
   const controller = new AbortController();
   const progress: string[] = [];
   const models: string[] = [];
+  const transcript: Array<Parameters<HarnessRunRequest["reportTranscript"]>[0]> = [];
+  const controls: Array<Parameters<HarnessRunRequest["setActiveControl"]>[0]> = [];
   return {
     controller,
     progress,
     models,
+    transcript,
+    controls,
     request: {
       runId: "run-1",
       prompt: overrides.prompt ?? "inspect the project",
@@ -59,7 +65,12 @@ function makeRunRequest(
       thinkingLevel: overrides.thinkingLevel,
       signal: controller.signal,
       reportProgress: (text) => progress.push(text),
+      reportTranscript: (entry) => transcript.push(entry),
       reportEffectiveModel: (model) => models.push(model),
+      setActiveControl: (control) => {
+        controls.push(control);
+        return true;
+      },
     },
   };
 }
@@ -69,6 +80,8 @@ class FakePiSession implements PiSessionLike {
   subscribeCount = 0;
   unsubscribeCount = 0;
   promptCount = 0;
+  steerCount = 0;
+  steered: string[] = [];
   abortCount = 0;
   disposeCount = 0;
   activeTools = ["read", "subagent_spawn", "workflow_custom", "ask_user_more"];
@@ -91,6 +104,11 @@ class FakePiSession implements PiSessionLike {
   prompt(text: string): Promise<void> {
     this.promptCount += 1;
     return this.promptImpl(text);
+  }
+
+  async steer(text: string): Promise<void> {
+    this.steerCount += 1;
+    this.steered.push(text);
   }
 
   abort(): Promise<void> {
@@ -282,6 +300,28 @@ describe("Pi child session wiring", () => {
     );
   });
 
+  it("steers the existing active AgentSession through the public API", async () => {
+    const fixture = makeHarness();
+    let finishPrompt!: () => void;
+    fixture.session.promptImpl = () => new Promise<void>((resolve) => {
+      finishPrompt = () => {
+        fixture.session.emit(assistantMessage("done"));
+        resolve();
+      };
+    });
+    const captured = makeRunRequest();
+    const running = fixture.harness.run(captured.request);
+    await flushAsync();
+
+    expect(captured.controls).toHaveLength(1);
+    await captured.controls[0]!.sendMessage("focus on the tests");
+    expect(fixture.session.steered).toEqual(["focus on the tests"]);
+
+    finishPrompt();
+    await running;
+    await expect(captured.controls[0]!.sendMessage("late")).rejects.toThrow("closed");
+  });
+
   it("resolves an authenticated provider/model override before creating resources", async () => {
     const fixture = makeHarness();
     fixture.session.promptImpl = async () => {
@@ -373,6 +413,44 @@ describe("Pi event-derived result", () => {
       contextTokens: 14,
     });
     expect(captured.progress.every((line) => line.length <= 400)).toBe(true);
+  });
+
+  it("captures bounded assistant and detailed tool transcript events", async () => {
+    const fixture = makeHarness();
+    fixture.session.promptImpl = async () => {
+      fixture.session.emit({
+        type: "tool_execution_start",
+        toolCallId: "tool-1",
+        toolName: "read",
+        args: { path: "/tmp/example" },
+      });
+      fixture.session.emit({
+        type: "tool_execution_update",
+        toolCallId: "tool-1",
+        toolName: "read",
+        args: { path: "/tmp/example" },
+        partialResult: { content: "partial" },
+      });
+      fixture.session.emit({
+        type: "tool_execution_end",
+        toolCallId: "tool-1",
+        toolName: "read",
+        result: { content: "result" },
+        isError: false,
+      });
+      fixture.session.emit(assistantMessage("assistant answer"));
+    };
+    const captured = makeRunRequest();
+
+    await fixture.harness.run(captured.request);
+
+    expect(captured.transcript).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "tool", phase: "start", callId: "tool-1", input: expect.stringContaining("/tmp/example") }),
+      expect.objectContaining({ kind: "tool", phase: "update", output: expect.stringContaining("partial") }),
+      expect.objectContaining({ kind: "tool", phase: "complete", output: expect.stringContaining("result") }),
+      { kind: "assistant", text: "assistant answer" },
+    ]));
+    expect(captured.transcript.every((entry) => JSON.stringify(entry).length < 5_000)).toBe(true);
   });
 
   it("bounds hostile numeric usage values", async () => {

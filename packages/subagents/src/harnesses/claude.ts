@@ -21,8 +21,8 @@
  * - `persistSession: false`: child transcripts are throwaway; nothing is
  *   written under ~/.claude/projects.
  * - The run's AbortSignal is bridged to a fresh per-call AbortController
- *   handed to the SDK, and iterator cleanup (listener removal, controller
- *   abort, `iterator.return()`) happens exactly once on every settle path.
+ *   handed to the SDK, and query cleanup (listener removal, controller
+ *   abort, input closure, `query.close()`) happens exactly once on every settle path.
  */
 
 import type {
@@ -65,6 +65,11 @@ interface ClaudeContentBlock {
   type: string;
   text?: string;
   name?: string;
+  id?: string;
+  input?: unknown;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
 }
 
 export interface ClaudeSystemMessage {
@@ -82,8 +87,15 @@ export interface ClaudeAssistantMessage {
 
 export interface ClaudeToolProgressMessage {
   type: "tool_progress";
+  tool_use_id?: string;
   tool_name?: string;
   elapsed_time_seconds?: number;
+}
+
+export interface ClaudeUserMessage {
+  type: "user";
+  message: { role: "user"; content: string | ClaudeContentBlock[] };
+  parent_tool_use_id: string | null;
 }
 
 export interface ClaudeStreamEventMessage {
@@ -120,16 +132,25 @@ export interface ClaudeResultMessage {
 export type ClaudeSdkMessage =
   | ClaudeSystemMessage
   | ClaudeAssistantMessage
+  | ClaudeUserMessage
   | ClaudeToolProgressMessage
   | ClaudeStreamEventMessage
   | ClaudeResultMessage
   | { type: string };
 
 /** Shape of the SDK's `query()`, reduced to what the harness relies on. */
-export interface ClaudeQuery extends AsyncIterable<ClaudeSdkMessage> {}
+export interface ClaudeQuery extends AsyncIterable<ClaudeSdkMessage> {
+  close(): void;
+}
+
+export type ClaudeSdkUserInput = {
+  type: "user";
+  message: { role: "user"; content: string };
+  parent_tool_use_id: null;
+};
 
 export type ClaudeQueryFunction = (params: {
-  prompt: string;
+  prompt: string | AsyncIterable<ClaudeSdkUserInput>;
   options?: ClaudeQueryOptions;
 }) => ClaudeQuery;
 
@@ -145,6 +166,7 @@ export type ClaudeQueryFactory = () => Promise<ClaudeQueryFunction>;
 
 const SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
 const MAX_PROGRESS_LINE_CHARS = 300;
+const MAX_TRANSCRIPT_PAYLOAD_CHARS = 4_000;
 const MAX_EFFECTIVE_MODEL_CHARS = 200;
 const MAX_RESULT_ERROR_ITEMS = 3;
 const MAX_RESULT_ERROR_ITEM_CHARS = 120;
@@ -424,8 +446,50 @@ export interface ClaudeHarnessOptions {
   queryFactory?: ClaudeQueryFactory;
 }
 
+class ClaudeInputStream implements AsyncIterable<ClaudeSdkUserInput> {
+  private readonly queued: ClaudeSdkUserInput[] = [];
+  private readonly waiters: Array<(result: IteratorResult<ClaudeSdkUserInput>) => void> = [];
+  private closed = false;
+
+  push(text: string): void {
+    if (this.closed) throw new Error("Claude input stream is closed.");
+    const message: ClaudeSdkUserInput = {
+      type: "user",
+      message: { role: "user", content: text },
+      parent_tool_use_id: null,
+    };
+    const waiter = this.waiters.shift();
+    if (waiter) waiter({ value: message, done: false });
+    else this.queued.push(message);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) {
+      waiter({ value: undefined, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<ClaudeSdkUserInput> {
+    return {
+      next: () => {
+        const value = this.queued.shift();
+        if (value) return Promise.resolve({ value, done: false });
+        if (this.closed) return Promise.resolve({ value: undefined, done: true });
+        return new Promise((resolve) => this.waiters.push(resolve));
+      },
+      return: async () => {
+        this.close();
+        return { value: undefined, done: true };
+      },
+    };
+  }
+}
+
 export class ClaudeHarness implements SubagentHarness {
   readonly kind = "claude" as const;
+  readonly supportsActiveMessages = true;
   private readonly queryFactory: ClaudeQueryFactory;
 
   constructor(options: ClaudeHarnessOptions = {}) {
@@ -471,28 +535,34 @@ export class ClaudeHarness implements SubagentHarness {
     if (signal.aborted) onAbort();
 
     const options = buildClaudeOptions(request, abortController);
+    const input = new ClaudeInputStream();
+    input.push(request.prompt);
 
+    let query: ClaudeQuery | undefined;
     let iterator: AsyncIterator<ClaudeSdkMessage> | undefined;
     let cleaned = false;
+    let acceptingInput = true;
+    let expectedResults = 1;
     const cleanup = async () => {
-      // Exactly-once cleanup shared by every settle path. Abort the bridged
-      // controller first so a wedged subprocess cannot hang the iterator's
-      // return path, then run the generator's own cleanup.
       if (cleaned) return;
       cleaned = true;
+      acceptingInput = false;
       signal.removeEventListener("abort", onAbort);
+      input.close();
       abortController.abort();
-      if (iterator?.return) {
-        try {
-          await iterator.return(undefined);
-        } catch {
-          // Cleanup must never mask the run's real outcome.
-        }
+      try {
+        query?.close();
+      } catch {
+        // Cleanup must never mask the run's real outcome.
       }
     };
 
     // Per-run mutable state; a single harness instance serves concurrent runs.
-    const state: RunObservationState = { effectiveModel: undefined };
+    const state: RunObservationState = {
+      effectiveModel: undefined,
+      tools: new Map(),
+      assistantSinceResult: false,
+    };
 
     try {
       if (signal.aborted) {
@@ -501,14 +571,51 @@ export class ClaudeHarness implements SubagentHarness {
           "Claude run cancelled before the session started.",
         );
       }
-      const iterable = queryFn({ prompt: request.prompt, options });
-      iterator = iterable[Symbol.asyncIterator]();
+      query = queryFn({ prompt: input, options });
+      iterator = query[Symbol.asyncIterator]();
+      const controlAccepted = request.setActiveControl({
+        async sendMessage(text) {
+          if (!acceptingInput || signal.aborted) {
+            throw new Error("Claude input channel is closed.");
+          }
+          expectedResults += 1;
+          try {
+            input.push(text);
+          } catch (error) {
+            expectedResults -= 1;
+            throw error;
+          }
+        },
+        dispose: cleanup,
+      });
+      if (!controlAccepted) {
+        await cleanup();
+        throw new SubagentError(
+          "claude_run_cancelled",
+          "Claude run settled before its input channel became active.",
+        );
+      }
 
       let result: ClaudeResultMessage | undefined;
-      while (result === undefined) {
+      while (true) {
         const next = await iterator.next();
         if (next.done) break;
-        result = observeMessage(request, state, next.value);
+        const observed = observeMessage(request, state, next.value);
+        if (!observed) continue;
+        if (observed.subtype !== "success" || observed.is_error) {
+          acceptingInput = false;
+          input.close();
+          throw resultToError(observed);
+        }
+        result = observed;
+        expectedResults = Math.max(0, expectedResults - 1);
+        if (expectedResults === 0) {
+          // No accepted continuation remains. Close the producer before
+          // settling so a racing late submission is rejected synchronously.
+          acceptingInput = false;
+          input.close();
+          break;
+        }
       }
 
       if (result === undefined) {
@@ -516,9 +623,6 @@ export class ClaudeHarness implements SubagentHarness {
           "claude_no_result",
           "The Claude session ended without emitting a result message.",
         );
-      }
-      if (result.subtype !== "success" || result.is_error) {
-        throw resultToError(result);
       }
       const outcome: HarnessRunOutcome = {
         finalText: typeof result.result === "string" ? result.result : "",
@@ -544,6 +648,8 @@ export class ClaudeHarness implements SubagentHarness {
 
 interface RunObservationState {
   effectiveModel: string | undefined;
+  tools: Map<string, string>;
+  assistantSinceResult: boolean;
 }
 
 /**
@@ -566,8 +672,13 @@ function observeMessage(
           request.reportEffectiveModel(model);
         }
         report(request, `claude session started (model ${system.model ?? "unknown"})`);
+        request.reportTranscript({
+          kind: "status",
+          text: `Claude session started (model ${system.model ?? "unknown"})`,
+        });
       } else if (system.subtype === "status" && typeof system.status === "string") {
         report(request, `status: ${system.status}`);
+        request.reportTranscript({ kind: "status", text: system.status });
       }
       return undefined;
     }
@@ -577,10 +688,38 @@ function observeMessage(
         for (const block of content) {
           if (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
             report(request, block.text);
+            state.assistantSinceResult = true;
+            request.reportTranscript({ kind: "assistant", text: block.text });
           } else if (block.type === "tool_use" && typeof block.name === "string") {
+            const callId = typeof block.id === "string" ? block.id : undefined;
+            if (callId) state.tools.set(callId, block.name);
             report(request, `tool: ${block.name}`);
+            request.reportTranscript({
+              kind: "tool",
+              toolName: block.name,
+              phase: "start",
+              ...(callId ? { callId } : {}),
+              input: boundedPayload(block.input),
+            });
           }
         }
+      }
+      return undefined;
+    }
+    case "user": {
+      const user = message as ClaudeUserMessage;
+      if (!Array.isArray(user.message?.content)) return undefined;
+      for (const block of user.message.content) {
+        if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+        const toolName = state.tools.get(block.tool_use_id) ?? "unknown";
+        request.reportTranscript({
+          kind: "tool",
+          toolName,
+          phase: block.is_error ? "error" : "complete",
+          callId: block.tool_use_id,
+          output: boundedPayload(block.content),
+        });
+        state.tools.delete(block.tool_use_id);
       }
       return undefined;
     }
@@ -592,7 +731,16 @@ function observeMessage(
         progress.elapsed_time_seconds >= 0
           ? ` (${Math.round(progress.elapsed_time_seconds)}s)`
           : "";
-      report(request, `tool ${progress.tool_name ?? "?"} running${elapsed}`);
+      const toolName = progress.tool_name ?? "unknown";
+      if (progress.tool_use_id) state.tools.set(progress.tool_use_id, toolName);
+      report(request, `tool ${toolName} running${elapsed}`);
+      request.reportTranscript({
+        kind: "tool",
+        toolName,
+        phase: "update",
+        ...(progress.tool_use_id ? { callId: progress.tool_use_id } : {}),
+        output: `Running${elapsed}`,
+      });
       return undefined;
     }
     case "stream_event": {
@@ -600,14 +748,45 @@ function observeMessage(
       // starts, drop token deltas (too chatty for a bounded buffer).
       const block = (message as ClaudeStreamEventMessage).event?.content_block;
       if (block?.type === "tool_use" && typeof block.name === "string") {
-        report(request, `tool: ${block.name}`);
+        const callId = typeof block.id === "string" ? block.id : undefined;
+        if (!callId || !state.tools.has(callId)) {
+          if (callId) state.tools.set(callId, block.name);
+          report(request, `tool: ${block.name}`);
+          request.reportTranscript({
+            kind: "tool",
+            toolName: block.name,
+            phase: "start",
+            ...(callId ? { callId } : {}),
+            input: boundedPayload(block.input),
+          });
+        }
       }
       return undefined;
     }
-    case "result":
-      return message as ClaudeResultMessage;
+    case "result": {
+      const result = message as ClaudeResultMessage;
+      if (
+        !state.assistantSinceResult &&
+        typeof result.result === "string" &&
+        result.result.trim() !== ""
+      ) {
+        request.reportTranscript({ kind: "assistant", text: result.result });
+      }
+      state.assistantSinceResult = false;
+      return result;
+    }
     default:
       return undefined;
+  }
+}
+
+function boundedPayload(value: unknown): string {
+  if (value === undefined) return "";
+  if (typeof value === "string") return truncateText(value, MAX_TRANSCRIPT_PAYLOAD_CHARS);
+  try {
+    return truncateText(JSON.stringify(value, null, 2), MAX_TRANSCRIPT_PAYLOAD_CHARS);
+  } catch {
+    return "[unserializable tool payload]";
   }
 }
 

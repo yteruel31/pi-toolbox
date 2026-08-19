@@ -20,6 +20,7 @@ import type { RunUsage, ThinkingLevel } from "../shared/types.js";
 export const PI_TOOL_WATCHDOG_MS = 3 * 60 * 1_000;
 
 const MAX_PROGRESS_CHARS = 400;
+const MAX_TRANSCRIPT_PAYLOAD_CHARS = 4_000;
 const MAX_FINAL_TEXT_CHARS = 50_000;
 const MAX_MODEL_CHARS = 200;
 const MAX_USAGE_COUNT = Number.MAX_SAFE_INTEGER;
@@ -94,6 +95,7 @@ export type PiSessionEvent = AgentSessionEvent;
 export interface PiSessionLike {
   subscribe(listener: (event: PiSessionEvent) => void): () => void;
   prompt(text: string): Promise<void>;
+  steer(text: string): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
   getActiveToolNames?(): string[];
@@ -152,6 +154,7 @@ export interface PiHarnessOptions {
 
 export class PiHarness implements SubagentHarness {
   readonly kind = "pi" as const;
+  readonly supportsActiveMessages = true;
 
   private readonly modelRuntime: PiModelRuntimeLike;
   private readonly parentModel: PiModelLike | undefined;
@@ -207,6 +210,7 @@ export class PiHarness implements SubagentHarness {
     let abortListenerInstalled = false;
     let cleaned = false;
     let abortPromise: Promise<void> | undefined;
+    let activeControl: { dispose(): void } | undefined;
     const watchdogs = new Map<string, ReturnType<typeof setTimeout>>();
     const observations = createObservationState();
     let watchdogError: SubagentError | undefined;
@@ -265,6 +269,8 @@ export class PiHarness implements SubagentHarness {
       }
       unsubscribe?.();
       unsubscribe = undefined;
+      activeControl?.dispose();
+      activeControl = undefined;
       for (const timer of watchdogs.values()) clearTimeout(timer);
       watchdogs.clear();
       if (request.signal.aborted || watchdogError !== undefined) {
@@ -298,6 +304,27 @@ export class PiHarness implements SubagentHarness {
       request.signal.addEventListener("abort", onAbort, { once: true });
       abortListenerInstalled = true;
       if (request.signal.aborted) onAbort();
+
+      const ownedSession = session;
+      let controlClosed = false;
+      activeControl = {
+        dispose() {
+          controlClosed = true;
+        },
+      };
+      const accepted = request.setActiveControl({
+        async sendMessage(text) {
+          if (controlClosed || request.signal.aborted || session !== ownedSession) {
+            throw cancelledError("after its input channel closed");
+          }
+          await ownedSession.steer(text);
+        },
+        dispose: () => activeControl?.dispose(),
+      });
+      if (!accepted) {
+        activeControl.dispose();
+        throw cancelledError("before its input channel became active");
+      }
 
       const promptPromise = session.prompt(request.prompt);
       await Promise.race([
@@ -522,14 +549,30 @@ function observePiEvent(
   switch (event.type) {
     case "agent_start":
       report(request, "pi child session started");
+      request.reportTranscript({ kind: "status", text: "Pi child session started" });
       return;
     case "tool_execution_start":
       watchdog.resetWatchdog(event.toolCallId, event.toolName);
       report(request, `tool ${event.toolName} started`);
+      request.reportTranscript({
+        kind: "tool",
+        toolName: event.toolName,
+        phase: "start",
+        callId: event.toolCallId,
+        input: boundedPayload(event.args),
+      });
       return;
     case "tool_execution_update":
       watchdog.resetWatchdog(event.toolCallId, event.toolName);
       report(request, `tool ${event.toolName} made progress`);
+      request.reportTranscript({
+        kind: "tool",
+        toolName: event.toolName,
+        phase: "update",
+        callId: event.toolCallId,
+        input: boundedPayload(event.args),
+        output: boundedPayload(event.partialResult),
+      });
       return;
     case "tool_execution_end":
       watchdog.clearWatchdog(event.toolCallId);
@@ -537,6 +580,13 @@ function observePiEvent(
         request,
         `tool ${event.toolName} ${event.isError ? "failed" : "finished"}`,
       );
+      request.reportTranscript({
+        kind: "tool",
+        toolName: event.toolName,
+        phase: event.isError ? "error" : "complete",
+        callId: event.toolCallId,
+        output: boundedPayload(event.result),
+      });
       return;
     case "message_end": {
       const message = event.message;
@@ -555,7 +605,10 @@ function observePiEvent(
       state.effectiveModel = effectiveModel;
       request.reportEffectiveModel(effectiveModel);
       addUsage(state.usage, message.usage);
-      if (state.finalText.trim() !== "") report(request, state.finalText);
+      if (state.finalText.trim() !== "") {
+        report(request, state.finalText);
+        request.reportTranscript({ kind: "assistant", text: state.finalText });
+      }
       return;
     }
     case "auto_retry_start":
@@ -563,15 +616,27 @@ function observePiEvent(
         request,
         `pi child retry ${event.attempt}/${event.maxAttempts} scheduled`,
       );
+      request.reportTranscript({
+        kind: "status",
+        text: `Pi retry ${event.attempt}/${event.maxAttempts} scheduled`,
+      });
       return;
     case "compaction_start":
       report(request, `pi child compaction started (${event.reason})`);
+      request.reportTranscript({
+        kind: "status",
+        text: `Pi compaction started (${event.reason})`,
+      });
       return;
     case "compaction_end":
       report(
         request,
         `pi child compaction ${event.aborted ? "aborted" : "finished"}`,
       );
+      request.reportTranscript({
+        kind: "status",
+        text: `Pi compaction ${event.aborted ? "aborted" : "finished"}`,
+      });
       return;
     default:
       return;
@@ -613,6 +678,16 @@ function boundedAdd(current: number, value: number, maximum: number): number {
 function boundedNumber(value: number, maximum: number): number {
   if (!Number.isFinite(value) || value <= 0) return 0;
   return Math.min(maximum, value);
+}
+
+function boundedPayload(value: unknown): string {
+  if (value === undefined) return "";
+  if (typeof value === "string") return truncateText(value, MAX_TRANSCRIPT_PAYLOAD_CHARS);
+  try {
+    return truncateText(JSON.stringify(value, null, 2), MAX_TRANSCRIPT_PAYLOAD_CHARS);
+  } catch {
+    return "[unserializable tool payload]";
+  }
 }
 
 function report(request: HarnessRunRequest, text: string): void {

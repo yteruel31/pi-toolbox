@@ -2,7 +2,12 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { RouteFieldProvenance, RoutingScope } from "../agents/types.js";
-import type { RunInspection, RunListEntry, RunStatus } from "../shared/types.js";
+import type {
+  RunInspection,
+  RunListEntry,
+  RunStatus,
+  RunTranscriptEntry,
+} from "../shared/types.js";
 import type { KeyHint } from "./keys.js";
 import type { RoutingEditorField, RoutingEditorState } from "./routing-editor.js";
 import type { RoutingAgentRow, RoutingViewState } from "./routing-view.js";
@@ -16,10 +21,17 @@ export function renderRunsPanel(
   maxRows: number,
   listHints: readonly KeyHint[],
   detailHints: readonly KeyHint[],
+  editorLines?: readonly string[],
 ): string[] {
   const hints = state.mode === "detail" ? detailHints : listHints;
   const content = state.mode === "detail"
-    ? renderRunDetail(theme, state, Math.max(1, width - 2), Math.max(1, maxRows - 4))
+    ? renderRunDetail(
+        theme,
+        state,
+        Math.max(1, width - 2),
+        Math.max(1, maxRows - 4),
+        editorLines,
+      )
     : renderRunsList(theme, state, Math.max(1, width - 2), Math.max(1, maxRows - 4));
   return frame(theme, "SUBAGENT RUNS", content, renderHints(theme, hints), width, maxRows);
 }
@@ -116,6 +128,7 @@ function renderRunDetail(
   state: RunsViewState,
   width: number,
   maxRows: number,
+  editorLines: readonly string[] | undefined,
 ): string[] {
   const detail = state.detail;
   if (!detail) return [];
@@ -124,61 +137,158 @@ function renderRunDetail(
     return emptyState(theme, "Loading run", detail.runId, width, maxRows);
   }
 
-  const lines: string[] = [];
   const glyph = theme.fg(statusColor(inspection.status), statusGlyph(inspection.status));
-  lines.push(columns(
+  const identity = columns(
     `${glyph} ${theme.fg("accent", inspection.id)}  ${theme.bold(inspection.title)}`,
     theme.fg(statusColor(inspection.status), inspection.status.toUpperCase()),
     width,
-  ));
-  lines.push(padAnsi(
+  );
+  const metadata = padAnsi(
     `${theme.fg("muted", inspection.harness.toUpperCase())}${theme.fg("dim", "  ·  ")}${theme.fg(inspection.model ? "text" : "dim", inspection.model ?? "parent model")}${theme.fg("dim", `  ·  ${formatElapsed(inspection.elapsedMs)}`)}`,
     width,
-  ));
-  if (inspection.cancelRequested) {
-    lines.push(noticeLine(theme, "Cancellation requested", width));
+  );
+  const usage = inspection.usage
+    ? padAnsi(theme.fg(
+        "dim",
+        `${inspection.usage.turns} turns  ·  ${(inspection.usage.input + inspection.usage.output).toLocaleString()} tokens  ·  $${inspection.usage.costUsd.toFixed(4)}`,
+      ), width)
+    : undefined;
+  const inputBlock = runInputBlock(theme, inspection, detail.submitting, editorLines, width);
+  const noticeBlock = state.notice ? [noticeLine(theme, state.notice, width)] : [];
+
+  // Tiny terminals keep identity and input/read-only state, sacrificing
+  // metadata and transcript before either of those critical regions.
+  if (maxRows <= 1) return [identity].slice(0, maxRows);
+  if (maxRows < 1 + inputBlock.length) {
+    return [identity, ...inputBlock.slice(-(maxRows - 1))];
   }
-  if (inspection.usage) {
-    const tokens = inspection.usage.input + inspection.usage.output;
-    lines.push(padAnsi(
-      theme.fg("dim", `${inspection.usage.turns} turns  ·  ${tokens.toLocaleString()} tokens  ·  $${inspection.usage.costUsd.toFixed(4)}`),
+
+  const header = [identity];
+  if (maxRows >= 1 + inputBlock.length + 1) header.push(metadata);
+  if (usage && maxRows >= header.length + inputBlock.length + 1) header.push(usage);
+  const fixedRows = header.length + inputBlock.length + noticeBlock.length;
+  const transcriptBudget = Math.max(0, maxRows - fixedRows);
+  const transcript = renderTranscriptViewport(
+    theme,
+    inspection,
+    detail.scrollOffset,
+    width,
+    transcriptBudget,
+  );
+  return [
+    ...header,
+    ...transcript,
+    ...noticeBlock,
+    ...inputBlock,
+  ].slice(0, maxRows);
+}
+
+function runInputBlock(
+  theme: Theme,
+  inspection: RunInspection,
+  submitting: boolean,
+  editorLines: readonly string[] | undefined,
+  width: number,
+): string[] {
+  if (inspection.messaging.editable && editorLines) {
+    return [
+      sectionLabel(theme, submitting ? "SENDING" : "MESSAGE", width),
+      ...editorLines.map((line) => padAnsi(`  ${line}`, width)),
+    ];
+  }
+  return [
+    sectionLabel(theme, "READ ONLY", width),
+    padAnsi(
+      `  ${theme.fg("dim", inspection.messaging.reason ?? "This run cannot accept more input.")}`,
+      width,
+    ),
+  ];
+}
+
+function renderTranscriptViewport(
+  theme: Theme,
+  inspection: RunInspection,
+  scrollOffset: number,
+  width: number,
+  maxRows: number,
+): string[] {
+  if (maxRows <= 0) return [];
+  const entries = inspection.transcript;
+  const boundedOffset = Math.min(Math.max(0, scrollOffset), Math.max(0, entries.length - 1));
+  const end = Math.max(0, entries.length - boundedOffset);
+  const availableEntries = entries.slice(0, end);
+  const rendered = availableEntries.flatMap((entry) => renderTranscriptEntry(theme, entry, width));
+  const reserveBottom = boundedOffset > 0 ? 1 : 0;
+  const bodyRows = Math.max(0, maxRows - reserveBottom);
+  const visible = rendered.slice(-bodyRows);
+  const hiddenLines = rendered.length - visible.length;
+  if (visible.length > 0 && (hiddenLines > 0 || inspection.transcriptDropped > 0)) {
+    const omitted = inspection.transcriptDropped + hiddenLines;
+    visible[0] = padAnsi(theme.fg("dim", `  … ${omitted} earlier transcript item${omitted === 1 ? "" : "s"}`), width);
+  }
+  if (visible.length === 0 && bodyRows > 0) {
+    visible.push(padAnsi(theme.fg("dim", "  Waiting for transcript events…"), width));
+  }
+  if (boundedOffset > 0) {
+    visible.push(padAnsi(
+      theme.fg("warning", `  ↓ ${boundedOffset} newer event${boundedOffset === 1 ? "" : "s"} · PageDown to follow`),
       width,
     ));
   }
-  lines.push(sectionLabel(theme, "ACTIVITY", width));
+  return visible.slice(0, maxRows);
+}
 
-  const reservedForOutput = inspection.resultPreview === undefined ? 0 : 3;
-  const activityBudget = Math.max(1, maxRows - lines.length - reservedForOutput - (state.notice ? 1 : 0));
-  const activity = inspection.activity.slice(-activityBudget);
-  if (inspection.activityDropped > 0 || inspection.activity.length > activity.length) {
-    const hidden = inspection.activityDropped + inspection.activity.length - activity.length;
-    lines.push(padAnsi(theme.fg("dim", `  ┊ ${hidden} earlier updates`), width));
-  }
-  if (activity.length === 0) {
-    lines.push(padAnsi(theme.fg("dim", "  ┊ Waiting for the first update…"), width));
-  } else {
-    for (const entry of activity) {
-      lines.push(padAnsi(`${theme.fg("borderMuted", "  ┊")} ${theme.fg("muted", entry.text)}`, width));
+function renderTranscriptEntry(
+  theme: Theme,
+  entry: RunTranscriptEntry,
+  width: number,
+): string[] {
+  switch (entry.kind) {
+    case "status":
+      return [padAnsi(`${theme.fg("borderMuted", "  ┊")} ${theme.fg("dim", entry.text)}`, width)];
+    case "user":
+      return transcriptTextBlock(theme, "YOU", entry.text, width, "user");
+    case "assistant":
+      return transcriptTextBlock(theme, "ASSISTANT", entry.text, width, "assistant");
+    case "tool": {
+      const color = entry.phase === "error" ? "error" : entry.phase === "complete" ? "success" : "toolTitle";
+      const heading = `${theme.fg(color, "  TOOL")} ${theme.bold(theme.fg("text", entry.toolName))}${theme.fg("dim", `  ·  ${entry.phase}${entry.callId ? `  ·  ${entry.callId}` : ""}`)}`;
+      const lines = [padAnsi(heading, width)];
+      if (entry.input) lines.push(...transcriptDetailLines(theme, "input", entry.input, width));
+      if (entry.output) lines.push(...transcriptDetailLines(theme, "output", entry.output, width));
+      return lines;
     }
   }
+}
 
-  if (inspection.resultPreview !== undefined && lines.length < maxRows) {
-    lines.push(sectionLabel(theme, "OUTPUT", width));
-    const outputRows = Math.max(1, maxRows - lines.length - (state.notice ? 1 : 0));
-    const wrapped = wrapText(inspection.resultPreview || "No output returned.", Math.max(1, width - 2));
-    const visible = wrapped.slice(-outputRows);
-    if (wrapped.length > visible.length) {
-      visible[0] = `… ${wrapped.length - visible.length + 1} earlier lines`;
-    }
-    for (const output of visible) {
-      lines.push(padAnsi(`  ${theme.fg("text", output)}`, width));
-    }
-  }
-  if (detail.takeover && lines.length < maxRows) {
-    lines.push(padAnsi(theme.bg("selectedBg", theme.fg("accent", "  TAKEOVER ACTIVE  ·  keys captured")), width));
-  }
-  if (state.notice && lines.length < maxRows) lines.push(noticeLine(theme, state.notice, width));
-  return lines.slice(0, maxRows);
+function transcriptTextBlock(
+  theme: Theme,
+  label: string,
+  text: string,
+  width: number,
+  kind: "user" | "assistant",
+): string[] {
+  const available = Math.max(1, width - 4);
+  const wrapped = wrapText(text, available);
+  const heading = padAnsi(theme.bold(theme.fg(kind === "user" ? "accent" : "customMessageLabel", `  ${label}`)), width);
+  const body = (wrapped.length > 0 ? wrapped : [""]).map((line) => {
+    const padded = padAnsi(`    ${theme.fg("text", line)}`, width);
+    return kind === "user" ? theme.bg("userMessageBg", padded) : padded;
+  });
+  return [heading, ...body];
+}
+
+function transcriptDetailLines(
+  theme: Theme,
+  label: string,
+  value: string,
+  width: number,
+): string[] {
+  const wrapped = wrapText(value, Math.max(1, width - 8));
+  return (wrapped.length > 0 ? wrapped : [""]).map((line, index) => padAnsi(
+    `    ${theme.fg("dim", index === 0 ? `${label}: ` : "       ")}${theme.fg("toolOutput", line)}`,
+    width,
+  ));
 }
 
 function renderRoutingEditor(

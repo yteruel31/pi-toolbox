@@ -24,6 +24,7 @@ import {
   resultSuccess,
   streamToolStart,
   toolProgress,
+  toolResult,
 } from "./helpers/fake-claude-sdk.js";
 
 const SDK_INSTALLED = await import("@anthropic-ai/claude-agent-sdk").then(
@@ -47,7 +48,8 @@ describe("claude harness option wiring", () => {
 
     expect(fake.calls).toHaveLength(1);
     const call = fake.calls[0]!;
-    expect(call.prompt).toBe("review the diff");
+    expect(typeof call.prompt).not.toBe("string");
+    expect(call.inputMessages[0]?.message.content).toBe("review the diff");
     const options = call.options!;
     expect(options.cwd).toBe("/tmp/project");
     expect(options.model).toBe("opus");
@@ -311,6 +313,55 @@ describe("claude harness success path", () => {
     expect(progress[5]).toBe("tool: Edit");
   });
 
+  it("streams continuation input through the same active query", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const fake = makeFakeQuery([
+      initMessage(),
+      { waitFor: gate },
+      resultSuccess({ result: "first answer" }),
+      assistantText("continued answer"),
+      resultSuccess({ result: "continued answer" }),
+    ]);
+    const harness = new ClaudeHarness({ queryFactory: fake.factory });
+    const captured = makeRequest({ prompt: "initial" });
+    const running = harness.run(captured.request);
+    while (captured.controls.length === 0) await Promise.resolve();
+
+    await captured.controls[0]!.sendMessage("continue safely");
+    release();
+    const outcome = await running;
+
+    expect(fake.calls[0]!.inputMessages.map((message) => message.message.content)).toEqual([
+      "initial",
+      "continue safely",
+    ]);
+    expect(outcome.finalText).toBe("continued answer");
+    expect(fake.calls[0]!.closeCalls).toBe(1);
+  });
+
+  it("captures assistant and bounded tool input/output transcript details", async () => {
+    const fake = makeFakeQuery([
+      assistantToolUse("Read", "tool-7", { path: "/tmp/example" }),
+      toolProgress("Read", 3, "tool-7"),
+      toolResult("tool-7", { content: "file contents" }),
+      assistantText("Finished reading."),
+      resultSuccess(),
+    ]);
+    const harness = new ClaudeHarness({ queryFactory: fake.factory });
+    const captured = makeRequest();
+
+    await harness.run(captured.request);
+
+    expect(captured.transcript).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "tool", phase: "start", callId: "tool-7", input: expect.stringContaining("/tmp/example") }),
+      expect.objectContaining({ kind: "tool", phase: "update", output: "Running (3s)" }),
+      expect.objectContaining({ kind: "tool", phase: "complete", output: expect.stringContaining("file contents") }),
+      { kind: "assistant", text: "Finished reading." },
+    ]));
+    expect(captured.transcript.every((entry) => JSON.stringify(entry).length < 5_000)).toBe(true);
+  });
+
   it("collapses multiline child progress and bounds the effective model", async () => {
     const fake = makeFakeQuery([
       initMessage(`claude-${"x".repeat(300)}\nunsafe`),
@@ -356,7 +407,8 @@ describe("claude harness iterator cleanup", () => {
     const call = fake.calls[0]!;
     expect(call.yielded).toBe(2); // init + result, never the trailing frame
     expect(call.finallyRan).toBe(true);
-    expect(call.returnCalls).toBe(1);
+    expect(call.returnCalls).toBe(0);
+    expect(call.closeCalls).toBe(1);
     expect(progress).not.toContain("late frame");
     // The bridged controller is aborted as a teardown backstop even on success.
     expect(call.options!.abortController.signal.aborted).toBe(true);
@@ -369,7 +421,8 @@ describe("claude harness iterator cleanup", () => {
 
     await expect(harness.run(request)).rejects.toThrow(SubagentError);
     expect(fake.calls[0]!.finallyRan).toBe(true);
-    expect(fake.calls[0]!.returnCalls).toBe(1);
+    expect(fake.calls[0]!.returnCalls).toBe(0);
+    expect(fake.calls[0]!.closeCalls).toBe(1);
   });
 
   it("runs generator cleanup when the run is cancelled", async () => {
@@ -387,7 +440,8 @@ describe("claude harness iterator cleanup", () => {
     });
     const call = fake.calls[0]!;
     expect(call.finallyRan).toBe(true);
-    expect(call.returnCalls).toBe(1);
+    expect(call.returnCalls).toBe(0);
+    expect(call.closeCalls).toBe(1);
     expect(call.options!.abortController.signal.aborted).toBe(true);
   });
 });
@@ -550,7 +604,8 @@ describe("claude harness failure mapping", () => {
 
       await expect(harness.run(request)).rejects.toMatchObject({ code });
       expect(fake.calls[0]!.finallyRan).toBe(true);
-      expect(fake.calls[0]!.returnCalls).toBe(1);
+      expect(fake.calls[0]!.returnCalls).toBe(0);
+      expect(fake.calls[0]!.closeCalls).toBe(1);
     }
   });
 

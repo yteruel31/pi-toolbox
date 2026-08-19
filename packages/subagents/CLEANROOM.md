@@ -20,7 +20,8 @@ Implementation decisions were derived from:
 2. official Pi 0.84.1 documentation and MIT-licensed bundled examples;
 3. public declarations/documentation shipped with `@anthropic-ai/claude-agent-sdk` 0.3.234;
 4. public TypeBox, Pi AI, and Pi TUI APIs needed to implement those documented contracts;
-5. user-provided screenshots of rendered behavior used only as visual feedback for the independently authored theme-native panels.
+5. user-provided screenshots and behavior requirements used as product-level input for independently authored TUI work;
+6. the current clean-room `origin/main` implementation plus installed public Pi `AgentSession`/TUI and Claude Agent SDK 0.3.234 declarations used for active-input and editor contracts.
 
 The isolated research notes are retained in the development workspace under `reference/` but excluded from the npm tarball.
 
