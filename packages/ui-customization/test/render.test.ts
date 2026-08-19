@@ -103,22 +103,13 @@ describe("structured footer rendering", () => {
     expect(lines[1]).not.toContain("0 err");
   });
 
-  it("shows context occupancy without token traffic totals", () => {
+  it("shows context occupancy and cost without traffic or cache metrics", () => {
     const lines = renderFooter(model({ extensionStatuses: new Map() }), theme, 200);
-    expect(lines[1]).toContain("97.9% 69k/71k");
-    expect(lines[1]).toContain("CH98.8% $4.210");
+    expect(lines[1]).toContain("97.9% 69k/71k $4.210");
+    expect(lines[1]).not.toContain("CH98.8%");
     expect(lines[1]).not.toContain("↑14M");
     expect(lines[1]).not.toContain("↓192k");
     expect(lines[1]).not.toContain("R69k");
     expect(lines[1]).not.toContain("W1.0k");
-  });
-
-  it("does not show a cache hit rate when caching is unused", () => {
-    const base = model({ extensionStatuses: new Map() });
-    const lines = renderFooter({
-      ...base,
-      usage: { ...base.usage, cacheRead: 0, cacheWrite: 0, latestCacheHitRate: 0 },
-    }, theme, 200);
-    expect(lines.join("\n")).not.toContain("CH0.0%");
   });
 });

@@ -52,9 +52,6 @@ function contextValue(model: FooterModel): string {
   const tokens = model.context.tokens === null ? "?" : formatTokens(model.context.tokens);
   const percent = model.context.percent === null ? "?" : `${model.context.percent.toFixed(1)}%`;
   const parts = [`${percent} ${tokens}/${formatTokens(model.context.contextWindow)}`];
-  if ((model.usage.cacheRead > 0 || model.usage.cacheWrite > 0) && model.usage.latestCacheHitRate !== undefined) {
-    parts.push(`CH${model.usage.latestCacheHitRate.toFixed(1)}%`);
-  }
   if (model.usage.cost) parts.push(`$${model.usage.cost.toFixed(3)}`);
   return parts.join(" ");
 }
@@ -101,7 +98,7 @@ function createColumns(model: FooterModel, theme: Theme): Column[] {
     label: "CONTEXT",
     value: theme.fg(contextColor(model.context.percent), contextValue(model)),
     minWidth: 18,
-    maxWidth: 40,
+    maxWidth: 28,
     priority: 6,
   });
 
