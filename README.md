@@ -100,6 +100,14 @@ pi install npm:@yteruel31/pi-ui-customization
 
 Replace Pi's built-in footer with a responsive structured view of session, MCP, path, context, model, thinking, subagent, and extension status information.
 
+### [`@yteruel31/pi-unslop`](./packages/unslop)
+
+```bash
+pi install npm:@yteruel31/pi-unslop
+```
+
+Add best-effort anti-slop prose guidance and teach Pi a reusable global writing voice with `/unslop teach`.
+
 ## Themes
 
 ### Fallout: New Vegas
