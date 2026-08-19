@@ -1,0 +1,32 @@
+{
+  "name": "@yteruel31/pi-unslop",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Best-effort anti-slop prose guidance and a globally taught writing voice for Pi.",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "writing", "voice"],
+  "author": "Yoann TERUEL <yoann@gigapay.com>",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/yteruel31/pi-toolbox.git", "directory": "packages/unslop" },
+  "publishConfig": { "access": "public" },
+  "pi": { "extensions": ["./src/index.ts"] },
+  "files": ["src", "scripts/test-unslop.mjs", "README.md", "LICENSE"],
+  "scripts": {
+    "check": "tsc --noEmit && node scripts/test-unslop.mjs",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "typebox": { "optional": true }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@types/node": "^22.19.1",
+    "typebox": "^1.0.61",
+    "typescript": "^5.9.3"
+  },
+  "engines": { "node": ">=22.19.0" }
+}
