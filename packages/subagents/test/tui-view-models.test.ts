@@ -164,7 +164,7 @@ describe("runs view model", () => {
     expect(model.getState().runs).toHaveLength(2);
 
     model.dispatch({ kind: "key", action: "cancel-run" });
-    expect(intents.at(-1)?.kind).toBe("confirm-cancel");
+    expect(model.getState().pendingCancelId).toBe("run-1");
     model.dispatch({
       kind: "cancel-confirmed",
       runId: "run-1",

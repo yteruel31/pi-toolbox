@@ -44,7 +44,6 @@ export type RunsViewEvent =
 export type RunsViewIntent =
   | { kind: "request-refresh" }
   | { kind: "request-inspection"; runId: string }
-  | { kind: "confirm-cancel"; runId: string; title: string }
   | { kind: "request-cancel"; runId: string }
   | { kind: "close" };
 
@@ -181,16 +180,13 @@ function requestCancel(state: RunsViewState, runId: string): RunsViewStep {
     ? state.detail.inspection
     : undefined;
   const status = inspection?.status ?? run?.status;
-  const title = inspection?.title ?? run?.title ?? runId;
   if (status && isSettledStatus(status)) {
     return step({
       ...state,
       notice: boundNotice(`${runId} already ${status}; nothing to cancel.`),
     });
   }
-  return step({ ...state, pendingCancelId: runId, notice: undefined }, [
-    { kind: "confirm-cancel", runId, title },
-  ]);
+  return step({ ...state, pendingCancelId: runId, notice: undefined });
 }
 
 function reduceListKey(
@@ -222,7 +218,10 @@ function reduceListKey(
       );
     }
     case "refresh":
-      return step({ ...state, notice: undefined }, [{ kind: "request-refresh" }]);
+      return step(
+        { ...state, notice: boundNotice("Runs refreshed.") },
+        [{ kind: "request-refresh" }],
+      );
     case "cancel-run": {
       const run = selectedRun(state);
       return run ? requestCancel(state, run.id) : step(state);
@@ -263,7 +262,7 @@ function reduceDetailKey(
       });
     }
     case "refresh":
-      return step({ ...state, notice: undefined }, [
+      return step({ ...state, notice: boundNotice("Run refreshed.") }, [
         { kind: "request-inspection", runId: detail.runId },
         { kind: "request-refresh" },
       ]);
@@ -282,6 +281,11 @@ export const RUNS_LIST_KEY_HINTS: readonly KeyHint[] = [
   { key: "r", description: "refresh" },
   { key: "x", description: "cancel" },
   { key: "esc", description: "close" },
+];
+
+export const RUN_CANCEL_KEY_HINTS: readonly KeyHint[] = [
+  { key: "y", description: "confirm cancel" },
+  { key: "n/esc", description: "keep running" },
 ];
 
 export const RUN_DETAIL_KEY_HINTS: readonly KeyHint[] = [

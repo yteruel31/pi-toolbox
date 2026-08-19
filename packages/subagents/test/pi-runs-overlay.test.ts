@@ -114,6 +114,7 @@ describe("concrete interactive runs overlay", () => {
     const inspectCountBeforeRefresh = inspectCount;
     component.handleInput?.("r");
     await vi.waitFor(() => expect(inspectCount).toBeGreaterThan(inspectCountBeforeRefresh));
+    expect(component.render(100).join("\n")).toContain("Run refreshed.");
     component.handleInput?.("c");
     component.handleInput?.("t");
     rendered = component.render(100).join("\n");
@@ -127,6 +128,15 @@ describe("concrete interactive runs overlay", () => {
     await vi.waitFor(() => expect(sent).toEqual(["ct\nmore"]));
 
     component.handleInput?.("x");
+    rendered = component.render(100).join("\n");
+    expect(rendered).toContain("CONFIRM CANCELLATION");
+    expect(rendered).toContain("Stop run-1");
+    expect(rendered).not.toContain(CURSOR_MARKER);
+    expect(cancelled).toEqual([]);
+    component.handleInput?.("n");
+    expect(component.render(100).join("\n")).not.toContain("CONFIRM CANCELLATION");
+    component.handleInput?.("x");
+    component.handleInput?.("y");
     await vi.waitFor(() => expect(cancelled).toEqual(["run-1"]));
 
     component.handleInput?.("\x1b[5~");
