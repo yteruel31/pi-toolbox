@@ -12,6 +12,8 @@ export interface AskRenderView {
   settingsCursor?: number;
   settingsMessage?: string;
   resetArmed?: boolean;
+  scrollOffset?: number;
+  maxHeight?: number;
   configPath: string;
 }
 
@@ -60,6 +62,7 @@ function mainFooter(state: AskState, config: AskConfig): string {
   const pieces = [
     tabHint(config),
     `${firstBinding(config.keymaps.main.previousOption)}/${firstBinding(config.keymaps.main.nextOption)} select`,
+    "Shift+↑/↓ scroll",
   ];
   if (question && presentedType(state, question) === "multi") pieces.push(`${firstBinding(config.keymaps.main.toggle)} toggle`);
   pieces.push(`${firstBinding(config.keymaps.main.confirm)} confirm`);
@@ -273,6 +276,27 @@ function renderSettings(config: AskConfig, theme: Theme, width: number, view: As
   return lines;
 }
 
+function viewport(lines: string[], theme: Theme, width: number, maxHeight: number, requestedOffset: number, footerLines: number): string[] {
+  if (lines.length <= maxHeight || maxHeight < 8) return lines;
+  const header = lines.slice(0, 4);
+  const footer = lines.slice(-footerLines);
+  const body = lines.slice(4, -footerLines);
+  const available = Math.max(1, maxHeight - header.length - footer.length);
+  const maxOffset = Math.max(0, body.length - available + 1);
+  const offset = Math.max(0, Math.min(requestedOffset, maxOffset));
+  const hiddenAbove = offset > 0;
+  const contentHeight = Math.max(1, available - (hiddenAbove ? 1 : 0));
+  const hiddenBelow = offset + contentHeight < body.length;
+  const sliceHeight = Math.max(1, contentHeight - (hiddenBelow ? 1 : 0));
+  const visible = body.slice(offset, offset + sliceHeight);
+  if (hiddenAbove) visible.unshift(fit(theme.fg("dim", `↑ ${offset} more line${offset === 1 ? "" : "s"} · Shift+↑`), width));
+  if (hiddenBelow) {
+    const remaining = body.length - offset - sliceHeight;
+    visible.push(fit(theme.fg("dim", `↓ ${remaining} more line${remaining === 1 ? "" : "s"} · Shift+↓`), width));
+  }
+  return [...header, ...visible, ...footer];
+}
+
 export function renderAsk(state: AskState, config: AskConfig, theme: Theme, width: number, view: AskRenderView): string[] {
   const safeWidth = Math.max(1, width);
   const lines: string[] = [];
@@ -293,7 +317,10 @@ export function renderAsk(state: AskState, config: AskConfig, theme: Theme, widt
     }
     lines.push(divider(theme, safeWidth));
   }
-  return lines.map((line) => fit(line, safeWidth));
+  const fitted = lines.map((line) => fit(line, safeWidth));
+  if (view.mode === "settings" || view.maxHeight === undefined) return fitted;
+  const footerLines = config.behaviour.showFooterHints && view.mode === "main" ? 3 : 1;
+  return viewport(fitted, theme, safeWidth, Math.max(1, view.maxHeight), view.scrollOffset ?? 0, footerLines);
 }
 
 export function formatCallTranscript(args: unknown): string {

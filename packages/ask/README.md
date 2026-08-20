@@ -17,6 +17,8 @@ The package also installs the `ask-user` decision-gate skill.
 
 The rich surface is TUI-only. Print, JSON, and RPC tool calls return a cancelled result containing the pending questions rather than attempting terminal automation.
 
+Long questions stay inside a terminal-height viewport. Use `Shift+↑` and `Shift+↓` to scroll its content while unmodified arrow keys continue to navigate options.
+
 Configuration is stored at `~/.pi/agent/extensions/yteruel31-pi-ask.json`. See [configuration](./docs/configuration.md), the [tool contract](./docs/contract.md), and [remote events](./docs/remote-events.md).
 
 ## Clean-room acknowledgment

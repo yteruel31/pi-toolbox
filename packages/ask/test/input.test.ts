@@ -39,6 +39,17 @@ function component() {
   return { instance, values };
 }
 
+test("shift arrows scroll without moving the selected option", () => {
+  const { instance } = component();
+  instance.handleInput("\x1b[1;2B");
+  assert.equal((instance as any).scrollOffset, 1);
+  assert.equal(instance.state.cursor, 0);
+  instance.handleInput("\x1b[1;2A");
+  assert.equal((instance as any).scrollOffset, 0);
+  assert.equal(instance.state.cursor, 0);
+  instance.dispose();
+});
+
 test("editor submission obeys package bindings and built-in submit is disabled", () => {
   const { instance } = component();
   instance.state.cursor = 1;

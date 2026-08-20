@@ -29,6 +29,24 @@ test("single question rendering uses ASCII tabs and subtle panel dividers", () =
   assert.ok(lines.every((line) => visibleWidth(line) <= 80));
 });
 
+test("long questions use a bounded viewport with sticky navigation and scroll hints", () => {
+  const prompt = Array.from({ length: 30 }, (_, index) => `Question detail ${index + 1}`).join("\n");
+  const form = normalizeAsk({ title: "Long decision", questions: [{ id: "q", label: "Scope", prompt, options: [{ value: "a", label: "A" }] }] }).form!;
+  const state = createAskState(form);
+  const initial = renderAsk(state, DEFAULT_CONFIG, theme, 60, { ...view, maxHeight: 14, scrollOffset: 0 });
+  assert.equal(initial.length, 14);
+  assert.match(initial.join("\n"), /Long decision \(ask_user\)/);
+  assert.match(initial.join("\n"), /↓ .*more lines? · Shift\+↓/);
+  assert.match(initial.at(-2)!, /Shift\+↑\/↓ scroll/);
+  assert.match(initial.at(-1)!, /^─{60}$/);
+
+  const scrolled = renderAsk(state, DEFAULT_CONFIG, theme, 60, { ...view, maxHeight: 14, scrollOffset: 5 });
+  assert.equal(scrolled.length, 14);
+  assert.match(scrolled.join("\n"), /↑ 5 more lines · Shift\+↑/);
+  assert.match(scrolled.join("\n"), /↓ .*more lines? · Shift\+↓/);
+  assert.match(scrolled.join("\n"), /- Scope/);
+});
+
 test("the panel keeps a bottom boundary when footer hints are hidden", () => {
   const form = normalizeAsk({ questions: [{ id: "q", prompt: "Q?", options: [{ value: "a", label: "A" }] }] }).form!;
   const config = structuredClone(DEFAULT_CONFIG);

@@ -69,6 +69,7 @@ export class AskComponent implements Component, Focusable {
   private warning?: string;
   private settingsCursor = 0;
   private settingsMessage?: string;
+  private scrollOffset = 0;
   private resetArmedUntil = 0;
   private unsubscribe: () => void;
   private completed = false;
@@ -192,6 +193,7 @@ export class AskComponent implements Component, Focusable {
   private navigateTabs(delta: number): void {
     if (this.isEditing()) this.closeEditor();
     moveTab(this.state, delta);
+    this.scrollOffset = 0;
     this.warning = undefined;
     this.maybeOpenFreeform();
     this.maybeAutoSubmit();
@@ -360,6 +362,16 @@ export class AskComponent implements Component, Focusable {
   }
 
   private handleMain(data: string): void {
+    if (matchesKey(data, "shift+up")) {
+      this.scrollOffset = Math.max(0, this.scrollOffset - 1);
+      this.refresh();
+      return;
+    }
+    if (matchesKey(data, "shift+down")) {
+      this.scrollOffset += 1;
+      this.refresh();
+      return;
+    }
     if (/^[1-9]$/.test(data)) {
       clearTypeConfirmation(this.state);
       this.numericShortcut(Number(data));
@@ -426,6 +438,8 @@ export class AskComponent implements Component, Focusable {
       settingsCursor: this.settingsCursor,
       ...(this.settingsMessage ? { settingsMessage: this.settingsMessage } : {}),
       resetArmed: Date.now() <= this.resetArmedUntil,
+      scrollOffset: this.scrollOffset,
+      maxHeight: Math.max(8, (this.tui.terminal?.rows ?? 24) - 2),
       configPath: this.store.path,
     };
     return renderAsk(this.state, this.config, this.theme, width, view);
