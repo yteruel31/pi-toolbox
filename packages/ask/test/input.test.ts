@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ConfigStore, DEFAULT_CONFIG, parseConfig } from "../src/config.ts";
 import { normalizeAsk } from "../src/contracts.ts";
+import { HerdrAttention } from "../src/herdr.ts";
 import { RemoteAskRegistry } from "../src/remote.ts";
 import { AskComponent, resolveConfiguredAction, showAskFlow } from "../src/surface.ts";
 
@@ -136,6 +137,7 @@ test("first-use config creation failure notifies immediately with its path", asy
   controller.abort();
   const events = { on: () => () => {}, emit() {} };
   const remote = new RemoteAskRegistry(events);
+  const attention = new HerdrAttention(events as never);
   const form = normalizeAsk({ questions: [{ id: "q", prompt: "Q?", options: [{ value: "a", label: "A" }] }] }).form!;
   const theme = new Proxy({}, { get: (_target, property) => property === "bold" ? (text: string) => text : (_color: string, text: string) => text }) as any;
   const ctx: any = {
@@ -147,7 +149,7 @@ test("first-use config creation failure notifies immediately with its path", asy
       },
     },
   };
-  await showAskFlow(ctx, form, store, { source: "tool", signal: controller.signal, remote });
+  await showAskFlow(ctx, form, store, { source: "tool", signal: controller.signal, remote, attention });
   assert.ok(notifications.some((message) => message.includes(path)));
   remote.dispose();
 });
@@ -166,6 +168,7 @@ test("throwing host UI disposes the component and completes the remote flow once
     emit(name: string, event: unknown) { emitted.push([name, event]); listeners.get(name)?.(event); },
   };
   const remote = new RemoteAskRegistry(events);
+  const attention = new HerdrAttention(events as never);
   const form = normalizeAsk({ questions: [{ id: "q", prompt: "Q?", options: [{ value: "a", label: "A" }] }] }).form!;
   const theme = new Proxy({}, { get: (_target, property) => property === "bold" ? (text: string) => text : (_color: string, text: string) => text }) as any;
   const ctx: any = {
@@ -178,7 +181,7 @@ test("throwing host UI disposes the component and completes the remote flow once
       },
     },
   };
-  await assert.rejects(showAskFlow(ctx, form, store, { source: "tool", remote }), /host failed/);
+  await assert.rejects(showAskFlow(ctx, form, store, { source: "tool", remote, attention }), /host failed/);
   assert.equal((store as any).listeners.size, 0);
   assert.equal(emitted.filter(([name]) => name.endsWith(":completed")).length, 1);
   remote.dispose();
