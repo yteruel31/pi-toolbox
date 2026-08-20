@@ -9,19 +9,33 @@ import { editorBindingHint, formatCallTranscript, formatResultTranscript, render
 const theme = new Proxy({}, { get: (_target, property) => property === "bold" ? (text: string) => text : (_color: string, text: string) => text }) as any;
 const view = { mode: "main" as const, configPath: "/tmp/config.json" };
 
-test("single question rendering contains tabs, descriptions, custom answer, and hints", () => {
+test("single question rendering uses ASCII tabs and subtle panel dividers", () => {
   const form = normalizeAsk({ title: "Decision", questions: [{ id: "q", label: "Scope", prompt: "Choose scope", options: [{ value: "small", label: "Small", description: "Low risk", recommended: true }] }] }).form!;
-  const lines = renderAsk(createAskState(form), DEFAULT_CONFIG, theme, 80, view);
+  const state = createAskState(form);
+  const lines = renderAsk(state, DEFAULT_CONFIG, theme, 80, view);
   const text = lines.join("\n");
   assert.match(text, /Decision \(ask_user\)/);
-  assert.match(text, /□ Scope/);
-  assert.match(text, /✔ Submit/);
+  assert.match(text, /- Scope/);
+  assert.match(text, /\* Submit/);
   assert.match(text, /⇆ tab/);
-  assert.doesNotMatch(lines[0]!, /^─+$/);
-  assert.doesNotMatch(lines.at(-1)!, /^─+$/);
+  assert.match(lines[1]!, /^─{80}$/);
+  assert.match(lines[3]!, /^─{80}$/);
+  assert.match(lines.at(-3)!, /^─{80}$/);
+  assert.match(lines.at(-1)!, /^─{80}$/);
   assert.match(text, /\(recommended\) \| Low risk/);
   assert.match(text, /2\. Type your own/);
+  selectDeclared(state, form.questions[0]!, "small");
+  assert.match(renderAsk(state, DEFAULT_CONFIG, theme, 80, view).join("\n"), /\+ Scope/);
   assert.ok(lines.every((line) => visibleWidth(line) <= 80));
+});
+
+test("the panel keeps a bottom boundary when footer hints are hidden", () => {
+  const form = normalizeAsk({ questions: [{ id: "q", prompt: "Q?", options: [{ value: "a", label: "A" }] }] }).form!;
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.behaviour.showFooterHints = false;
+  const lines = renderAsk(createAskState(form), config, theme, 40, view);
+  assert.match(lines.at(-1)!, /^─{40}$/);
+  assert.doesNotMatch(lines.join("\n"), /⇆ tab/);
 });
 
 test("preview rendering uses a complete split pane on wide terminals", () => {

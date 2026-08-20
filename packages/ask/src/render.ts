@@ -70,17 +70,21 @@ function mainFooter(state: AskState, config: AskConfig): string {
   return pieces.join(" · ");
 }
 
+function divider(theme: Theme, width: number): string {
+  return theme.fg("borderMuted", "─".repeat(Math.max(1, width)));
+}
+
 function renderTabs(state: AskState, theme: Theme, width: number): string[] {
   const parts = [theme.fg("dim", "←")];
   for (const [index, question] of state.form.questions.entries()) {
     const answered = isAnswered(state, question);
-    const label = ` ${answered ? "⊠" : "□"} ${question.label} `;
+    const label = ` ${answered ? "+" : "-"} ${question.label} `;
     parts.push(index === state.tab
       ? theme.bg("selectedBg", theme.fg("text", label))
       : theme.fg(answered ? "success" : "muted", label));
   }
   const review = state.tab === state.form.questions.length;
-  const submit = " ✔ Submit ";
+  const submit = " * Submit ";
   parts.push(review ? theme.bg("selectedBg", theme.fg("text", submit)) : theme.fg("success", submit));
   parts.push(theme.fg("dim", "→"));
   const lines: string[] = [];
@@ -275,13 +279,19 @@ export function renderAsk(state: AskState, config: AskConfig, theme: Theme, widt
   if (view.mode === "settings") lines.push(...renderSettings(config, theme, safeWidth, view));
   else {
     const header = state.form.title ? `${state.form.title} (ask_user)` : "ask_user";
-    lines.push(theme.fg("accent", theme.bold(header)), "");
-    lines.push(...renderTabs(state, theme, safeWidth), "");
+    lines.push(theme.fg("accent", theme.bold(header)));
+    lines.push(divider(theme, safeWidth));
+    lines.push(...renderTabs(state, theme, safeWidth));
+    lines.push(divider(theme, safeWidth));
     lines.push(...(state.tab === state.form.questions.length
       ? renderReview(state, theme, safeWidth)
       : renderQuestion(state, theme, safeWidth, view)));
     if (view.warning) lines.push("", theme.fg("warning", view.warning));
-    if (config.behaviour.showFooterHints && view.mode === "main") lines.push("", theme.fg("dim", mainFooter(state, config)));
+    if (config.behaviour.showFooterHints && view.mode === "main") {
+      lines.push(divider(theme, safeWidth));
+      lines.push(theme.fg("dim", mainFooter(state, config)));
+    }
+    lines.push(divider(theme, safeWidth));
   }
   return lines.map((line) => fit(line, safeWidth));
 }
