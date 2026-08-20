@@ -32,6 +32,7 @@
       "./packages/claude-marketplace/src/index.ts",
       "./packages/claude-context/src/index.ts",
       "./packages/claude-rules/src/index.ts",
+      "./packages/ask/src/index.ts",
       "./packages/pi-learning/src/index.ts",
       "./packages/session-title/src/index.ts",
       "./packages/mcp/src/index.ts",
@@ -39,6 +40,9 @@
       "./packages/zed-context/src/index.ts",
       "./packages/ui-customization/src/index.ts",
       "./packages/unslop/src/index.ts"
+    ],
+    "skills": [
+      "./packages/ask/skills"
     ],
     "themes": [
       "./themes/*.json"
