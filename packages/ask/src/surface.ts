@@ -31,6 +31,7 @@ import {
   toggleCustom,
   type AskState,
 } from "./domain.ts";
+import { HerdrAttention, herdrWaitingLabel } from "./herdr.ts";
 import { notifyWaiting } from "./notifications.ts";
 import { editorBindingHint, inlineEditorWidth, SETTINGS_ROWS, renderAsk, type AskRenderView } from "./render.ts";
 import type { RemoteAskRegistry } from "./remote.ts";
@@ -451,6 +452,7 @@ export interface ShowAskOptions {
   toolCallId?: string;
   signal?: AbortSignal;
   remote: RemoteAskRegistry;
+  attention: HerdrAttention;
 }
 
 export async function showAskFlow(
@@ -464,6 +466,7 @@ export async function showAskFlow(
   let abortListener: (() => void) | undefined;
   let component: AskComponent | undefined;
   let result: AskResult | undefined;
+  const unblockHerdr = options.attention.block(herdrWaitingLabel(form.title));
   try {
     result = await ctx.ui.custom<AskResult>((tui, theme, _keybindings, done) => {
       component = new AskComponent(tui, theme, form, ctx.cwd, store, done, (message, type) => ctx.ui.notify(message, type));
@@ -482,6 +485,7 @@ export async function showAskFlow(
     });
     return result;
   } finally {
+    unblockHerdr();
     abortListener?.();
     component?.dispose();
     if (remoteFlowId) options.remote.complete(remoteFlowId, result ?? cancelledResult(form, "ask_user UI closed unexpectedly."));

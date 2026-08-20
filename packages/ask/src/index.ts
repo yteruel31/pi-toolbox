@@ -16,6 +16,7 @@ import {
 } from "./contracts.ts";
 import { cancelledResult, formatAgentResultContent } from "./domain.ts";
 import { extractAskForm, latestCompletedAssistant } from "./extraction.ts";
+import { HerdrAttention } from "./herdr.ts";
 import { DISMISSED_ENTRY, findPendingAsk, latestPayload, makePayload, PAYLOAD_ENTRY } from "./persistence.ts";
 import { formatCallTranscript, formatResultTranscript } from "./render.ts";
 import { RemoteAskRegistry } from "./remote.ts";
@@ -57,6 +58,7 @@ export function recoverAskForm(persisted: unknown | undefined, original: unknown
 export default function askExtension(pi: ExtensionAPI): void {
   const store = new ConfigStore();
   const remote = new RemoteAskRegistry(pi.events);
+  const attention = new HerdrAttention(pi.events);
 
   async function openCommandForm(
     ctx: ExtensionCommandContext | ExtensionContext,
@@ -72,7 +74,7 @@ export default function askExtension(pi: ExtensionAPI): void {
       return undefined;
     }
     pi.appendEntry(PAYLOAD_ENTRY, makePayload(source, formInput));
-    return showAskFlow(ctx, normalized.form, store, { source, remote });
+    return showAskFlow(ctx, normalized.form, store, { source, remote, attention });
   }
 
   async function replay(ctx: ExtensionCommandContext, sources: AskSource[], source: AskSource): Promise<void> {
@@ -105,7 +107,7 @@ export default function askExtension(pi: ExtensionAPI): void {
       if (!normalized.form) return invalidAskResult(params, normalized.issues);
       pi.appendEntry(PAYLOAD_ENTRY, makePayload("tool", params, toolCallId));
       if (ctx.mode !== "tui") return nonTuiResult(normalized.form);
-      return showAskFlow(ctx, normalized.form, store, { source: "tool", toolCallId, signal, remote });
+      return showAskFlow(ctx, normalized.form, store, { source: "tool", toolCallId, signal, remote, attention });
     },
     renderCall(args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold(formatCallTranscript(args))), 0, 0);
@@ -193,6 +195,7 @@ export default function askExtension(pi: ExtensionAPI): void {
           source: "ask:resume",
           toolCallId: pending.toolCallId,
           remote,
+          attention,
         });
       } catch {
         result = cancelledResult(recovered.form, "Interrupted ask_user recovery closed.");
@@ -202,7 +205,10 @@ export default function askExtension(pi: ExtensionAPI): void {
     })());
   });
 
-  pi.on("session_shutdown", () => remote.dispose());
+  pi.on("session_shutdown", () => {
+    attention.clear();
+    remote.dispose();
+  });
 }
 
 export {

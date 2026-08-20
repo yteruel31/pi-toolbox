@@ -19,6 +19,8 @@ The rich surface is TUI-only. Print, JSON, and RPC tool calls return a cancelled
 
 Long questions stay inside a terminal-height viewport. Use `Shift+↑` and `Shift+↓` to scroll its content while unmodified arrow keys continue to navigate options.
 
+When Pi runs inside Herdr with its Pi integration installed, an open clarification flow marks the pane as blocked until the flow closes. The package emits Herdr's standard `herdr:blocked` events and remains a no-op when that integration is absent.
+
 Configuration is stored at `~/.pi/agent/extensions/yteruel31-pi-ask.json`. See [configuration](./docs/configuration.md), the [tool contract](./docs/contract.md), and [remote events](./docs/remote-events.md).
 
 ## Clean-room acknowledgment
