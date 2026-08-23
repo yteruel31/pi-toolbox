@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerMemoryFeature } from "./memory/feature.js";
 import { createContextRuntimeController } from "./runtime/context-runtime.js";
+import { registerSessionFeature } from "./sessions/feature.js";
 
 export default function piContextExtension(pi: ExtensionAPI): void {
   const controller = createContextRuntimeController();
@@ -8,9 +9,13 @@ export default function piContextExtension(pi: ExtensionAPI): void {
   if (
     typeof pi.registerTool === "function" &&
     typeof pi.registerCommand === "function"
-  )
+  ) {
     registerMemoryFeature(pi, controller);
-  else {
+    // Full Pi hosts expose sendMessage; lifecycle-only compatibility hosts may not.
+    if (typeof pi.sendMessage === "function") {
+      registerSessionFeature(pi, controller);
+    }
+  } else {
     pi.on("session_start", async (_event, ctx) => {
       try {
         await controller.start(ctx);

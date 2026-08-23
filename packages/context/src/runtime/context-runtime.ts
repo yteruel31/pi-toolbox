@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Effect, Fiber, Layer, ManagedRuntime } from "effect";
 
@@ -6,12 +7,14 @@ import { contextPaths } from "../config/paths.js";
 import type { ContextConfig } from "../config/schema.js";
 import { memoryStoreLayer } from "../memory/store.js";
 import { sessionIndexLayer } from "../sessions/index.js";
+import { makeSessionSyncLayer } from "../sessions/sync.js";
 import { ContextStorageError, RuntimeInactiveError } from "./errors.js";
 import { makePiModelBridge } from "./pi-model.js";
 import {
   MemoryStoreService,
   ModelWorkGate,
   SessionIndexService,
+  SessionSyncService,
   PiModelBridge,
   SessionConfig,
   SessionGeneration,
@@ -25,6 +28,7 @@ type SessionServices =
   | PiModelBridge
   | MemoryStoreService
   | SessionIndexService
+  | SessionSyncService
   | ModelWorkGate;
 type Runtime = ManagedRuntime.ManagedRuntime<
   SessionServices,
@@ -121,14 +125,17 @@ export function createContextRuntimeController(
                     )
                 )
               );
+        const paths = contextPaths(options.agentDir);
+        const agentDir = options.agentDir ?? path.dirname(paths.root);
+        const base = Layer.mergeAll(
+          sessionLayer(config, id, isCurrent, makePiModelBridge(ctx, config)),
+          memoryStoreLayer(paths.memoryDb),
+          sessionIndexLayer(paths.sessionsDb, agentDir),
+          modelWorkGateLayer,
+          resources
+        );
         const runtime = ManagedRuntime.make(
-          Layer.mergeAll(
-            sessionLayer(config, id, isCurrent, makePiModelBridge(ctx, config)),
-            memoryStoreLayer(contextPaths(options.agentDir).memoryDb),
-            sessionIndexLayer(contextPaths(options.agentDir).sessionsDb),
-            modelWorkGateLayer,
-            resources
-          )
+          Layer.merge(base, makeSessionSyncLayer().pipe(Layer.provide(base)))
         );
         state.runtime = runtime;
         active = state;

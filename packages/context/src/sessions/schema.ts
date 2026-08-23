@@ -4,6 +4,10 @@ export const SESSION_MAX_BLOCK_CHARS = 16_000;
 export const SESSION_MAX_INDEX_CHARS = 120_000;
 export const SESSION_MAX_TITLE_CHARS = 500;
 export const SESSION_PARSE_YIELD_LINES = 500;
+export const SESSION_READ_MAX_BYTES = 50 * 1024;
+export const SESSION_READ_MAX_LINES = 2_000;
+export const SESSION_PRIMER_MAX_BYTES = 1_536;
+export const SESSION_PRIMER_CUSTOM_TYPE = "context.session-primer";
 
 export interface ParsedSession {
   readonly id: string;
@@ -46,6 +50,12 @@ export type SessionResolution =
 export type SessionSearchResult =
   | { readonly status: "available"; readonly results: readonly (IndexedSession & { readonly rank: number })[] }
   | { readonly status: "unavailable"; readonly diagnostic: string };
+
+export interface SessionReadResult {
+  readonly status: "ok" | "not_found" | "ambiguous" | "denied" | "invalid" | "error";
+  readonly text: string;
+  readonly details: Readonly<Record<string, unknown>>;
+}
 
 export interface SessionSyncResult {
   readonly added: number;

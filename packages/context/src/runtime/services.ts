@@ -2,6 +2,7 @@ import { Context, Layer, Semaphore } from "effect";
 
 import type { MemoryStore } from "../memory/store.js";
 import type { SessionIndex } from "../sessions/index.js";
+import type { SessionSync } from "../sessions/sync.js";
 
 import type { ContextConfig } from "../config/schema.js";
 import type { PiModelBridgeApi } from "./pi-model.js";
@@ -33,6 +34,11 @@ export class SessionIndexService extends Context.Service<
   SessionIndexService,
   SessionIndex
 >()("@yteruel31/pi-context/runtime/SessionIndex") {}
+
+export class SessionSyncService extends Context.Service<
+  SessionSyncService,
+  SessionSync
+>()("@yteruel31/pi-context/runtime/SessionSync") {}
 
 export class ModelWorkGate extends Context.Service<
   ModelWorkGate,
