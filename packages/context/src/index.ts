@@ -1,6 +1,29 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-/** Pi context extension entry point. Public tools and commands are added in later releases. */
-export default function piContextExtension(_pi: ExtensionAPI): void {
-  // Intentionally empty: this scaffold only establishes the package boundary.
+import { createContextRuntimeController } from "./runtime/context-runtime.js";
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+/** Session lifecycle only; public context tools and commands are added by later units. */
+export default function piContextExtension(pi: ExtensionAPI): void {
+  const controller = createContextRuntimeController();
+
+  pi.on("session_start", async (_event, ctx) => {
+    try {
+      await controller.start(ctx);
+    } catch (error) {
+      ctx.ui.notify(`Context runtime did not start: ${errorMessage(error)}`, "error");
+    }
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    try {
+      await controller.shutdown();
+    } catch (error) {
+      ctx.ui.notify(`Context runtime shutdown failed: ${errorMessage(error)}`, "error");
+    }
+  });
 }
