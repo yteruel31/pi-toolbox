@@ -22,10 +22,27 @@ describe("context config", () => {
     await expect(Effect.runPromise(loadContextConfig(paths.config))).resolves.toEqual(DEFAULT_CONTEXT_CONFIG);
   });
 
-  it("accepts role routes", async () => {
+  it("accepts role routes while defaulting knowledge for a clean model-only config", async () => {
     const paths = contextPaths(await fixture());
     await writeFile(paths.config, JSON.stringify({ version: 1, models: { observer: { provider: "fake", model: "model", thinkingLevel: "high" } } }));
-    await expect(Effect.runPromise(loadContextConfig(paths.config))).resolves.toMatchObject({ models: { observer: { provider: "fake" } } });
+    await expect(Effect.runPromise(loadContextConfig(paths.config))).resolves.toMatchObject({ models: { observer: { provider: "fake" } }, knowledge: { roots: [], extensions: ["md", "mdx", "txt"] } });
+  });
+
+  it("accepts explicit bounded knowledge settings", async () => {
+    const paths = contextPaths(await fixture());
+    const knowledge = { roots: ["/tmp/notes"], extensions: ["md"], excludes: ["build"], limits: { maxRoots: 2, maxFiles: 20, maxDepth: 4, maxFileBytes: 4096, maxTotalBytes: 8192 } };
+    await writeFile(paths.config, JSON.stringify({ version: 1, models: {}, knowledge }));
+    await expect(Effect.runPromise(loadContextConfig(paths.config))).resolves.toMatchObject({ knowledge });
+  });
+
+  it.each([
+    { provider: "remote" }, { embedder: "x" }, { vector: true },
+    { roots: [], extensions: ["md"], excludes: [], limits: { maxRoots: 0, maxFiles: 1, maxDepth: 1, maxFileBytes: 1, maxTotalBytes: 1 } },
+    { roots: [], extensions: ["md"], excludes: [], limits: { maxRoots: 65, maxFiles: 1, maxDepth: 1, maxFileBytes: 1, maxTotalBytes: 1 } },
+  ])("rejects unknown knowledge fields and unsafe caps", async (knowledge) => {
+    const paths = contextPaths(await fixture());
+    await writeFile(paths.config, JSON.stringify({ version: 1, models: {}, knowledge }));
+    await expect(Effect.runPromise(loadContextConfig(paths.config))).rejects.toMatchObject({ _tag: "ContextConfigError" });
   });
 
   it.each(["{", JSON.stringify({ version: 2, models: {} }), JSON.stringify({ version: 1, models: {}, legacy: true })])("rejects malformed or unsupported config", async (contents) => {

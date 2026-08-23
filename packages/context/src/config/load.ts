@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { Effect, Schema } from "effect";
 
 import { ContextConfigError } from "../runtime/errors.js";
-import { ContextConfigSchema, DEFAULT_CONTEXT_CONFIG, type ContextConfig } from "./schema.js";
+import { ContextConfigSchema, DEFAULT_CONTEXT_CONFIG, DEFAULT_KNOWLEDGE_CONFIG, type ContextConfig } from "./schema.js";
 
 const decodeConfig = Schema.decodeUnknownEffect(ContextConfigSchema, { onExcessProperty: "error" });
 
@@ -26,7 +26,11 @@ export const loadContextConfig = Effect.fn("loadContextConfig")(function*(config
     return yield* new ContextConfigError({ path: configPath, message: `Context config at ${configPath} is not valid JSON`, cause });
   }
 
-  return yield* decodeConfig(input).pipe(
+  const normalized = typeof input === "object" && input !== null && !("knowledge" in input)
+    ? { ...input, knowledge: DEFAULT_KNOWLEDGE_CONFIG }
+    : input;
+
+  return yield* decodeConfig(normalized).pipe(
     Effect.mapError((cause) => new ContextConfigError({
       path: configPath,
       message: `Context config at ${configPath} is malformed or uses an unsupported version; expected version 1: ${String(cause)}`,

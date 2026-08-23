@@ -5,12 +5,14 @@ import { Effect, Fiber, Layer, ManagedRuntime } from "effect";
 import { loadContextConfig } from "../config/load.js";
 import { contextPaths } from "../config/paths.js";
 import type { ContextConfig } from "../config/schema.js";
+import { knowledgeIndexLayer } from "../knowledge/index.js";
 import { memoryStoreLayer } from "../memory/store.js";
 import { sessionIndexLayer } from "../sessions/index.js";
 import { makeSessionSyncLayer } from "../sessions/sync.js";
 import { ContextStorageError, RuntimeInactiveError } from "./errors.js";
 import { makePiModelBridge } from "./pi-model.js";
 import {
+  KnowledgeIndexService,
   MemoryStoreService,
   ModelWorkGate,
   SessionIndexService,
@@ -27,6 +29,7 @@ type SessionServices =
   | SessionGeneration
   | PiModelBridge
   | MemoryStoreService
+  | KnowledgeIndexService
   | SessionIndexService
   | SessionSyncService
   | ModelWorkGate;
@@ -130,6 +133,7 @@ export function createContextRuntimeController(
         const base = Layer.mergeAll(
           sessionLayer(config, id, isCurrent, makePiModelBridge(ctx, config)),
           memoryStoreLayer(paths.memoryDb),
+          knowledgeIndexLayer(paths.knowledgeDb, config.knowledge),
           sessionIndexLayer(paths.sessionsDb, agentDir),
           modelWorkGateLayer,
           resources
