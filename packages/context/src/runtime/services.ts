@@ -1,25 +1,52 @@
-import { Context, Layer } from "effect";
+import { Context, Layer, Semaphore } from "effect";
+
+import type { MemoryStore } from "../memory/store.js";
 
 import type { ContextConfig } from "../config/schema.js";
 import type { PiModelBridgeApi } from "./pi-model.js";
 
-export class SessionConfig extends Context.Service<SessionConfig, ContextConfig>()(
-  "@yteruel31/pi-context/runtime/SessionConfig",
-) {}
+export class SessionConfig extends Context.Service<
+  SessionConfig,
+  ContextConfig
+>()("@yteruel31/pi-context/runtime/SessionConfig") {}
 
-export class SessionGeneration extends Context.Service<SessionGeneration, {
-  readonly id: number;
-  readonly isCurrent: () => boolean;
-}>()("@yteruel31/pi-context/runtime/SessionGeneration") {}
+export class SessionGeneration extends Context.Service<
+  SessionGeneration,
+  {
+    readonly id: number;
+    readonly isCurrent: () => boolean;
+  }
+>()("@yteruel31/pi-context/runtime/SessionGeneration") {}
 
-export class PiModelBridge extends Context.Service<PiModelBridge, PiModelBridgeApi>()(
-  "@yteruel31/pi-context/runtime/PiModelBridge",
-) {}
+export class PiModelBridge extends Context.Service<
+  PiModelBridge,
+  PiModelBridgeApi
+>()("@yteruel31/pi-context/runtime/PiModelBridge") {}
 
-export function sessionLayer(config: ContextConfig, generation: number, isCurrent: () => boolean, bridge: PiModelBridgeApi) {
+export class MemoryStoreService extends Context.Service<
+  MemoryStoreService,
+  MemoryStore
+>()("@yteruel31/pi-context/runtime/MemoryStore") {}
+
+export class ModelWorkGate extends Context.Service<
+  ModelWorkGate,
+  Semaphore.Semaphore
+>()("@yteruel31/pi-context/runtime/ModelWorkGate") {}
+
+export const modelWorkGateLayer = Layer.effect(
+  ModelWorkGate,
+  Semaphore.make(1)
+);
+
+export function sessionLayer(
+  config: ContextConfig,
+  generation: number,
+  isCurrent: () => boolean,
+  bridge: PiModelBridgeApi
+) {
   return Layer.mergeAll(
     Layer.succeed(SessionConfig, config),
     Layer.succeed(SessionGeneration, { id: generation, isCurrent }),
-    Layer.succeed(PiModelBridge, bridge),
+    Layer.succeed(PiModelBridge, bridge)
   );
 }
