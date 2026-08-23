@@ -5,11 +5,13 @@ import { loadContextConfig } from "../config/load.js";
 import { contextPaths } from "../config/paths.js";
 import type { ContextConfig } from "../config/schema.js";
 import { memoryStoreLayer } from "../memory/store.js";
+import { sessionIndexLayer } from "../sessions/index.js";
 import { ContextStorageError, RuntimeInactiveError } from "./errors.js";
 import { makePiModelBridge } from "./pi-model.js";
 import {
   MemoryStoreService,
   ModelWorkGate,
+  SessionIndexService,
   PiModelBridge,
   SessionConfig,
   SessionGeneration,
@@ -22,6 +24,7 @@ type SessionServices =
   | SessionGeneration
   | PiModelBridge
   | MemoryStoreService
+  | SessionIndexService
   | ModelWorkGate;
 type Runtime = ManagedRuntime.ManagedRuntime<
   SessionServices,
@@ -122,6 +125,7 @@ export function createContextRuntimeController(
           Layer.mergeAll(
             sessionLayer(config, id, isCurrent, makePiModelBridge(ctx, config)),
             memoryStoreLayer(contextPaths(options.agentDir).memoryDb),
+            sessionIndexLayer(contextPaths(options.agentDir).sessionsDb),
             modelWorkGateLayer,
             resources
           )
