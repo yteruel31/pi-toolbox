@@ -21,3 +21,17 @@ export class RuntimeInactiveError extends Schema.TaggedError<RuntimeInactiveErro
   generation: Schema.Number,
   message: Schema.String,
 }) {}
+
+export class ContextStorageError extends Schema.TaggedError<ContextStorageError>()("ContextStorageError", {
+  path: Schema.String,
+  operation: Schema.String,
+  message: Schema.String,
+  cause: Schema.optionalKey(Schema.Unknown),
+}) {}
+
+export class ContextPathError extends Schema.TaggedError<ContextPathError>()("ContextPathError", {
+  root: Schema.String,
+  candidate: Schema.String,
+  message: Schema.String,
+  cause: Schema.optionalKey(Schema.Unknown),
+}) {}
