@@ -33,6 +33,7 @@
       "./packages/claude-context/src/index.ts",
       "./packages/claude-rules/src/index.ts",
       "./packages/ask/src/index.ts",
+      "./packages/context/src/index.ts",
       "./packages/pi-learning/src/index.ts",
       "./packages/lsp/src/index.ts",
       "./packages/session-title/src/index.ts",
@@ -86,7 +87,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.3.216",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "effect": "^4.0.0-beta.99",
+    "effect": "4.0.0-beta.107",
     "tsx": "^4.21.0",
     "zod": "^4.4.3"
   }
