@@ -26,6 +26,8 @@ export interface AgentDefinition {
   systemPrompt: string;
   /** Optional exact tool allowlist from the agent frontmatter. */
   tools?: string[];
+  /** Skill names whose full instructions are preloaded before the task. */
+  skills?: string[];
   /** Optional frontmatter defaults, below saved routing in precedence. */
   defaults: {
     harness?: HarnessKind;

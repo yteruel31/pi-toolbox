@@ -67,12 +67,17 @@ harness: pi
 model: anthropic/claude-sonnet-4-5
 thinking: high
 tools: read, grep, find, ls
+skills:
+  - code-review
+  - security
 ---
 
 You are a strict reviewer. Return concrete findings with file references.
 ```
 
 The optional `tools` field is a comma-separated exact allowlist. Pi profiles use Pi tool names such as `read`, `grep`, `find`, and `ls`; Claude profiles use Claude Code names such as `Read`, `Grep`, and `Glob`. The selected harness exposes only the listed tools, while the Pi harness still applies its stricter built-in exclusions for orchestration and interactive-question tools. Invalid, empty, duplicate, or oversized tool lists invalidate that agent definition rather than silently broadening access.
+
+The optional `skills` field follows Claude Code's subagent semantics: use a YAML block or flow sequence of skill names, and the full instructions for each listed skill are injected into the child context before its task. Skills resolve through Pi's enabled user, project, settings, and package skill catalog for the child's working directory. Missing skills, unreadable files, and skills with `disable-model-invocation: true` are skipped instead of blocking the run; warnings appear in that run's activity and transcript. Skill hydration happens inside the managed background run, so `subagent_spawn` still returns immediately. Selected preloads are bounded to 32 names, 128 KiB per skill, and 256 KiB total; oversized skills are skipped whole rather than truncated. Pi children can still discover other enabled skills normally; Claude children keep the package's existing `settingSources: []` isolation, so only the explicitly preloaded Pi skills are injected from local configuration.
 
 User definitions replace package definitions; trusted project definitions replace both. Scans are bounded and reject symlink traversal or package paths outside their real package root.
 

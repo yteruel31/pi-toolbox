@@ -247,6 +247,8 @@ describe("Pi extension composition", () => {
       "harness: pi",
       "thinking: low",
       "tools: read, grep, find, ls",
+      "skills:",
+      "  - code-review",
       "---",
       "Be exact and cite files.",
     ].join("\n"));
@@ -262,11 +264,17 @@ describe("Pi extension composition", () => {
     });
     const runtime = fakePi();
     const piHarness = new ControlledHarness("pi");
+    const claudeHarness = new ControlledHarness("claude");
     createPiSubagentsExtension({
       createPiHarness: () => piHarness,
-      createClaudeHarness: () => new ControlledHarness("claude"),
+      createClaudeHarness: () => claudeHarness,
       createDiscovery: async () => discovery,
       createRoutingStore: () => routing,
+      preloadSkills: async (input) => ({
+        content: `<skill name="${input.names[0]}">Use the checklist.</skill>`,
+        loaded: [...input.names],
+        warnings: [],
+      }),
     })(runtime.pi);
     const ctx = fakeContext(cwd, runtime.entries);
     await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
@@ -274,14 +282,36 @@ describe("Pi extension composition", () => {
     const catalog = await execute(runtime, "subagent_agents", {}, ctx);
     expect((catalog.content[0] as { text: string }).text).toContain("reviewer");
     expect((catalog.content[0] as { text: string }).text).toContain("fake/routed");
+    expect((catalog.content[0] as { text: string }).text).toContain("code-review");
 
-    await execute(runtime, "subagent_spawn", {
+    const spawned = await execute(runtime, "subagent_spawn", {
       prompt: "review now",
       agent: "reviewer",
     }, ctx);
+    expect(piHarness.requests).toEqual([]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(piHarness.requests[0]).toMatchObject({
       prompt: "review now",
-      systemPrompt: "Be exact and cite files.",
+      systemPrompt:
+        "Be exact and cite files.\n\n<skill name=\"code-review\">Use the checklist.</skill>",
+      tools: ["read", "grep", "find", "ls"],
+      model: "fake/routed",
+      thinkingLevel: "high",
+    });
+    expect(spawned.details).toMatchObject({
+      skills: { requested: ["code-review"] },
+    });
+
+    await execute(runtime, "subagent_spawn", {
+      prompt: "review with claude",
+      agent: "reviewer",
+      harness: "claude",
+    }, ctx);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(claudeHarness.requests[0]).toMatchObject({
+      prompt: "review with claude",
+      systemPrompt:
+        "Be exact and cite files.\n\n<skill name=\"code-review\">Use the checklist.</skill>",
       tools: ["read", "grep", "find", "ls"],
       model: "fake/routed",
       thinkingLevel: "high",
