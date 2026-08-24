@@ -12,8 +12,17 @@ import {
 import { Type } from "typebox";
 
 import { FileAgentDiscovery } from "./agents/discovery.js";
+import { MAX_AGENT_SKILLS } from "./agents/limits.js";
 import { DefaultRouteResolver } from "./agents/route-resolver.js";
 import { FileRoutingStore } from "./agents/routing-store.js";
+import {
+  appendPreloadedSkills,
+  preloadAgentSkills,
+} from "./agents/skill-preloader.js";
+import type {
+  AgentSkillPreloadInput,
+  AgentSkillPreloadResult,
+} from "./agents/skill-preloader.js";
 import type {
   AgentCatalog,
   AgentDefinition,
@@ -68,6 +77,7 @@ export interface ExtensionDependencies {
   createClaudeHarness?(options: ClaudeHarnessOptions): SubagentHarness;
   createDiscovery?(ctx: ExtensionContext): Promise<FileAgentDiscovery>;
   createRoutingStore?(ctx: ExtensionContext): FileRoutingStore;
+  preloadSkills?(input: AgentSkillPreloadInput): Promise<AgentSkillPreloadResult>;
 }
 
 /** Public dependency-injection seam for offline extension integration tests. */
@@ -239,9 +249,22 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         },
         dependencies,
       );
-      const harness = resolution.route.harness === "claude"
+      const baseHarness = resolution.route.harness === "claude"
         ? runtime.claudeHarness
         : runtime.piHarness;
+      const requestedSkills = resolution.agent?.skills ?? [];
+      const harness = requestedSkills.length > 0
+        ? withSkillPreloading(
+          baseHarness,
+          {
+            names: requestedSkills,
+            cwd: workingDir,
+            projectTrusted: ctx.isProjectTrusted(),
+            agentDir: getAgentDir(),
+          },
+          dependencies.preloadSkills ?? preloadAgentSkills,
+        )
+        : baseHarness;
       const snapshot = runtime.manager.spawn({
         prompt: params.prompt,
         title: params.name,
@@ -255,7 +278,11 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       updateStatus();
       return textResult(
         `Started ${snapshot.id} (${snapshot.harness}, ${snapshot.status})${snapshot.title ? `: ${snapshot.title}` : ""}.`,
-        { snapshot, route: resolution.route },
+        {
+          snapshot,
+          route: resolution.route,
+          skills: { requested: requestedSkills },
+        },
       );
     },
   });
@@ -272,6 +299,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         name: agent.name,
         description: agent.description,
         tools: agent.tools,
+        skills: agent.skills,
         source: agent.source.scope,
         package: agent.source.packageName,
         harness: routes.get(agent.name)?.harness,
@@ -504,6 +532,69 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         updateStatus();
       }
     },
+  });
+}
+
+function withSkillPreloading(
+  harness: SubagentHarness,
+  input: AgentSkillPreloadInput,
+  preloader: (input: AgentSkillPreloadInput) => Promise<AgentSkillPreloadResult>,
+): SubagentHarness {
+  return {
+    kind: harness.kind,
+    supportsActiveMessages: harness.supportsActiveMessages,
+    async run(request) {
+      // Start discovery after the spawn tool has returned its background run id.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (request.signal.aborted) return harness.run(request);
+
+      const preload = await preloadUntilAbort(
+        () => preloader({ ...input, signal: request.signal }),
+        request.signal,
+      );
+      if (!preload) return harness.run(request);
+      if (preload.loaded.length > 0) {
+        const text = truncateText(
+          `Preloaded skills: ${preload.loaded.join(", ")}`,
+          400,
+        );
+        request.reportProgress(text);
+        request.reportTranscript({ kind: "status", text });
+      }
+      for (const warning of preload.warnings.slice(0, MAX_AGENT_SKILLS)) {
+        const text = truncateText(`Skill preload warning: ${warning}`, 400);
+        request.reportProgress(text);
+        request.reportTranscript({ kind: "status", text });
+      }
+
+      return harness.run({
+        ...request,
+        systemPrompt: appendPreloadedSkills(request.systemPrompt, preload.content),
+      });
+    },
+  };
+}
+
+function preloadUntilAbort(
+  load: () => Promise<AgentSkillPreloadResult>,
+  signal: AbortSignal,
+): Promise<AgentSkillPreloadResult | undefined> {
+  const pending = Promise.resolve().then(load);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (action: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      action();
+    };
+    const onAbort = (): void => finish(() => resolve(undefined));
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.then(
+      (result) => finish(() => resolve(result)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+    if (signal.aborted) onAbort();
   });
 }
 

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import {
   FileAgentDiscovery,
   MAX_AGENT_FILE_BYTES,
+  MAX_AGENT_SKILL_NAME_CHARS,
+  MAX_AGENT_SKILLS,
   MAX_AGENT_TOOL_NAME_CHARS,
   MAX_AGENT_TOOLS,
   MAX_MANIFEST_AGENT_DIRS,
@@ -97,7 +99,7 @@ describe("FileAgentDiscovery", () => {
       "reviewer",
       "project",
       "Project prompt.",
-      "harness: claude\nmodel: opus\nthinking: high\ntools: Read, Grep, Glob\n",
+      "harness: claude\nmodel: opus\nthinking: high\ntools: Read, Grep, Glob\nskills:\n  - code-review\n  - security:review\n",
     );
 
     const discovery = new FileAgentDiscovery({
@@ -122,6 +124,7 @@ describe("FileAgentDiscovery", () => {
       description: "project",
       systemPrompt: "Project prompt.",
       tools: ["Read", "Grep", "Glob"],
+      skills: ["code-review", "security:review"],
       defaults: { harness: "claude", model: "opus", thinking: "high" },
       source: { scope: "project" },
     });
@@ -233,6 +236,41 @@ describe("FileAgentDiscovery", () => {
     expect(result.warnings.at(-1)).toMatch(/suppressed/);
   });
 
+  it("accepts block and flow sequences for Claude-compatible skills frontmatter", async () => {
+    const root = await workspace();
+    const agentDir = join(root, "agent-home");
+    const base = join(agentDir, "agents");
+    await agentFile(
+      join(base, "block.md"),
+      "block",
+      "block list",
+      "body",
+      "skills:\n- code-review # shared checklist\n- plugin:security\n",
+    );
+    await agentFile(
+      join(base, "flow.md"),
+      "flow",
+      "flow list",
+      "body",
+      "skills: [\n  code-review,\n  'apps/web:deploy',\n]\n",
+    );
+
+    const result = await new FileAgentDiscovery({ agentDir }).discover({
+      cwd: join(root, "project"),
+      projectTrusted: false,
+    });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.agents.find((agent) => agent.name === "block")?.skills).toEqual([
+      "code-review",
+      "plugin:security",
+    ]);
+    expect(result.agents.find((agent) => agent.name === "flow")?.skills).toEqual([
+      "code-review",
+      "apps/web:deploy",
+    ]);
+  });
+
   it("accepts tool allowlists exactly at the count and name-length limits", async () => {
     const root = await workspace();
     const agentDir = join(root, "agent-home");
@@ -273,6 +311,14 @@ describe("FileAgentDiscovery", () => {
     const base = join(agentDir, "agents");
     await agentFile(join(base, "valid.md"), "valid", "valid");
     await writeFile(join(base, "missing.md"), "---\nname: missing\n---\nbody");
+    await writeFile(
+      join(base, "array-name.md"),
+      "---\nname: [array-name]\ndescription: bad\n---\nbody",
+    );
+    await writeFile(
+      join(base, "malformed-yaml.md"),
+      "---\nname: malformed-yaml\ndescription: bad\nskills: [unterminated\n---\nbody",
+    );
     await agentFile(join(base, "bad-name.md"), "../bad", "bad");
     await agentFile(join(base, "bad-harness.md"), "bad-harness", "bad", "body", "harness: other\n");
     await agentFile(join(base, "bad-thinking.md"), "bad-thinking", "bad", "body", "thinking: enormous\n");
@@ -280,6 +326,30 @@ describe("FileAgentDiscovery", () => {
     await agentFile(join(base, "empty-tool-name.md"), "empty-tool-name", "bad", "body", "tools: read,,bash\n");
     await agentFile(join(base, "bad-tool-name.md"), "bad-tool-name", "bad", "body", "tools: read, bad tool\n");
     await agentFile(join(base, "duplicate-tool.md"), "duplicate-tool", "bad", "body", "tools: read, read\n");
+    await agentFile(join(base, "empty-skill.md"), "empty-skill", "bad", "body", "skills:\n  - \n");
+    await agentFile(join(base, "bad-skill.md"), "bad-skill", "bad", "body", "skills: good, bad skill\n");
+    await agentFile(
+      join(base, "mapped-skill.md"),
+      "mapped-skill",
+      "bad",
+      "body",
+      "skills:\n  name: not-a-sequence\n",
+    );
+    await agentFile(join(base, "duplicate-skill.md"), "duplicate-skill", "bad", "body", "skills: good, good\n");
+    await agentFile(
+      join(base, "too-many-skills.md"),
+      "too-many-skills",
+      "bad",
+      "body",
+      `skills: ${Array.from({ length: MAX_AGENT_SKILLS + 1 }, (_, index) => `skill-${index}`).join(", ")}\n`,
+    );
+    await agentFile(
+      join(base, "long-skill-name.md"),
+      "long-skill-name",
+      "bad",
+      "body",
+      `skills: ${"s".repeat(MAX_AGENT_SKILL_NAME_CHARS + 1)}\n`,
+    );
     await agentFile(
       join(base, "too-many-tools.md"),
       "too-many-tools",

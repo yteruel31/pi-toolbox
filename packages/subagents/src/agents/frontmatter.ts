@@ -1,26 +1,24 @@
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+
 /**
- * Minimal YAML-frontmatter parser for agent definition files.
+ * Backward-compatible frontmatter parser for agent definition files.
  *
- * Agent files only need flat, single-line scalar keys (SPEC.md
- * "Named-agent discovery"), so this parser deliberately supports exactly
- * that subset instead of pulling in a YAML dependency:
+ * Existing agent keys retain the original flat-scalar behavior: unknown nested
+ * YAML is ignored and duplicate scalars use the last value. The `skills` node
+ * alone is then parsed with normal YAML semantics so Claude-compatible block
+ * and flow sequences work without changing legacy handling elsewhere:
  *
- *   ---
- *   name: reviewer
- *   description: Review changes.
- *   harness: pi
- *   ---
- *   body…
+ *   skills:
+ *     - code-review
+ *     - security
  *
- * Unknown keys and non-scalar lines (indented continuations, list items,
- * comments) are ignored, so an agent file that carries extra YAML the loader
- * does not understand still parses as long as the keys we need are flat
- * scalars. Missing/invalid required keys are the caller's concern.
+ *   skills: [code-review, security]
+ *
+ * Missing/invalid required keys remain the discovery validator's concern.
  */
 
 export interface ParsedAgentMarkdown {
-  /** Flat scalar frontmatter keys; last duplicate wins, YAML-style. */
-  frontmatter: Record<string, string>;
+  frontmatter: Record<string, unknown>;
   /** Markdown body after the closing delimiter, trimmed. */
   body: string;
 }
@@ -28,6 +26,8 @@ export interface ParsedAgentMarkdown {
 const OPEN_DELIMITER = /^---\s*$/;
 const CLOSE_DELIMITER = /^(---|\.\.\.)\s*$/;
 const KEY_VALUE = /^([A-Za-z0-9_-]+):(?:\s+(.*))?$/;
+const SKILLS_KEY = /^skills:(?:\s|$)/;
+const INVALID_SKILLS_YAML = "[invalid skills YAML";
 
 export type FrontmatterResult =
   | { ok: true; parsed: ParsedAgentMarkdown }
@@ -41,25 +41,31 @@ export function parseAgentMarkdown(text: string): FrontmatterResult {
     return { ok: false, reason: "missing frontmatter opening '---'" };
   }
 
-  const frontmatter: Record<string, string> = {};
   let closedAt = -1;
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i] ?? "";
-    if (CLOSE_DELIMITER.test(line)) {
-      closedAt = i;
+  for (let index = 1; index < lines.length; index++) {
+    if (CLOSE_DELIMITER.test(lines[index] ?? "")) {
+      closedAt = index;
       break;
     }
+  }
+  if (closedAt < 0) {
+    return { ok: false, reason: "frontmatter is never closed with '---'" };
+  }
+
+  const yamlLines = lines.slice(1, closedAt);
+  const frontmatter: Record<string, unknown> = {};
+  for (const line of yamlLines) {
     if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
-    // Only flat, unindented scalars are meaningful to us.
+    // Preserve the original flat, unindented scalar parser for compatibility.
     if (line !== line.trimStart()) continue;
     const match = KEY_VALUE.exec(line);
     if (!match) continue;
     const key = match[1] ?? "";
     frontmatter[key] = unquote((match[2] ?? "").trim());
   }
-  if (closedAt < 0) {
-    return { ok: false, reason: "frontmatter is never closed with '---'" };
-  }
+
+  const skills = parseLastSkillsDeclaration(yamlLines);
+  if (skills.present) frontmatter.skills = skills.value;
 
   return {
     ok: true,
@@ -68,6 +74,40 @@ export function parseAgentMarkdown(text: string): FrontmatterResult {
       body: lines.slice(closedAt + 1).join("\n").trim(),
     },
   };
+}
+
+function parseLastSkillsDeclaration(
+  lines: readonly string[],
+): { present: false } | { present: true; value: unknown } {
+  let declaration: string[] | undefined;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index] ?? "";
+    if (line !== line.trimStart() || !SKILLS_KEY.test(line)) continue;
+
+    const collected = [line];
+    for (let nested = index + 1; nested < lines.length; nested++) {
+      const candidate = lines[nested] ?? "";
+      if (
+        candidate.trim() !== "" &&
+        candidate === candidate.trimStart() &&
+        !/^[-\]},]/.test(candidate)
+      ) break;
+      collected.push(candidate);
+    }
+    declaration = collected;
+  }
+  if (!declaration) return { present: false };
+
+  try {
+    const value = parseFrontmatter<{ skills?: unknown }>(
+      `---\n${declaration.join("\n")}\n---`,
+    ).frontmatter.skills;
+    // An empty `skills:` declaration is equivalent to an empty preload list.
+    return { present: true, value: value ?? [] };
+  } catch {
+    // Let normal skills validation reject only this agent definition.
+    return { present: true, value: INVALID_SKILLS_YAML };
+  }
 }
 
 function unquote(value: string): string {

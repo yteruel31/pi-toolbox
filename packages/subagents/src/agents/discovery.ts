@@ -5,11 +5,14 @@ import { parseAgentMarkdown } from "./frontmatter.js";
 import { isNotFound, nodeFileSystem, type AgentFileSystem } from "./fs-seam.js";
 import {
   AGENT_NAME_PATTERN,
+  AGENT_SKILL_NAME_PATTERN,
   AGENT_TOOL_NAME_PATTERN,
   MAX_AGENT_DESCRIPTION_CHARS,
   MAX_AGENT_FILE_BYTES,
   MAX_AGENT_MODEL_CHARS,
   MAX_AGENT_NAME_CHARS,
+  MAX_AGENT_SKILL_NAME_CHARS,
+  MAX_AGENT_SKILLS,
   MAX_AGENT_TOOL_NAME_CHARS,
   MAX_AGENT_TOOLS,
   MAX_MANIFEST_AGENT_DIRS,
@@ -482,13 +485,16 @@ type AgentValidation =
   | { ok: true; agent: Omit<AgentDefinition, "source"> }
   | { ok: false; reason: string };
 
-function validateAgent(frontmatter: Record<string, string>, body: string): AgentValidation {
-  const name = frontmatter.name?.trim() ?? "";
+function validateAgent(
+  frontmatter: Record<string, unknown>,
+  body: string,
+): AgentValidation {
+  const name = scalarValue(frontmatter.name)?.trim() ?? "";
   if (!name) return { ok: false, reason: "missing name" };
   if (name.length > MAX_AGENT_NAME_CHARS || !AGENT_NAME_PATTERN.test(name)) {
     return { ok: false, reason: "name is too long or contains unsupported characters" };
   }
-  const description = frontmatter.description?.trim() ?? "";
+  const description = scalarValue(frontmatter.description)?.trim() ?? "";
   if (!description) return { ok: false, reason: "missing description" };
   if (description.length > MAX_AGENT_DESCRIPTION_CHARS) {
     return { ok: false, reason: "description exceeds the length limit" };
@@ -499,9 +505,13 @@ function validateAgent(frontmatter: Record<string, string>, body: string): Agent
 
   let tools: string[] | undefined;
   if (Object.prototype.hasOwnProperty.call(frontmatter, "tools")) {
-    const rawTools = frontmatter.tools?.trim() ?? "";
-    if (!rawTools) return { ok: false, reason: "tools allowlist is empty" };
-    const parsedTools = rawTools.split(",").map((tool) => tool.trim());
+    const parsedTools = stringListValue(frontmatter.tools);
+    if (!parsedTools) {
+      return { ok: false, reason: "tools allowlist must contain only names" };
+    }
+    if (parsedTools.length === 0 || parsedTools.every((tool) => !tool)) {
+      return { ok: false, reason: "tools allowlist is empty" };
+    }
     if (parsedTools.some((tool) => !tool)) {
       return { ok: false, reason: "tools allowlist contains an empty name" };
     }
@@ -519,18 +529,41 @@ function validateAgent(frontmatter: Record<string, string>, body: string): Agent
     tools = parsedTools;
   }
 
+  let skills: string[] | undefined;
+  if (Object.prototype.hasOwnProperty.call(frontmatter, "skills")) {
+    const parsedSkills = stringListValue(frontmatter.skills);
+    if (!parsedSkills) {
+      return { ok: false, reason: "skills list must contain only names" };
+    }
+    if (parsedSkills.some((skill) => !skill)) {
+      return { ok: false, reason: "skills list contains an empty name" };
+    }
+    if (parsedSkills.length > MAX_AGENT_SKILLS) {
+      return { ok: false, reason: "skills list exceeds the count limit" };
+    }
+    if (parsedSkills.some((skill) =>
+      skill.length > MAX_AGENT_SKILL_NAME_CHARS || !AGENT_SKILL_NAME_PATTERN.test(skill)
+    )) {
+      return { ok: false, reason: "skills list contains an invalid name" };
+    }
+    if (new Set(parsedSkills).size !== parsedSkills.length) {
+      return { ok: false, reason: "skills list contains a duplicate name" };
+    }
+    skills = parsedSkills;
+  }
+
   const defaults: AgentDefinition["defaults"] = {};
-  const harness = frontmatter.harness?.trim();
+  const harness = scalarValue(frontmatter.harness)?.trim();
   if (harness) {
     if (!HARNESSES.has(harness)) return { ok: false, reason: "invalid harness default" };
     defaults.harness = harness as AgentDefinition["defaults"]["harness"];
   }
-  const model = frontmatter.model?.trim();
+  const model = scalarValue(frontmatter.model)?.trim();
   if (model) {
     if (model.length > MAX_AGENT_MODEL_CHARS) return { ok: false, reason: "model exceeds the length limit" };
     defaults.model = model;
   }
-  const thinking = frontmatter.thinking?.trim();
+  const thinking = scalarValue(frontmatter.thinking)?.trim();
   if (thinking) {
     if (!THINKING_LEVELS.has(thinking)) return { ok: false, reason: "invalid thinking default" };
     defaults.thinking = thinking as AgentDefinition["defaults"]["thinking"];
@@ -543,9 +576,24 @@ function validateAgent(frontmatter: Record<string, string>, body: string): Agent
       description,
       systemPrompt: body,
       ...(tools ? { tools } : {}),
+      ...(skills ? { skills } : {}),
       defaults,
     },
   };
+}
+
+function scalarValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function stringListValue(value: unknown): string[] | undefined {
+  if (typeof value === "string") {
+    return value.split(",").map((item) => item.trim());
+  }
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    return undefined;
+  }
+  return value.map((item) => item.trim());
 }
 
 function isContained(root: string, candidate: string): boolean {

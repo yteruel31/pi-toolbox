@@ -34,11 +34,14 @@ export const MAX_AGENT_DESCRIPTION_CHARS = 500;
 export const MAX_AGENT_MODEL_CHARS = 200;
 export const MAX_AGENT_TOOLS = 64;
 export const MAX_AGENT_TOOL_NAME_CHARS = 100;
+export const MAX_AGENT_SKILLS = 32;
+export const MAX_AGENT_SKILL_NAME_CHARS = 100;
 export const MAX_SYSTEM_PROMPT_CHARS = 32 * 1024;
 
-/** Agent and tool names must be short, path-safe identifiers. */
+/** Agent, tool, and skill names must be short, path-safe identifiers. */
 export const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export const AGENT_TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+export const AGENT_SKILL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 
 /** Bounds on diagnostics. */
 export const MAX_WARNINGS = 25;

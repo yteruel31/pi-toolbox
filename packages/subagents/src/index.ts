@@ -126,13 +126,21 @@ export * from "./tui/view-models.js";
 // Named-agent discovery and saved routing
 export {
   FileAgentDiscovery,
+  MAX_PRELOADED_SKILL_FILE_BYTES,
+  MAX_PRELOADED_SKILLS_TOTAL_BYTES,
+  appendPreloadedSkills,
+  formatPreloadedSkill,
   normalizePackageSettings,
+  preloadAgentSkills,
 } from "./agents/index.js";
 export type {
   FileAgentDiscoveryOptions,
   AgentCatalog,
   AgentDefinition,
   AgentDiscovery,
+  AgentSkillPreloadInput,
+  AgentSkillPreloadResult,
+  AgentSkillPreloaderOptions,
   AgentDiscoveryOptions,
   AgentScope,
   AgentSource,
