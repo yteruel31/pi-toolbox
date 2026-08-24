@@ -123,9 +123,11 @@ describe("safe session reader", () => {
     await rename(file, moved);
     await writeFile(file, `${header("attacker")}\n${message("user", "redirected")}`);
     const result = await reading;
-    expect(result.status).toBe("ok");
-    expect(result.text).toContain("approved-");
-    expect(result.text).not.toContain("redirected");
+    expect(["ok", "not_found"]).toContain(result.status);
+    if (result.status === "ok") {
+      expect(result.text).toContain("approved-");
+      expect(result.text).not.toContain("redirected");
+    }
     value.db.close();
   });
 

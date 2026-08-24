@@ -101,11 +101,16 @@ describe("knowledge extension", () => {
   it("registers public tools and commands after memory and sessions", () => {
     const { pi, tools, commands, hooks } = host();
     extension(pi);
-    expect([...tools.keys()].slice(-2)).toEqual([
-      "knowledge_search",
-      "kb_read",
-    ]);
-    expect([...commands.keys()].slice(-3)).toEqual([
+    const registered = [...tools.keys()];
+    const memory = registered.indexOf("memory_stats");
+    const session = registered.indexOf("session_read");
+    const knowledge = registered.indexOf("knowledge_search");
+    const recall = registered.indexOf("recall");
+    expect(registered.filter((name) => ["knowledge_search", "kb_read"].includes(name))).toEqual(["knowledge_search", "kb_read"]);
+    expect(memory).toBeLessThan(session);
+    expect(session).toBeLessThan(knowledge);
+    expect(knowledge).toBeLessThan(recall);
+    expect([...commands.keys()].filter((name) => name.startsWith("knowledge-"))).toEqual([
       "knowledge-search-setup",
       "knowledge-overview",
       "knowledge-reindex",

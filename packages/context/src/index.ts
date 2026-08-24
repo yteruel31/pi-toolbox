@@ -4,6 +4,7 @@ import {
   registerKnowledgeFeature,
 } from "./knowledge/feature.js";
 import { registerMemoryFeature } from "./memory/feature.js";
+import { registerObservationalFeature } from "./observational/feature.js";
 import { createContextRuntimeController } from "./runtime/context-runtime.js";
 import { registerSessionFeature } from "./sessions/feature.js";
 
@@ -45,6 +46,7 @@ export function registerContextFeatures(
         await knowledgeSessionStart(pi, controller, ctx);
       });
     }
+    registerObservationalFeature(pi);
   } else {
     pi.on("session_start", async (_event, ctx) => {
       try {

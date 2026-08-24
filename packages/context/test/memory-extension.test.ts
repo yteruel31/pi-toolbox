@@ -47,20 +47,21 @@ describe("memory extension contract", () => {
       registerCommand: (name: string) => commands.push(name),
       on: (name: string) => events.push(name),
     } as any);
-    expect(tools).toEqual([
+    expect(tools.filter((name) => name.startsWith("memory_"))).toEqual([
       "memory_search",
       "memory_remember",
       "memory_forget",
       "memory_lessons",
       "memory_stats",
     ]);
-    expect(commands).toEqual(["memory-consolidate"]);
-    expect(events).toEqual([
+    expect(tools.filter((name) => name === "recall")).toEqual(["recall"]);
+    expect(commands).toEqual(expect.arrayContaining(["memory-consolidate"]));
+    expect(events).toEqual(expect.arrayContaining([
       "session_start",
       "agent_end",
       "session_before_switch",
       "session_shutdown",
-    ]);
+    ]));
   });
 
   it("captures only authored text and excludes hidden/custom/tool/image/empty payloads", () => {
