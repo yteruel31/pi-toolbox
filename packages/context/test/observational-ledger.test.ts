@@ -16,6 +16,12 @@ describe("observational ledger", () => {
     expect(folded.clocks).toMatchObject({ observations: 1, drops: 1 });
     expect(foldLedger(branch.slice(0, 2)).observations.map((x) => x.id)).toEqual(["bbbbbbbbbbbb"]);
   });
+  it("accepts deliberate empty observer progress and advances its clock", () => {
+    const folded = foldLedger([custom("empty", OBSERVATIONS_RECORDED, { version: 1, clock: 1, throughEntryId: "a1", records: [] })] as any);
+    expect(folded.clocks.observations).toBe(1);
+    expect(folded.throughEntryId).toBe("a1");
+  });
+
   it("reconstructs superseded IDs from folded records so old records never reactivate", () => {
     const old = observation("aaaaaaaaaaaa", "old");
     const replacement = { ...observation("bbbbbbbbbbbb", "new"), supersedesIds: [old.id] };

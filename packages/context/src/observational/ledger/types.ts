@@ -57,7 +57,7 @@ function isBaseRecord(v: unknown): v is MemoryRecord {
 }
 export const isObservation = (v: unknown): v is Observation => isBaseRecord(v) && exactKeys(v as unknown as Record<string, unknown>, ["id", "timestamp", "priority", "text", "sources", "supersedesIds"]);
 export const isReflection = (v: unknown): v is Reflection => isBaseRecord(v) && object(v) && ids(v.supportingObservationIds) && exactKeys(v, ["id", "timestamp", "priority", "text", "sources", "supersedesIds", "supportingObservationIds"]);
-const isRecorded = <T>(v: unknown, guard: (item: unknown) => item is T): v is RecordedData<T> => object(v) && exactKeys(v, ["version", "clock", "throughEntryId", "records"]) && v.version === 1 && integer(v.clock) && string(v.throughEntryId) && Array.isArray(v.records) && v.records.length > 0 && v.records.every(guard);
+const isRecorded = <T>(v: unknown, guard: (item: unknown) => item is T, allowEmpty = false): v is RecordedData<T> => object(v) && exactKeys(v, ["version", "clock", "throughEntryId", "records"]) && v.version === 1 && integer(v.clock) && string(v.throughEntryId) && Array.isArray(v.records) && (allowEmpty || v.records.length > 0) && v.records.every(guard);
 const isClocks = (v: unknown): v is LedgerClocks => object(v) && exactKeys(v, ["observations", "reflections", "drops", "folds"]) && integer(v.observations) && integer(v.reflections) && integer(v.drops) && integer(v.folds);
 
 export function parseLedgerEntry(entry: LedgerEntry): { event?: ParsedLedgerEvent; malformed?: string } {
@@ -65,9 +65,9 @@ export function parseLedgerEntry(entry: LedgerEntry): { event?: ParsedLedgerEven
   const type = entry.customType;
   if (![OBSERVATIONS_RECORDED, REFLECTIONS_RECORDED, OBSERVATIONS_DROPPED, FOLDED].includes(type ?? "")) return {};
   const data = entry.data;
-  if (type === OBSERVATIONS_RECORDED && isRecorded(data, isObservation)) return { event: { kind: "observations", data } };
-  if (type === REFLECTIONS_RECORDED && isRecorded(data, isReflection)) return { event: { kind: "reflections", data } };
-  if (type === OBSERVATIONS_DROPPED && object(data) && exactKeys(data, ["version", "clock", "throughEntryId", "ids", "reason"]) && data.version === 1 && integer(data.clock) && string(data.throughEntryId) && ids(data.ids, false) && (data.reason === undefined || string(data.reason))) return { event: { kind: "dropped", data: data as unknown as DroppedData } };
+  if (type === OBSERVATIONS_RECORDED && isRecorded(data, isObservation, true)) return { event: { kind: "observations", data } };
+  if (type === REFLECTIONS_RECORDED && isRecorded(data, isReflection, true)) return { event: { kind: "reflections", data } };
+  if (type === OBSERVATIONS_DROPPED && object(data) && exactKeys(data, ["version", "clock", "throughEntryId", "ids", "reason"]) && data.version === 1 && integer(data.clock) && string(data.throughEntryId) && ids(data.ids) && (data.reason === undefined || string(data.reason))) return { event: { kind: "dropped", data: data as unknown as DroppedData } };
   if (type === FOLDED && object(data) && exactKeys(data, ["version", "clock", "throughEntryId", "clocks", "observations", "reflections", "droppedIds"]) && data.version === 1 && integer(data.clock) && string(data.throughEntryId) && isClocks(data.clocks) && Array.isArray(data.observations) && data.observations.every(isObservation) && Array.isArray(data.reflections) && data.reflections.every(isReflection) && ids(data.droppedIds)) return { event: { kind: "folded", data: data as unknown as FoldedData } };
   return { malformed: `Ignored malformed ${type} entry ${entry.id || "(unknown)"}` };
 }

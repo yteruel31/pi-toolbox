@@ -11,6 +11,8 @@ describe("observational extension", () => {
     expect(tools.at(-1)).toBe("recall");
     expect(commands).toEqual(expect.arrayContaining(["om:status", "om:view"]));
     expect(events.filter((event) => event === "session_before_compact")).toHaveLength(1);
+    expect(events).toEqual(expect.arrayContaining(["turn_end", "agent_settled"]));
+    expect(events.filter((event) => event === "session_shutdown")).toHaveLength(1);
   });
   it("renders bounded status/view/full including clocks, provenance and malformed pressure", () => {
     const record = { id: "aaaaaaaaaaaa", timestamp: "2025-01-01T00:00:00Z", priority: "critical", text: "important", sources: { entryIds: ["u"], ranges: [] } };

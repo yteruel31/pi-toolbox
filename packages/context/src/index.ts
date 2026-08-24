@@ -46,7 +46,7 @@ export function registerContextFeatures(
         await knowledgeSessionStart(pi, controller, ctx);
       });
     }
-    registerObservationalFeature(pi);
+    registerObservationalFeature(pi, controller);
   } else {
     pi.on("session_start", async (_event, ctx) => {
       try {
@@ -76,5 +76,5 @@ export function registerContextFeatures(
 }
 
 export default function piContextExtension(pi: ExtensionAPI): void {
-  registerContextFeatures(pi, createContextRuntimeController());
+  registerContextFeatures(pi, createContextRuntimeController({ pi }));
 }

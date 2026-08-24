@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Effect, Fiber, Layer, ManagedRuntime } from "effect";
 
 import { loadContextConfig } from "../config/load.js";
@@ -8,6 +8,7 @@ import type { ContextConfig } from "../config/schema.js";
 import { knowledgeIndexLayer } from "../knowledge/index.js";
 import { makeKnowledgeSyncLayer } from "../knowledge/sync.js";
 import { memoryStoreLayer } from "../memory/store.js";
+import { makeObservationalCoordinatorLayer, ObservationalCoordinatorService } from "../observational/coordinator.js";
 import { sessionIndexLayer } from "../sessions/index.js";
 import { makeSessionSyncLayer } from "../sessions/sync.js";
 import { ContextStorageError, RuntimeInactiveError } from "./errors.js";
@@ -35,7 +36,8 @@ type SessionServices =
   | KnowledgeSyncService
   | SessionIndexService
   | SessionSyncService
-  | ModelWorkGate;
+  | ModelWorkGate
+  | ObservationalCoordinatorService;
 type Runtime = ManagedRuntime.ManagedRuntime<
   SessionServices,
   ContextStorageError
@@ -62,6 +64,7 @@ export interface ContextRuntimeController {
 export function createContextRuntimeController(
   options: {
     readonly agentDir?: string;
+    readonly pi?: ExtensionAPI;
     /** Test/integration hook represented as a scoped Layer resource. */
     readonly onDispose?: () => void;
   } = {}
@@ -141,11 +144,15 @@ export function createContextRuntimeController(
           modelWorkGateLayer,
           resources
         );
+        const coordinator = options.pi === undefined
+          ? Layer.succeed(ObservationalCoordinatorService, { offer: () => false, status: () => ({ state: "idle" as const }), hasState: () => false })
+          : makeObservationalCoordinatorLayer(options.pi, ctx).pipe(Layer.provide(base));
         const runtime = ManagedRuntime.make(
           Layer.mergeAll(
             base,
             makeSessionSyncLayer().pipe(Layer.provide(base)),
-            makeKnowledgeSyncLayer().pipe(Layer.provide(base))
+            makeKnowledgeSyncLayer().pipe(Layer.provide(base)),
+            coordinator
           )
         );
         state.runtime = runtime;
