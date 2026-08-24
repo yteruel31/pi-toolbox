@@ -1,6 +1,7 @@
 import { Context, Layer, Semaphore } from "effect";
 
 import type { KnowledgeIndex } from "../knowledge/index.js";
+import type { KnowledgeSync } from "../knowledge/sync.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { SessionIndex } from "../sessions/index.js";
 import type { SessionSync } from "../sessions/sync.js";
@@ -35,6 +36,11 @@ export class KnowledgeIndexService extends Context.Service<
   KnowledgeIndexService,
   KnowledgeIndex
 >()("@yteruel31/pi-context/runtime/KnowledgeIndex") {}
+
+export class KnowledgeSyncService extends Context.Service<
+  KnowledgeSyncService,
+  KnowledgeSync
+>()("@yteruel31/pi-context/runtime/KnowledgeSync") {}
 
 export class SessionIndexService extends Context.Service<
   SessionIndexService,

@@ -6,6 +6,7 @@ import { loadContextConfig } from "../config/load.js";
 import { contextPaths } from "../config/paths.js";
 import type { ContextConfig } from "../config/schema.js";
 import { knowledgeIndexLayer } from "../knowledge/index.js";
+import { makeKnowledgeSyncLayer } from "../knowledge/sync.js";
 import { memoryStoreLayer } from "../memory/store.js";
 import { sessionIndexLayer } from "../sessions/index.js";
 import { makeSessionSyncLayer } from "../sessions/sync.js";
@@ -13,6 +14,7 @@ import { ContextStorageError, RuntimeInactiveError } from "./errors.js";
 import { makePiModelBridge } from "./pi-model.js";
 import {
   KnowledgeIndexService,
+  KnowledgeSyncService,
   MemoryStoreService,
   ModelWorkGate,
   SessionIndexService,
@@ -30,6 +32,7 @@ type SessionServices =
   | PiModelBridge
   | MemoryStoreService
   | KnowledgeIndexService
+  | KnowledgeSyncService
   | SessionIndexService
   | SessionSyncService
   | ModelWorkGate;
@@ -139,7 +142,11 @@ export function createContextRuntimeController(
           resources
         );
         const runtime = ManagedRuntime.make(
-          Layer.merge(base, makeSessionSyncLayer().pipe(Layer.provide(base)))
+          Layer.mergeAll(
+            base,
+            makeSessionSyncLayer().pipe(Layer.provide(base)),
+            makeKnowledgeSyncLayer().pipe(Layer.provide(base))
+          )
         );
         state.runtime = runtime;
         active = state;
