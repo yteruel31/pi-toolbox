@@ -4,7 +4,7 @@ export const CONTEXT_CONFIG_VERSION = 1 as const;
 export const MODEL_ROLES = ["observer", "reflector", "dropper", "consolidation"] as const;
 export type ModelRole = (typeof MODEL_ROLES)[number];
 
-const ThinkingLevelSchema = Schema.Literals(["minimal", "low", "medium", "high", "xhigh", "max"]);
+const ThinkingLevelSchema = Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 export type ThinkingLevel = typeof ThinkingLevelSchema.Type;
 
 export const ModelRouteSchema = Schema.Struct({

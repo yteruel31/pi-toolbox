@@ -65,7 +65,8 @@ export function createContextRuntimeController(
   options: {
     readonly agentDir?: string;
     readonly pi?: ExtensionAPI;
-    /** Test/integration hook represented as a scoped Layer resource. */
+    /** Test/integration hooks represented as a scoped Layer resource. */
+    readonly onAcquire?: () => void;
     readonly onDispose?: () => void;
   } = {}
 ): ContextRuntimeController {
@@ -123,14 +124,17 @@ export function createContextRuntimeController(
         };
         const isCurrent = () => active === state && state.accepting;
         const resources =
-          options.onDispose === undefined
+          options.onAcquire === undefined && options.onDispose === undefined
             ? Layer.empty
             : Layer.effectDiscard(
                 Effect.acquireRelease(
-                  Effect.sync(() => Effect.runFork(Effect.never)),
+                  Effect.sync(() => {
+                    options.onAcquire?.();
+                    return Effect.runFork(Effect.never);
+                  }),
                   (fiber) =>
                     Fiber.interrupt(fiber).pipe(
-                      Effect.andThen(Effect.sync(options.onDispose!))
+                      Effect.andThen(Effect.sync(() => options.onDispose?.()))
                     )
                 )
               );
@@ -158,7 +162,24 @@ export function createContextRuntimeController(
         state.runtime = runtime;
         active = state;
         // Build the Layer now: session resources must begin during session_start, not on first later use.
-        await runtime.runPromise(Effect.void);
+        try {
+          await runtime.runPromise(Effect.void);
+        } catch (cause) {
+          state.accepting = false;
+          if (active === state) active = undefined;
+          try {
+            await runtime.dispose();
+          } catch {
+            // Preserve the actionable startup error; disposal is best-effort after failed acquisition.
+          }
+          if (cause instanceof ContextStorageError) throw cause;
+          throw new ContextStorageError({
+            path: paths.root,
+            operation: "initialize",
+            message: `Cannot initialize context runtime generation ${id}`,
+            cause,
+          });
+        }
 
         const guard =
           <A extends Array<unknown>>(callback: (...args: A) => void) =>

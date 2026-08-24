@@ -25,6 +25,14 @@ describe("Pi model bridge", () => {
     expect(find).toHaveBeenCalledWith("configured", "worker");
   });
 
+  it("omits reasoning when a configured route is off", async () => {
+    const complete = vi.fn().mockResolvedValue({ role: "assistant", content: [] });
+    const config = { version: 1, models: { observer: { provider: "configured", model: "worker", thinkingLevel: "off" } } } as ContextConfig;
+    const bridge = makePiModelBridge(context(vi.fn(() => configured), complete), config);
+    await Effect.runPromise(bridge.complete("observer", { systemPrompt: "x", messages: [] }));
+    expect(complete).toHaveBeenCalledWith(configured, expect.anything(), undefined);
+  });
+
   it("completes only through the registry", async () => {
     const response = { role: "assistant", content: [] };
     const complete = vi.fn().mockResolvedValue(response);

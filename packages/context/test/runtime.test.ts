@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Effect } from "effect";
@@ -31,6 +31,46 @@ describe("session runtime", () => {
     await value.shutdown();
     expect(value.activeGeneration).toBeUndefined();
     expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it("rolls back unsafe database startup and permits the next valid start", async () => {
+    const agentDir = await mkdtemp(path.join(os.tmpdir(), "pi-context-runtime-"));
+    const contextDir = path.join(agentDir, "context");
+    await mkdir(contextDir);
+    const target = path.join(agentDir, "target.db");
+    await writeFile(target, "");
+    await symlink(target, path.join(contextDir, "sessions.db"));
+    const value = createContextRuntimeController({ agentDir });
+    await expect(value.start(ctx)).rejects.toMatchObject({ _tag: "ContextStorageError" });
+    expect(value.activeGeneration).toBeUndefined();
+    expect(value.currentHandle).toBeUndefined();
+    await import("node:fs/promises").then(({ unlink }) => unlink(path.join(contextDir, "sessions.db")));
+    const handle = await value.start(ctx);
+    expect(handle.isCurrent()).toBe(true);
+    await value.shutdown();
+  });
+
+  it("disposes partial resources after injected acquisition failure and permits retry", async () => {
+    const agentDir = await mkdtemp(path.join(os.tmpdir(), "pi-context-runtime-"));
+    await mkdir(path.join(agentDir, "context"));
+    let fail = true;
+    const finalized = vi.fn();
+    const value = createContextRuntimeController({
+      agentDir,
+      onAcquire: () => { if (fail) throw new Error("injected resource failure"); },
+      onDispose: finalized,
+    });
+    await expect(value.start(ctx)).rejects.toMatchObject({
+      _tag: "ContextStorageError",
+      operation: "initialize",
+      message: expect.stringContaining("generation"),
+    });
+    expect(value.activeGeneration).toBeUndefined();
+    expect(value.currentHandle).toBeUndefined();
+    fail = false;
+    await expect(value.start(ctx)).resolves.toMatchObject({ generation: 2 });
+    await value.shutdown();
+    expect(finalized).toHaveBeenCalledOnce();
   });
 
   it("disposes active scoped resources on shutdown", async () => {

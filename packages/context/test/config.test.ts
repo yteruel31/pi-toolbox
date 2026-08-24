@@ -28,6 +28,14 @@ describe("context config", () => {
     await expect(Effect.runPromise(loadContextConfig(paths.config))).resolves.toMatchObject({ models: { observer: { provider: "fake" } }, knowledge: { roots: [], extensions: ["md", "mdx", "txt"] } });
   });
 
+  it("accepts off for a configured model route", async () => {
+    const paths = contextPaths(await fixture());
+    await writeFile(paths.config, JSON.stringify({ version: 1, models: { observer: { provider: "fake", model: "model", thinkingLevel: "off" } } }));
+    await expect(Effect.runPromise(loadContextConfig(paths.config))).resolves.toMatchObject({
+      models: { observer: { thinkingLevel: "off" } },
+    });
+  });
+
   it("accepts explicit bounded knowledge settings", async () => {
     const paths = contextPaths(await fixture());
     const knowledge = { roots: ["/tmp/notes"], extensions: ["md"], excludes: ["build"], limits: { maxRoots: 2, maxFiles: 20, maxDepth: 4, maxFileBytes: 4096, maxTotalBytes: 8192 } };

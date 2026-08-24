@@ -31,7 +31,12 @@ export function makePiModelBridge(ctx: ExtensionContext, config: ContextConfig):
           message: `Configured ${role} model ${route.provider}/${route.model} is not registered in this Pi session`,
         });
       }
-      return { model, ...(route.thinkingLevel === undefined ? {} : { thinkingLevel: route.thinkingLevel }) };
+      return {
+        model,
+        ...(route.thinkingLevel === undefined || route.thinkingLevel === "off"
+          ? {}
+          : { thinkingLevel: route.thinkingLevel }),
+      };
     }
     if (ctx.model === undefined) {
       return yield* new ModelResolutionError({ role, message: `No ${role} model is configured and Pi has no active model` });
