@@ -21,6 +21,7 @@
 - Source-aware autocomplete display for generated Claude marketplace commands and skills, with shorter labels plus marketplace/plugin, argument hint, and description metadata.
 
 ### Fixed
+- Keep process environment fields on stdio MCP definitions only, so synced HTTP servers remain compatible with Pi MCP clients while URL and header placeholders still resolve.
 - Quote generated skill frontmatter values so Claude plugin descriptions containing `:` parse as valid YAML.
 - Preserve Claude skill frontmatter block-scalar descriptions without leaving invalid YAML continuation lines in generated Pi skills.
 - Rewrite generated skills to replace Claude placeholders such as `${CLAUDE_PLUGIN_ROOT}` and copy plugin support directories like `scripts/` so relative references keep working in Pi.

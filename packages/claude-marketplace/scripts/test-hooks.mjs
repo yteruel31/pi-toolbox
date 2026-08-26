@@ -131,6 +131,7 @@ try {
 	const { readHookBridgeStore } = await import(pathToFileURL(join(buildDir, "hooks", "hook-store.js")));
 	const { runPreToolUseHooks } = await import(pathToFileURL(join(buildDir, "hooks", "runner.js")));
 	const { marketplaceEnvPath } = await import(pathToFileURL(join(buildDir, "state", "paths.js")));
+	const { transformMcpServerConfig } = await import(pathToFileURL(join(buildDir, "mcp", "transform.js")));
 	const { buildClaudeMarketplaceAutocompleteDisplays } = await import(pathToFileURL(join(buildDir, "session", "autocomplete-display.js")));
 
 	const { stored } = await loadMarketplaceFromSource(fixtureRoot);
@@ -139,6 +140,24 @@ try {
 	const [installed] = await installIndexedPlugins([indexed]);
 	await mkdir(dirname(marketplaceEnvPath("fixture-hooks")), { recursive: true });
 	await writeFile(marketplaceEnvPath("fixture-hooks"), "CLAUDE_PLUGIN_OPTION_API_TOKEN=secret-token\n");
+
+	const httpMcpConfig = await transformMcpServerConfig({
+		type: "http",
+		url: "https://mcp.example.test/${user_config.script_arg}",
+		headers: { Authorization: "Bearer ${CLAUDE_PLUGIN_OPTION_API_TOKEN}" },
+	}, installed);
+	assert(httpMcpConfig.env === undefined, "expected HTTP MCP config not to receive process environment fields");
+	assert(httpMcpConfig.url === "https://mcp.example.test/from-default", `expected HTTP MCP URL placeholders to resolve, got ${httpMcpConfig.url}`);
+	assert(httpMcpConfig.headers.Authorization === "Bearer secret-token", "expected HTTP MCP header placeholders to resolve before sync");
+
+	const stdioMcpConfig = await transformMcpServerConfig({
+		command: "node",
+		args: ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
+		env: { FIXTURE_DEFAULT: "${user_config.script_arg}" },
+	}, installed);
+	assert(stdioMcpConfig.env.FIXTURE_DEFAULT === "from-default", "expected stdio MCP config to preserve resolved explicit environment fields");
+	assert(stdioMcpConfig.env.CLAUDE_PLUGIN_OPTION_API_TOKEN === "secret-token", "expected stdio MCP config to receive resolved userConfig environment fields");
+	assert(stdioMcpConfig.env.CLAUDE_PLUGIN_ROOT === installed.cachePath, "expected stdio MCP config to receive the plugin root");
 
 	const afterInstall = await readHookBridgeStore();
 	assert(afterInstall.hooks.length === 1, `expected install to auto-enable 1 hook, got ${afterInstall.hooks.length}`);

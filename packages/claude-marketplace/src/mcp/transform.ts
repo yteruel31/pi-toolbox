@@ -43,15 +43,17 @@ async function transformValue(value: unknown, plugin: InstalledPlugin, userConfi
 export async function transformMcpServerConfig(config: McpServerConfig, plugin: InstalledPlugin): Promise<McpServerConfig> {
 	const userConfig = await resolvePluginUserConfig(plugin, await readMarketplaceEnv(plugin.marketplace));
 	const transformed = (await transformValue(config, plugin, userConfig)) as McpServerConfig;
-	const env = {
-		...(transformed.env ?? {}),
-		...userConfig.env,
-		CLAUDE_PLUGIN_ROOT: plugin.cachePath,
-		CLAUDE_PLUGIN_DATA: pluginDataPath(plugin.marketplace, plugin.name),
-	};
+	const stdioEnv = transformed.command === undefined
+		? undefined
+		: {
+			...(transformed.env ?? {}),
+			...userConfig.env,
+			CLAUDE_PLUGIN_ROOT: plugin.cachePath,
+			CLAUDE_PLUGIN_DATA: pluginDataPath(plugin.marketplace, plugin.name),
+		};
 	return {
 		...transformed,
-		env,
+		...(stdioEnv ? { env: stdioEnv } : {}),
 		lifecycle: transformed.lifecycle ?? "lazy",
 		directTools: transformed.directTools ?? false,
 	};
