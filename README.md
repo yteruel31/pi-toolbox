@@ -76,6 +76,14 @@ pi install npm:@yteruel31/pi-mcp
 
 MCP client and capability gateway with Streamable HTTP/SSE/stdio, OAuth, a secure local App host, persistent Pi status, and an interactive publication panel for either managed Tailscale Serve or a user-owned HTTPS reverse proxy. It never opens an App UI automatically and does not claim universal `pi-mcp-adapter` parity. See the package [parity matrix, migration runbook, and conformance command](./packages/mcp/PARITY.md).
 
+### [`@yteruel31/pi-lsp`](./packages/lsp)
+
+```bash
+pi install npm:@yteruel31/pi-lsp
+```
+
+Connect Pi to project language servers for fresh diagnostics after every write or edit, symbol-aware navigation, and preview-first semantic renames.
+
 ### [`@yteruel31/pi-session-title`](./packages/session-title)
 
 ```bash
