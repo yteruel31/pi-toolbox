@@ -19,7 +19,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "check:packages": "npm run check --workspaces --if-present && npm run audit:subagents && npm run smoke:extensions",
+    "check:packages": "npm run check --workspaces --if-present && npm run audit:subagents && npm run smoke:extensions && npm run smoke:context-package",
+    "smoke:context-package": "node scripts/smoke-context-package.mjs",
     "audit:subagents": "node scripts/audit-subagents-cleanroom.mjs",
     "smoke:extensions": "node scripts/smoke-extensions.mjs",
     "pack:packages": "npm run pack:dry --workspaces --if-present",

@@ -24,6 +24,7 @@
     "src",
     "LICENSE",
     "README.md",
+    "CHANGELOG.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
@@ -51,6 +52,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "pack:dry": "npm pack --dry-run",
+    "smoke:pack": "npm run smoke:context-package --prefix ../..",
     "prepack": "npm run build"
   },
   "peerDependencies": {

@@ -60,6 +60,14 @@ pi install npm:@yteruel31/pi-claude-rules
 
 Inject relevant Claude Code `.claude/rules/` files into Pi sessions.
 
+### [`@yteruel31/pi-context`](./packages/context)
+
+```bash
+pi install npm:@yteruel31/pi-context
+```
+
+Local-first observational context, durable memory, session search, and knowledge search using SQLite FTS5/BM25 only, with no embeddings or vector layer.
+
 ### [`@yteruel31/pi-learning`](./packages/pi-learning)
 
 ```bash
