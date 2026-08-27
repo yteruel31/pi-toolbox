@@ -5,14 +5,14 @@ import path from "node:path";
 import test from "node:test";
 
 import { LspRegistry } from "../src/registry.js";
-import type { LspConfig, ServerDefinition } from "../src/types.js";
+import type { LspConfig, ServerDefinition, ServerFeatures } from "../src/types.js";
 
 const fakeServer = path.join(import.meta.dirname, "fixtures", "fake-lsp-server.mjs");
 
 function server(
   name: string,
   args: string[] = [],
-  features = { diagnostics: true, semantics: true },
+  features: ServerFeatures = { diagnostics: true, semantics: true },
   priority = 1,
 ): ServerDefinition {
   return {
@@ -58,6 +58,30 @@ test("aggregates the primary server with diagnostics-only sidecars", async () =>
 
     const semanticClient = await registry.clientForFile(file);
     assert.equal(semanticClient?.name, "typescript");
+  } finally {
+    await registry.shutdownAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keeps on-demand diagnostics servers out of mutation diagnostics", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-registry-on-demand-"));
+  const file = path.join(root, "index.ts");
+  await writeFile(file, "const value = BROKEN + SONAR;\n");
+  const onDemand = server("sonarqube", ["--name=sonarqube", "--token=SONAR"], { diagnostics: true, semantics: false, diagnosticsOnMutation: false }, 2);
+  const registry = new LspRegistry(root, config([
+    server("typescript", ["--name=typescript", "--token=BROKEN"], { diagnostics: true, semantics: true }, 1),
+    onDemand,
+  ]), true);
+
+  try {
+    const mutation = await registry.syncDiagnostics(file, 1_000, undefined, "mutation");
+    assert.deepEqual(mutation?.servers, ["typescript"]);
+    assert.deepEqual(mutation?.diagnostics.map((diagnostic) => diagnostic.source), ["typescript"]);
+
+    const explicit = await registry.syncDiagnostics(file, 1_000);
+    assert.deepEqual(explicit?.servers, ["typescript", "sonarqube"]);
+    assert.deepEqual(explicit?.diagnostics.map((diagnostic) => diagnostic.source), ["typescript", "sonarqube"]);
   } finally {
     await registry.shutdownAll();
     await rm(root, { recursive: true, force: true });

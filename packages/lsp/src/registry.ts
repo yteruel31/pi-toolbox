@@ -103,9 +103,10 @@ export class LspRegistry {
     filePath: string,
     timeoutMs: number,
     signal?: AbortSignal,
+    scope: "all" | "mutation" = "all",
   ): Promise<AggregatedDiagnostics | null> {
     if (this.closed || !this.projectTrusted || !pathIsWithin(this.cwd, filePath)) return null;
-    const selection = await this.diagnosticClientsForFile(filePath, signal);
+    const selection = await this.diagnosticClientsForFile(filePath, signal, scope);
     if (selection.clients.length === 0 && selection.failures.length === 0) return null;
 
     const outcomes = await Promise.allSettled(
@@ -204,13 +205,18 @@ export class LspRegistry {
     return null;
   }
 
-  private async diagnosticClientsForFile(filePath: string, signal?: AbortSignal): Promise<DiagnosticClientSelection> {
+  private async diagnosticClientsForFile(
+    filePath: string,
+    signal?: AbortSignal,
+    scope: "all" | "mutation" = "all",
+  ): Promise<DiagnosticClientSelection> {
     const resolved: ResolvedServer[] = [];
+    const enabledForScope = (definition: ServerDefinition) => scope === "all" || definition.features.diagnosticsOnMutation !== false;
     const primary = await this.resolveForFile(filePath);
-    if (primary?.definition.features.diagnostics) resolved.push(primary);
+    if (primary?.definition.features.diagnostics && enabledForScope(primary.definition)) resolved.push(primary);
 
     for (const definition of this.config.servers) {
-      if (!definition.features.diagnostics || definition.features.semantics) continue;
+      if (!definition.features.diagnostics || definition.features.semantics || !enabledForScope(definition)) continue;
       const sidecar = await this.resolveDefinitionForFile(definition, filePath);
       if (sidecar) resolved.push(sidecar);
     }

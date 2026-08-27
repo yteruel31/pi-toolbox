@@ -54,7 +54,7 @@ export class LspService {
 
   async diagnosticsAfterMutation(filePath: string, signal?: AbortSignal): Promise<AggregatedDiagnostics | null> {
     if (!this.config.diagnostics.enabled) return null;
-    return this.registry.syncDiagnostics(filePath, this.config.diagnostics.deferredTimeoutMs, signal);
+    return this.registry.syncDiagnostics(filePath, this.config.diagnostics.deferredTimeoutMs, signal, "mutation");
   }
 
   makeDiagnosticCard(filePath: string, result: AggregatedDiagnostics, delayed: boolean): DiagnosticCardData | null {

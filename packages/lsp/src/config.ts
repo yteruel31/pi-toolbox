@@ -1,5 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
+import os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { DiagnosticsConfig, LspConfig, ServerDefinition } from "./types.js";
 
@@ -175,7 +177,20 @@ interface RawConfig {
   idleTimeoutMs?: unknown;
   requestTimeoutMs?: unknown;
   initFailureBackoffMs?: unknown;
+  sonarqube?: unknown;
 }
+
+interface RawSonarConfig {
+  enabled?: unknown;
+  runtimeDir?: unknown;
+  jgitWorktreeSupport?: unknown;
+  jgitJar?: unknown;
+  connection?: unknown;
+}
+
+const SONAR_VERSION = "5.8.1";
+const JGIT_VERSION = "7.0.0.202409031743-r";
+const SONAR_ADAPTER = fileURLToPath(new URL("./sonar-adapter.mjs", import.meta.url));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -188,6 +203,83 @@ function stringArray(value: unknown): string[] | undefined {
 
 function positiveInteger(value: unknown, fallback: number, minimum = 1, maximum = Number.MAX_SAFE_INTEGER): number {
   return typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= maximum ? value : fallback;
+}
+
+function expandHome(value: string): string {
+  if (value === "~") return os.homedir();
+  return value.startsWith(`~${path.sep}`) ? path.join(os.homedir(), value.slice(2)) : path.resolve(value);
+}
+
+function sonarDataDirectory(): string {
+  const dataHome = process.env.XDG_DATA_HOME || (process.platform === "win32" ? process.env.LOCALAPPDATA : undefined);
+  return path.join(dataHome || path.join(os.homedir(), ".local", "share"), "pi-lsp", "sonarqube");
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function sonarServer(rawValue: unknown, userConfigPath: string, warnings: string[]): Promise<ServerDefinition | null> {
+  if (!isRecord(rawValue)) return null;
+  const raw = rawValue as RawSonarConfig;
+  if (raw.enabled !== true) return null;
+  if (!isRecord(raw.connection)) {
+    warnings.push("sonarqube: connection must be configured in the user LSP configuration");
+    return null;
+  }
+  const provider = raw.connection.provider ?? "sonarcloud";
+  const organizationKey = raw.connection.organizationKey;
+  const tokenCommand = stringArray(raw.connection.tokenCommand);
+  const tokenEnv = raw.connection.tokenEnv;
+  if (provider !== "sonarcloud" || typeof organizationKey !== "string" || organizationKey.trim() === "") {
+    warnings.push("sonarqube: a SonarQube Cloud organizationKey is required");
+    return null;
+  }
+  if (!tokenCommand && !(typeof tokenEnv === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv))) {
+    warnings.push("sonarqube: tokenCommand or tokenEnv must be configured in the user LSP configuration");
+    return null;
+  }
+
+  const baseDirectory = sonarDataDirectory();
+  const runtimeDir = typeof raw.runtimeDir === "string"
+    ? expandHome(raw.runtimeDir)
+    : path.join(baseDirectory, SONAR_VERSION, `${process.platform}-${process.arch}`, "extension");
+  if (!await pathExists(path.join(runtimeDir, "server", "sonarlint-ls.jar"))) {
+    warnings.push("sonarqube: runtime is not installed; run pi-lsp-sonar-install");
+    return null;
+  }
+
+  const args = [SONAR_ADAPTER, "--config", userConfigPath, "--runtime", runtimeDir];
+  if (raw.jgitWorktreeSupport === true) {
+    const jgitJar = typeof raw.jgitJar === "string"
+      ? expandHome(raw.jgitJar)
+      : path.join(baseDirectory, "jgit", JGIT_VERSION, `org.eclipse.jgit-${JGIT_VERSION}.jar`);
+    if (!await pathExists(jgitJar)) {
+      warnings.push("sonarqube: JGit worktree support was requested but the pinned JGit runtime is not installed");
+      return null;
+    }
+    args.push("--jgit", jgitJar);
+  }
+
+  return {
+    name: "sonarqube",
+    command: process.execPath,
+    args,
+    fileTypes: [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".json", ".jsonc", ".css"],
+    rootMarkers: ["sonar-project.properties"],
+    languageIds: {
+      ".ts": "typescript", ".tsx": "typescriptreact", ".js": "javascript", ".jsx": "javascriptreact",
+      ".mts": "typescript", ".cts": "typescript", ".mjs": "javascript", ".cjs": "javascript",
+      ".json": "json", ".jsonc": "jsonc", ".css": "css",
+    },
+    priority: 30,
+    features: { diagnostics: true, semantics: false, diagnosticsOnMutation: false },
+  };
 }
 
 async function readJson(filePath: string, warnings: string[]): Promise<RawConfig | null> {
@@ -227,6 +319,8 @@ function mergeServer(base: ServerDefinition | undefined, name: string, raw: RawS
       else if (raw.features.diagnostics !== undefined) warnings.push(`server ${name}: features.diagnostics must be a boolean`);
       if (typeof raw.features.semantics === "boolean") features.semantics = raw.features.semantics;
       else if (raw.features.semantics !== undefined) warnings.push(`server ${name}: features.semantics must be a boolean`);
+      if (typeof raw.features.diagnosticsOnMutation === "boolean") features.diagnosticsOnMutation = raw.features.diagnosticsOnMutation;
+      else if (raw.features.diagnosticsOnMutation !== undefined) warnings.push(`server ${name}: features.diagnosticsOnMutation must be a boolean`);
     }
   }
 
@@ -261,9 +355,14 @@ function mergeRawConfig(
   state: { servers: Map<string, ServerDefinition>; diagnostics: DiagnosticsConfig; idleTimeoutMs: number; requestTimeoutMs: number; initFailureBackoffMs: number },
   raw: RawConfig,
   warnings: string[],
+  protectedServers: ReadonlySet<string> = new Set(),
 ): void {
   if (isRecord(raw.servers)) {
     for (const [name, value] of Object.entries(raw.servers)) {
+      if (protectedServers.has(name) && value !== false && !(isRecord(value) && value.disabled === true)) {
+        warnings.push(`server ${name}: project overrides are ignored for this user-configured server`);
+        continue;
+      }
       if (value === false) {
         const existing = state.servers.get(name);
         if (existing) state.servers.set(name, { ...existing, disabled: true });
@@ -307,12 +406,20 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LspConfig>
     initFailureBackoffMs: 180_000,
   };
 
-  const userConfig = await readJson(path.join(options.agentDir, "lsp.json"), warnings);
-  if (userConfig) mergeRawConfig(state, userConfig, warnings);
+  const userConfigPath = path.join(options.agentDir, "lsp.json");
+  const userConfig = await readJson(userConfigPath, warnings);
+  if (userConfig) {
+    const sonar = await sonarServer(userConfig.sonarqube, userConfigPath, warnings);
+    if (sonar) state.servers.set(sonar.name, sonar);
+    mergeRawConfig(state, userConfig, warnings);
+  }
 
   if (options.projectTrusted) {
     const projectConfig = await readJson(path.join(options.cwd, options.configDirName, "lsp.json"), warnings);
-    if (projectConfig) mergeRawConfig(state, projectConfig, warnings);
+    if (projectConfig) {
+      if (projectConfig.sonarqube !== undefined) warnings.push("sonarqube: project configuration is ignored; credentials and connections are user-config only");
+      mergeRawConfig(state, projectConfig, warnings, new Set(["sonarqube"]));
+    }
   }
 
   if (state.diagnostics.deferredTimeoutMs < state.diagnostics.inlineTimeoutMs) {

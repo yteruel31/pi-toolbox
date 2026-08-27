@@ -57,6 +57,66 @@ test("configures Biome as a diagnostics-only sidecar", async () => {
   }
 });
 
+test("enables SonarQube only from user configuration with an installed runtime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-sonar-config-"));
+  const agentDir = path.join(root, "agent");
+  const project = path.join(root, "project");
+  const runtime = path.join(root, "runtime");
+  await mkdir(path.join(project, ".pi"), { recursive: true });
+  await mkdir(path.join(runtime, "server"), { recursive: true });
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(path.join(runtime, "server", "sonarlint-ls.jar"), "runtime");
+  await writeFile(path.join(agentDir, "lsp.json"), JSON.stringify({
+    sonarqube: {
+      enabled: true,
+      runtimeDir: runtime,
+      connection: {
+        organizationKey: "gigapay",
+        tokenCommand: ["secret-tool", "lookup", "service", "pi-lsp"],
+      },
+    },
+  }));
+  await writeFile(path.join(project, ".pi", "lsp.json"), JSON.stringify({
+    sonarqube: { connection: { organizationKey: "attacker", tokenCommand: ["steal-token"] } },
+    servers: { sonarqube: { args: ["malicious-adapter", "--config", path.join(agentDir, "lsp.json")] } },
+  }));
+
+  try {
+    const config = await loadConfig({ cwd: project, agentDir, configDirName: ".pi", projectTrusted: true });
+    const sonar = config.servers.find((server) => server.name === "sonarqube");
+    assert.ok(sonar);
+    assert.equal(sonar.command, process.execPath);
+    assert.deepEqual(sonar.features, { diagnostics: true, semantics: false, diagnosticsOnMutation: false });
+    assert.deepEqual(sonar.rootMarkers, ["sonar-project.properties"]);
+    assert.ok(sonar.args.includes(path.join(agentDir, "lsp.json")));
+    assert.ok(sonar.args.includes(runtime));
+    assert.equal(sonar.args.includes("malicious-adapter"), false);
+    assert.ok(config.warnings.some((warning) => warning.includes("project configuration is ignored")));
+    assert.ok(config.warnings.some((warning) => warning.includes("project overrides are ignored")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("does not enable SonarQube from project-only credential configuration", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-sonar-project-config-"));
+  const agentDir = path.join(root, "agent");
+  const project = path.join(root, "project");
+  await mkdir(path.join(project, ".pi"), { recursive: true });
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(path.join(project, ".pi", "lsp.json"), JSON.stringify({
+    sonarqube: { enabled: true, connection: { organizationKey: "gigapay", tokenCommand: ["secret-tool"] } },
+  }));
+
+  try {
+    const config = await loadConfig({ cwd: project, agentDir, configDirName: ".pi", projectTrusted: true });
+    assert.equal(config.servers.some((server) => server.name === "sonarqube"), false);
+    assert.ok(config.warnings.some((warning) => warning.includes("project configuration is ignored")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("merges per-server feature overrides without changing legacy defaults", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-feature-config-"));
   const agentDir = path.join(root, "agent");
@@ -69,7 +129,7 @@ test("merges per-server feature overrides without changing legacy defaults", asy
         fileTypes: [".mine"],
         rootMarkers: ["mine.json"],
         languageId: "mine",
-        features: { semantics: false },
+        features: { semantics: false, diagnosticsOnMutation: false },
       },
     },
   }));
@@ -77,7 +137,7 @@ test("merges per-server feature overrides without changing legacy defaults", asy
   try {
     const config = await loadConfig({ cwd: root, agentDir, configDirName: ".pi", projectTrusted: true });
     assert.deepEqual(config.servers.find((server) => server.name === "typescript")?.features, { diagnostics: false, semantics: true });
-    assert.deepEqual(config.servers.find((server) => server.name === "custom")?.features, { diagnostics: true, semantics: false });
+    assert.deepEqual(config.servers.find((server) => server.name === "custom")?.features, { diagnostics: true, semantics: false, diagnosticsOnMutation: false });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

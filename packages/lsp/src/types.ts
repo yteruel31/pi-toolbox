@@ -80,6 +80,7 @@ export interface SymbolInformation {
 export interface ServerFeatures {
   diagnostics: boolean;
   semantics: boolean;
+  diagnosticsOnMutation?: boolean;
 }
 
 export interface ServerDefinition {
