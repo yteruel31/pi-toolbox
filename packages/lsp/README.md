@@ -52,7 +52,7 @@ Pi waits up to three seconds for inline diagnostics. A slower result does not bl
 | `hover` | `file`, `line`, `symbol` | Return type and documentation hover content. |
 | `symbols` | `file` | List document symbols; optionally filter with `query`. |
 | `rename` | `file`, `line`, `symbol`, `new_name` | Preview a semantic rename; set `apply: true` to write it. |
-| `status` | none | Show detected, available, and running language servers. |
+| `status` | none | Show binary availability, workspace-level root detection, and running language servers. |
 | `reload` | none | Stop clients and reload configuration. |
 
 `line` is 1-indexed. `symbol` is a literal substring on that line. Append `#N` to select the Nth occurrence, for example `value#2`.
@@ -75,7 +75,7 @@ The package knows how to start these servers when both a project root marker and
 - `bash-language-server`
 - opt-in SonarQube Cloud Connected Mode through the bundled adapter
 
-Executables are resolved from project-local `node_modules/.bin`, Python virtual environments, local `bin`, then `$PATH`. When multiple semantic servers support a file, the first available server by priority is used. Diagnostics-only sidecars also run and their diagnostics are merged into one result. Biome is enabled only when a `biome.json` or `biome.jsonc` project root and a `biome` executable are present.
+Executables are resolved from project-local `node_modules/.bin`, Python virtual environments, local `bin`, then `$PATH`. `lsp status` checks binary availability even when the workspace directory has no root marker; in that case it reports `no root at workspace level`. Actual startup remains lazy and requires a root discovered from the requested file, so nested repositories work when Pi was launched from a common parent directory. When multiple semantic servers support a file, the first available server by priority is used. Diagnostics-only sidecars also run and their diagnostics are merged into one result. Biome is enabled only when a `biome.json` or `biome.jsonc` project root and a `biome` executable are present.
 
 ## Optional SonarQube Cloud diagnostics
 

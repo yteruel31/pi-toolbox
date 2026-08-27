@@ -165,7 +165,7 @@ export class LspRegistry {
     for (const definition of this.config.servers) {
       const runningClient = [...this.clients.values()].find((client) => client.name === definition.name && client.isRunning);
       const root = runningClient?.root ?? await this.rootForStatus(definition);
-      const command = runningClient?.resolved.command ?? (root ? await this.resolveCommand(definition, root) : null);
+      const command = runningClient?.resolved.command ?? await this.resolveCommand(definition, root ?? this.cwd);
       const key = command && root ? clientKey({ definition, command, root }) : undefined;
       const failure = key ? this.failures.get(key) : undefined;
       statuses.push({

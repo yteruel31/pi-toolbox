@@ -180,8 +180,9 @@ export async function executeLspOperation(context: OperationContext, input: LspT
   if (input.action === "status") {
     const statuses = await context.registry.status();
     const lines = statuses.map((status) => {
-      const state = status.running ? "running" : status.available ? "available" : status.root ? "binary missing" : "not detected";
-      return `${status.name}: ${state} (${status.command})${status.root ? ` root=${path.relative(context.cwd, status.root) || "."}` : ""}${status.error ? ` — ${status.error}` : ""}`;
+      const state = status.running ? "running" : status.available ? "available" : "binary missing";
+      const root = status.root ? ` root=${path.relative(context.cwd, status.root) || "."}` : " (no root at workspace level)";
+      return `${status.name}: ${state} (${status.command})${root}${status.error ? ` — ${status.error}` : ""}`;
     });
     lines.push(...context.registry.config.warnings.map((warning) => `config warning: ${warning}`));
     if (!context.registry.projectTrusted) lines.unshift("LSP execution is disabled until this project is trusted.");

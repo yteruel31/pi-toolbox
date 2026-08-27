@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -37,6 +37,44 @@ function config(servers: ServerDefinition[] = [server("fake")]): LspConfig {
     warnings: [],
   };
 }
+
+test("status finds a PATH executable without a workspace root and preserves nested per-file discovery", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-registry-status-"));
+  const project = path.join(workspace, "nested", "project");
+  const bin = path.join(workspace, "global-bin");
+  const executableName = process.platform === "win32" ? "global-lsp.cmd" : "global-lsp";
+  const executable = path.join(bin, executableName);
+  await mkdir(path.join(project, "src"), { recursive: true });
+  await mkdir(bin);
+  await writeFile(path.join(project, "package.json"), "{}");
+  await writeFile(path.join(project, "src", "index.ts"), "const value = 1;\n");
+  await writeFile(executable, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n", { mode: 0o755 });
+  const definition = {
+    ...server("global"),
+    command: executableName,
+    rootMarkers: ["package.json"],
+  };
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+  const registry = new LspRegistry(workspace, config([definition]), true);
+
+  try {
+    const [status] = await registry.status();
+    assert.equal(status?.available, true);
+    assert.equal(status?.root, undefined);
+    assert.equal(status?.running, false);
+
+    definition.command = process.execPath;
+    const client = await registry.clientForFile(path.join(project, "src", "index.ts"));
+    assert.equal(client?.root, project);
+    assert.equal(client?.isRunning, true);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    await registry.shutdownAll();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
 
 test("aggregates the primary server with diagnostics-only sidecars", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-registry-multi-"));

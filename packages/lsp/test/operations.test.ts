@@ -31,6 +31,24 @@ function config(): LspConfig {
   };
 }
 
+test("status reports an available binary separately from workspace root detection", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-operations-status-"));
+  const lspConfig = config();
+  lspConfig.servers[0] = { ...lspConfig.servers[0]!, rootMarkers: ["package.json"] };
+  const registry = new LspRegistry(root, lspConfig, true);
+  const context = { cwd: root, registry, reload: async () => registry };
+
+  try {
+    const result = await executeLspOperation(context, { action: "status" });
+    assert.equal(result.summary, "1/1 language servers available");
+    assert.match(result.lines[0] ?? "", /fake: available .*\(no root at workspace level\)/);
+    assert.doesNotMatch(result.lines[0] ?? "", /not detected|binary missing/);
+  } finally {
+    await registry.shutdownAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runs navigation and preview-first semantic rename operations", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-operations-"));
   const file = path.join(root, "index.ts");
