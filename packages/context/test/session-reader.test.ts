@@ -109,6 +109,48 @@ describe("safe session reader", () => {
     value.db.close();
   });
 
+  it("drains pending reads before closing the handle on bounded pages", async () => {
+    const value = await fixture();
+    const file = path.join(value.agent, "sessions", "pending.jsonl");
+    await writeFile(
+      file,
+      [
+        header("pending-id"),
+        ...Array.from({ length: 10_000 }, (_, index) =>
+          message("user", `${index}:${"x".repeat(500)}`)
+        ),
+      ].join("\n")
+    );
+    await value.index.sync();
+
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const result = await readSession(value.index, "pending-id", {
+        offset: 0,
+        limit: 3,
+        includeTools: false,
+      });
+      expect(result.details).toMatchObject({ emitted: 3, nextOffset: 3 });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    value.db.close();
+  });
+
+  it("closes the opened handle after natural EOF", async () => {
+    const value = await fixture();
+    const file = path.join(value.agent, "sessions", "eof.jsonl");
+    await writeFile(
+      file,
+      `${header("eof-id")}\n${message("user", "complete")}`
+    );
+    await value.index.sync();
+
+    const result = await readSession(value.index, "eof-id", { limit: 10 });
+    expect(result.text).toContain("complete");
+    expect(result.details).toMatchObject({ emitted: 1, truncated: false });
+    expect(result.details.nextOffset).toBeUndefined();
+    value.db.close();
+  });
+
   it("streams the opened file handle when the pathname is swapped", async () => {
     const value = await fixture();
     const file = path.join(value.agent, "sessions", "swap.jsonl");

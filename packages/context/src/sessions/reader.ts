@@ -1,8 +1,9 @@
-import { constants, createReadStream } from "node:fs";
+import { constants } from "node:fs";
 import { open, realpath, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { finished } from "node:stream/promises";
 
 import type { SessionIndex } from "./index.js";
 import {
@@ -135,11 +136,13 @@ export async function readSession(
 
   const offset = options.offset ?? 0;
   const limit = options.limit ?? 50;
-  const input = createReadStream(resolved.file, {
-    fd: resolved.handle.fd,
+  const input = resolved.handle.createReadStream({
     autoClose: false,
     encoding: "utf8",
   });
+  // Observe termination immediately so a stream error can never become unhandled.
+  // The iterator still reports read errors; this promise only gates FD cleanup.
+  const terminal = finished(input, { cleanup: true }).catch(() => undefined);
   const lines = createInterface({ input, crlfDelay: Infinity });
   const output: string[] = [];
   let eligible = 0;
@@ -183,7 +186,8 @@ export async function readSession(
     }
   } finally {
     lines.close();
-    input.pause();
+    input.destroy();
+    await terminal;
     await resolved.handle.close();
   }
 
