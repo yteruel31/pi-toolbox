@@ -73,8 +73,59 @@ The package knows how to start these servers when both a project root marker and
 - `svelteserver`
 - `vue-language-server`
 - `bash-language-server`
+- opt-in SonarQube Cloud Connected Mode through the bundled adapter
 
 Executables are resolved from project-local `node_modules/.bin`, Python virtual environments, local `bin`, then `$PATH`. When multiple semantic servers support a file, the first available server by priority is used. Diagnostics-only sidecars also run and their diagnostics are merged into one result. Biome is enabled only when a `biome.json` or `biome.jsonc` project root and a `biome` executable are present.
+
+## Optional SonarQube Cloud diagnostics
+
+SonarQube Cloud Connected Mode is available through an opt-in diagnostics adapter. It uses the official SonarQube for VS Code runtime without redistributing Sonar artifacts in this package. Install the pinned runtime and JGit worktree compatibility JAR:
+
+```bash
+npx --yes --package @yteruel31/pi-lsp pi-lsp-sonar-install
+```
+
+The installer downloads the platform-specific SonarQube for VS Code 5.8.1 release and JGit 7.0.0 from their official sources, verifies pinned SHA-256 checksums, rejects unsafe VSIX paths and symlinks, then installs approximately 340MB under the user data directory.
+
+Enable the adapter only in the user configuration at `~/.pi/agent/lsp.json`:
+
+```json
+{
+  "sonarqube": {
+    "enabled": true,
+    "focusOnNewCode": true,
+    "jgitWorktreeSupport": true,
+    "connection": {
+      "provider": "sonarcloud",
+      "connectionId": "gigapay-sonarcloud",
+      "organizationKey": "gigapay",
+      "region": "EU",
+      "tokenCommand": [
+        "secret-tool",
+        "lookup",
+        "service",
+        "pi-lsp",
+        "provider",
+        "sonarcloud",
+        "organization",
+        "gigapay"
+      ]
+    }
+  }
+}
+```
+
+`tokenCommand` is an argv array and never runs through a shell. Its first trimmed output line is cached for the adapter session, never logged, and never passed to the Java process. An explicit `tokenEnv` can be used instead. Sonar credential and connection settings from project `.pi/lsp.json` files are ignored, and projects cannot override the generated `sonarqube` server command or arguments; they may only disable it. The adapter reads `sonar.projectKey` and `sonar.organization` from the project-owned `sonar-project.properties` and refuses an organization mismatch.
+
+Sonar is on-demand by default so it adds no latency or JVM work to automatic diagnostics after `write` and `edit`. Ask for it explicitly with a long enough timeout for the first Connected Mode synchronization:
+
+```text
+lsp diagnostics file=src/example.ts timeout=60
+```
+
+That explicit result merges TypeScript, Biome, and Sonar diagnostics. Sonar currently publishes unversioned diagnostics, so a publication may briefly describe the previous document contents after a rapid edit; run diagnostics again when a result looks stale.
+
+`jgitWorktreeSupport` is experimental and off by default. It prepends the pinned JGit 7 JAR to fix repository discovery for linked bare worktrees. It enables exact branch matching only when that branch exists as a SonarQube Cloud server branch; pull-request branches are not server-branch candidates in this path.
 
 ## Configuration
 
@@ -104,7 +155,8 @@ User configuration lives at `~/.pi/agent/lsp.json`. Trusted projects can overrid
       "languageId": "mine",
       "features": {
         "diagnostics": true,
-        "semantics": false
+        "semantics": false,
+        "diagnosticsOnMutation": true
       },
       "initializationOptions": {},
       "settings": {}
@@ -113,7 +165,7 @@ User configuration lives at `~/.pi/agent/lsp.json`. Trusted projects can overrid
 }
 ```
 
-Project configuration wins over user configuration. A server value of `false`, or `{ "disabled": true }`, disables it. Both `features.diagnostics` and `features.semantics` default to `true` for compatibility. Servers with semantics enabled participate in primary-server selection; servers configured with diagnostics enabled and semantics disabled run alongside that primary server.
+Project configuration wins over user configuration, except for SonarQube credentials and connections, which are user-only. A server value of `false`, or `{ "disabled": true }`, disables it. Both `features.diagnostics` and `features.semantics` default to `true` for compatibility. `features.diagnosticsOnMutation` defaults to `true`; set it to `false` for an on-demand server that participates only in explicit `lsp diagnostics` calls. Servers with semantics enabled participate in primary-server selection; servers configured with diagnostics enabled and semantics disabled run alongside that primary server.
 
 ## v1 non-goals
 

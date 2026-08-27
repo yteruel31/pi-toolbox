@@ -117,6 +117,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
     promptSnippet: "Query language servers for diagnostics, navigation, symbols, and safe semantic rename previews",
     promptGuidelines: [
       "Use lsp definition, references, hover, and symbols for symbol-aware code navigation when a language server is available.",
+      "When on-demand SonarQube diagnostics are configured and relevant, request lsp diagnostics with a 60-second timeout.",
       "Use lsp rename instead of text replacement for cross-file symbol renames; preview first, then apply only when the requested rename is clear.",
     ],
     parameters: lspSchema,
