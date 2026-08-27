@@ -58,10 +58,10 @@ All search is lexical SQLite FTS5 search ranked with BM25. Semantic similarity a
 
 ## Storage
 
-All package state is under `~/.pi/context/`:
+All package state is under Pi's agent directory at `~/.pi/agent/context/`:
 
 ```text
-~/.pi/context/
+~/.pi/agent/context/
 ├── config.json
 ├── memory.db
 ├── sessions.db
@@ -138,7 +138,7 @@ At startup the package probes SQLite FTS5. If FTS5 is unavailable, persistent `m
   ```
 
 - **Results stale or absent:** check configured roots, extensions, excludes, and limits; run the appropriate reindex command.
-- **Reset all package data:** stop Pi, then remove `~/.pi/context/`. This permanently deletes configuration and all three indexes. Session-ledger observational entries remain in their Pi session files.
+- **Reset all package data:** stop Pi, then remove `~/.pi/agent/context/`. This permanently deletes configuration and all three indexes. Session-ledger observational entries remain in their Pi session files.
 
 ## Rollout and compatibility
 
