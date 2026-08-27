@@ -1,12 +1,25 @@
 import * as path from "node:path";
 
 import { LspClient } from "./client.js";
-import { findProjectRoot, pathIsWithin, resolveExecutable, supportsFile } from "./paths.js";
-import type { LspConfig, PublishedDiagnostics, ResolvedServer, ServerDefinition } from "./types.js";
+import { fileToUri, findProjectRoot, pathIsWithin, resolveExecutable, supportsFile } from "./paths.js";
+import type {
+  AggregatedDiagnostics,
+  Diagnostic,
+  DiagnosticServerFailure,
+  LspConfig,
+  PublishedDiagnostics,
+  ResolvedServer,
+  ServerDefinition,
+} from "./types.js";
 
 interface InitFailure {
   at: number;
   message: string;
+}
+
+interface DiagnosticClientSelection {
+  clients: LspClient[];
+  failures: DiagnosticServerFailure[];
 }
 
 export interface ServerStatus {
@@ -19,7 +32,28 @@ export interface ServerStatus {
 }
 
 function clientKey(server: ResolvedServer): string {
-  return JSON.stringify([server.command, server.root, server.definition.args, server.definition.initializationOptions ?? null, server.definition.settings ?? null]);
+  return JSON.stringify([
+    server.definition.name,
+    server.command,
+    server.root,
+    server.definition.args,
+    server.definition.initializationOptions ?? null,
+    server.definition.settings ?? null,
+  ]);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function diagnosticIdentity(diagnostic: Diagnostic): string {
+  return JSON.stringify([
+    diagnostic.range,
+    diagnostic.severity ?? 1,
+    diagnostic.source ?? "",
+    diagnostic.code ?? "",
+    diagnostic.message.replace(/\s+/g, " ").trim(),
+  ]);
 }
 
 function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -69,24 +103,40 @@ export class LspRegistry {
     filePath: string,
     timeoutMs: number,
     signal?: AbortSignal,
-  ): Promise<{ client: LspClient; diagnostics: PublishedDiagnostics } | null> {
-    const client = await this.clientForFile(filePath, signal);
-    if (!client) return null;
-    signal?.throwIfAborted();
-    const sync = await client.syncFile(filePath);
-    signal?.throwIfAborted();
-    if (!sync.changed) {
-      const existing = client.latestDiagnostics(sync.uri);
-      if (existing) return { client, diagnostics: existing };
-    }
-    const diagnostics = await client.waitForDiagnostics(
-      sync.uri,
-      sync.beforeDiagnosticsGeneration,
-      sync.documentVersion,
-      timeoutMs,
-      signal,
+  ): Promise<AggregatedDiagnostics | null> {
+    if (this.closed || !this.projectTrusted || !pathIsWithin(this.cwd, filePath)) return null;
+    const selection = await this.diagnosticClientsForFile(filePath, signal);
+    if (selection.clients.length === 0 && selection.failures.length === 0) return null;
+
+    const outcomes = await Promise.allSettled(
+      selection.clients.map(async (client) => ({ client, diagnostics: await this.syncClientDiagnostics(client, filePath, timeoutMs, signal) })),
     );
-    return { client, diagnostics };
+    signal?.throwIfAborted();
+
+    const failures = [...selection.failures];
+    const diagnostics: Diagnostic[] = [];
+    const seen = new Set<string>();
+    for (let index = 0; index < outcomes.length; index += 1) {
+      const outcome = outcomes[index]!;
+      const client = selection.clients[index]!;
+      let published: PublishedDiagnostics | undefined;
+      if (outcome.status === "fulfilled") {
+        published = outcome.value.diagnostics;
+      } else {
+        failures.push({ server: client.name, message: errorMessage(outcome.reason) });
+        published = client.latestDiagnostics(fileToUri(filePath));
+      }
+      for (const diagnostic of published?.diagnostics ?? []) {
+        const attributed = diagnostic.source ? diagnostic : { ...diagnostic, source: client.name };
+        const identity = diagnosticIdentity(attributed);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        diagnostics.push(attributed);
+      }
+    }
+
+    const servers = [...new Set(selection.clients.map((client) => client.name))];
+    return { servers, diagnostics, complete: failures.length === 0, failures };
   }
 
   async prepareFile(filePath: string, signal?: AbortSignal): Promise<LspClient> {
@@ -147,13 +197,64 @@ export class LspRegistry {
 
   private async resolveForFile(filePath: string): Promise<ResolvedServer | null> {
     for (const definition of this.config.servers) {
-      if (!supportsFile(definition, filePath)) continue;
-      const root = await findProjectRoot(filePath, this.cwd, definition.rootMarkers);
-      if (!root) continue;
-      const command = await this.resolveCommand(definition, root);
-      if (command) return { definition, command, root };
+      if (!definition.features.semantics) continue;
+      const resolved = await this.resolveDefinitionForFile(definition, filePath);
+      if (resolved) return resolved;
     }
     return null;
+  }
+
+  private async diagnosticClientsForFile(filePath: string, signal?: AbortSignal): Promise<DiagnosticClientSelection> {
+    const resolved: ResolvedServer[] = [];
+    const primary = await this.resolveForFile(filePath);
+    if (primary?.definition.features.diagnostics) resolved.push(primary);
+
+    for (const definition of this.config.servers) {
+      if (!definition.features.diagnostics || definition.features.semantics) continue;
+      const sidecar = await this.resolveDefinitionForFile(definition, filePath);
+      if (sidecar) resolved.push(sidecar);
+    }
+
+    const outcomes = await Promise.allSettled(resolved.map((server) => this.getOrCreate(server, signal)));
+    signal?.throwIfAborted();
+    const clients: LspClient[] = [];
+    const failures: DiagnosticServerFailure[] = [];
+    for (let index = 0; index < outcomes.length; index += 1) {
+      const outcome = outcomes[index]!;
+      if (outcome.status === "fulfilled") clients.push(outcome.value);
+      else failures.push({ server: resolved[index]!.definition.name, message: errorMessage(outcome.reason) });
+    }
+    return { clients, failures };
+  }
+
+  private async resolveDefinitionForFile(definition: ServerDefinition, filePath: string): Promise<ResolvedServer | null> {
+    if (!supportsFile(definition, filePath)) return null;
+    const root = await findProjectRoot(filePath, this.cwd, definition.rootMarkers);
+    if (!root) return null;
+    const command = await this.resolveCommand(definition, root);
+    return command ? { definition, command, root } : null;
+  }
+
+  private async syncClientDiagnostics(
+    client: LspClient,
+    filePath: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<PublishedDiagnostics> {
+    signal?.throwIfAborted();
+    const sync = await client.syncFile(filePath);
+    signal?.throwIfAborted();
+    if (!sync.changed) {
+      const existing = client.latestDiagnostics(sync.uri);
+      if (existing) return existing;
+    }
+    return client.waitForDiagnostics(
+      sync.uri,
+      sync.beforeDiagnosticsGeneration,
+      sync.documentVersion,
+      timeoutMs,
+      signal,
+    );
   }
 
   private resolveCommand(definition: ServerDefinition, root: string): Promise<string | null> {

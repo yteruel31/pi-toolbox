@@ -43,7 +43,13 @@ test("reports only new diagnostics and announces a cleared file", () => {
   assert.equal(second?.diagnostics.length, 1);
   assert.equal(second?.delayed, true);
 
-  const cleared = ledger.update("/repo", "/repo/src/a.ts", "typescript", [], 50, false);
+  assert.equal(
+    ledger.update("/repo", "/repo/src/a.ts", "typescript, biome", [], 50, false, false),
+    null,
+    "an incomplete aggregate cannot claim that diagnostics were cleared",
+  );
+
+  const cleared = ledger.update("/repo", "/repo/src/a.ts", "typescript, biome", [], 50, false);
   assert.equal(cleared?.cleared, true);
   assert.match(formatDiagnosticCardForModel(cleared!), /cleared/);
 });

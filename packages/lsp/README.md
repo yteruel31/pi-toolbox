@@ -65,6 +65,7 @@ The package knows how to start these servers when both a project root marker and
 
 - `basedpyright-langserver` or `pyright-langserver`
 - `typescript-language-server`
+- `biome lsp-proxy`
 - `rust-analyzer`
 - `gopls`
 - `clangd`
@@ -73,7 +74,7 @@ The package knows how to start these servers when both a project root marker and
 - `vue-language-server`
 - `bash-language-server`
 
-Executables are resolved from project-local `node_modules/.bin`, Python virtual environments, local `bin`, then `$PATH`. When multiple primary servers support a file, the first available server by priority is used.
+Executables are resolved from project-local `node_modules/.bin`, Python virtual environments, local `bin`, then `$PATH`. When multiple semantic servers support a file, the first available server by priority is used. Diagnostics-only sidecars also run and their diagnostics are merged into one result. Biome is enabled only when a `biome.json` or `biome.jsonc` project root and a `biome` executable are present.
 
 ## Configuration
 
@@ -101,6 +102,10 @@ User configuration lives at `~/.pi/agent/lsp.json`. Trusted projects can overrid
       "fileTypes": [".mine"],
       "rootMarkers": ["mine.json", ".git"],
       "languageId": "mine",
+      "features": {
+        "diagnostics": true,
+        "semantics": false
+      },
       "initializationOptions": {},
       "settings": {}
     }
@@ -108,7 +113,7 @@ User configuration lives at `~/.pi/agent/lsp.json`. Trusted projects can overrid
 }
 ```
 
-Project configuration wins over user configuration. A server value of `false`, or `{ "disabled": true }`, disables it.
+Project configuration wins over user configuration. A server value of `false`, or `{ "disabled": true }`, disables it. Both `features.diagnostics` and `features.semantics` default to `true` for compatibility. Servers with semantics enabled participate in primary-server selection; servers configured with diagnostics enabled and semantics disabled run alongside that primary server.
 
 ## v1 non-goals
 

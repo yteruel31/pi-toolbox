@@ -18,6 +18,7 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
     fileTypes: [".py", ".pyi"],
     rootMarkers: ["pyproject.toml", "pyrightconfig.json", "setup.py", "setup.cfg", "requirements.txt", ".git"],
     languageIds: { ".py": "python", ".pyi": "python" },
+    features: { diagnostics: true, semantics: true },
     priority: 10,
   },
   {
@@ -27,6 +28,7 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
     fileTypes: [".py", ".pyi"],
     rootMarkers: ["pyproject.toml", "pyrightconfig.json", "setup.py", "setup.cfg", "requirements.txt", ".git"],
     languageIds: { ".py": "python", ".pyi": "python" },
+    features: { diagnostics: true, semantics: true },
     priority: 20,
   },
   {
@@ -45,7 +47,30 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
       ".mjs": "javascript",
       ".cjs": "javascript",
     },
+    features: { diagnostics: true, semantics: true },
     priority: 10,
+  },
+  {
+    name: "biome",
+    command: "biome",
+    args: ["lsp-proxy"],
+    fileTypes: [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".json", ".jsonc", ".css"],
+    rootMarkers: ["biome.json", "biome.jsonc"],
+    languageIds: {
+      ".ts": "typescript",
+      ".tsx": "typescriptreact",
+      ".js": "javascript",
+      ".jsx": "javascriptreact",
+      ".mts": "typescript",
+      ".cts": "typescript",
+      ".mjs": "javascript",
+      ".cjs": "javascript",
+      ".json": "json",
+      ".jsonc": "jsonc",
+      ".css": "css",
+    },
+    features: { diagnostics: true, semantics: false },
+    priority: 20,
   },
   {
     name: "rust-analyzer",
@@ -54,6 +79,7 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
     fileTypes: [".rs"],
     rootMarkers: ["Cargo.toml", "rust-project.json", ".git"],
     languageIds: { ".rs": "rust" },
+    features: { diagnostics: true, semantics: true },
     priority: 10,
   },
   {
@@ -63,6 +89,7 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
     fileTypes: [".go"],
     rootMarkers: ["go.work", "go.mod", ".git"],
     languageIds: { ".go": "go" },
+    features: { diagnostics: true, semantics: true },
     priority: 10,
   },
   {
@@ -83,6 +110,7 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
       ".m": "objective-c",
       ".mm": "objective-cpp",
     },
+    features: { diagnostics: true, semantics: true },
     priority: 10,
   },
   {
@@ -92,6 +120,7 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
     fileTypes: [".lua"],
     rootMarkers: [".luarc.json", ".luarc.jsonc", ".git"],
     languageIds: { ".lua": "lua" },
+    features: { diagnostics: true, semantics: true },
     priority: 10,
   },
   {
@@ -101,6 +130,7 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
     fileTypes: [".svelte"],
     rootMarkers: ["svelte.config.js", "svelte.config.ts", "package.json", ".git"],
     languageIds: { ".svelte": "svelte" },
+    features: { diagnostics: true, semantics: true },
     priority: 10,
   },
   {
@@ -110,6 +140,7 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
     fileTypes: [".vue"],
     rootMarkers: ["vite.config.ts", "vite.config.js", "package.json", ".git"],
     languageIds: { ".vue": "vue" },
+    features: { diagnostics: true, semantics: true },
     priority: 10,
   },
   {
@@ -119,6 +150,7 @@ const DEFAULT_SERVERS: ServerDefinition[] = [
     fileTypes: [".sh", ".bash", ".zsh"],
     rootMarkers: [".git"],
     languageIds: { ".sh": "shellscript", ".bash": "shellscript", ".zsh": "shellscript" },
+    features: { diagnostics: true, semantics: true },
     priority: 10,
   },
 ];
@@ -134,6 +166,7 @@ interface RawServerConfig {
   settings?: unknown;
   disabled?: unknown;
   priority?: unknown;
+  features?: unknown;
 }
 
 interface RawConfig {
@@ -185,6 +218,17 @@ function mergeServer(base: ServerDefinition | undefined, name: string, raw: RawS
   const settings = isRecord(raw.settings) ? raw.settings : base?.settings;
   const disabled = typeof raw.disabled === "boolean" ? raw.disabled : base?.disabled;
   const priority = typeof raw.priority === "number" && Number.isFinite(raw.priority) ? raw.priority : base?.priority ?? 100;
+  const features = { ...(base?.features ?? { diagnostics: true, semantics: true }) };
+  if (raw.features !== undefined) {
+    if (!isRecord(raw.features)) {
+      warnings.push(`server ${name}: features must be an object`);
+    } else {
+      if (typeof raw.features.diagnostics === "boolean") features.diagnostics = raw.features.diagnostics;
+      else if (raw.features.diagnostics !== undefined) warnings.push(`server ${name}: features.diagnostics must be a boolean`);
+      if (typeof raw.features.semantics === "boolean") features.semantics = raw.features.semantics;
+      else if (raw.features.semantics !== undefined) warnings.push(`server ${name}: features.semantics must be a boolean`);
+    }
+  }
 
   let languageIds = base?.languageIds ?? {};
   if (isRecord(raw.languageIds)) {
@@ -209,6 +253,7 @@ function mergeServer(base: ServerDefinition | undefined, name: string, raw: RawS
     settings,
     disabled,
     priority,
+    features,
   };
 }
 
@@ -255,7 +300,7 @@ export interface LoadConfigOptions {
 export async function loadConfig(options: LoadConfigOptions): Promise<LspConfig> {
   const warnings: string[] = [];
   const state = {
-    servers: new Map(DEFAULT_SERVERS.map((server) => [server.name, { ...server, args: [...server.args], fileTypes: [...server.fileTypes], rootMarkers: [...server.rootMarkers], languageIds: { ...server.languageIds } }])),
+    servers: new Map(DEFAULT_SERVERS.map((server) => [server.name, { ...server, args: [...server.args], fileTypes: [...server.fileTypes], rootMarkers: [...server.rootMarkers], languageIds: { ...server.languageIds }, features: { ...server.features } }])),
     diagnostics: { ...DEFAULT_DIAGNOSTICS },
     idleTimeoutMs: 300_000,
     requestTimeoutMs: 20_000,

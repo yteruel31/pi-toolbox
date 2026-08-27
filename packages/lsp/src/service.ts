@@ -4,7 +4,7 @@ import { loadConfig } from "./config.js";
 import { DiagnosticLedger, MutationVersions } from "./diagnostics.js";
 import { executeLspOperation, type LspToolInput } from "./operations.js";
 import { LspRegistry } from "./registry.js";
-import type { DiagnosticCardData, LspConfig, LspToolDetails } from "./types.js";
+import type { AggregatedDiagnostics, DiagnosticCardData, LspConfig, LspToolDetails } from "./types.js";
 
 export interface LspServiceOptions {
   cwd: string;
@@ -52,28 +52,20 @@ export class LspService {
     this.mutations.invalidate(path.resolve(filePath), version);
   }
 
-  async diagnosticsAfterMutation(
-    filePath: string,
-    signal?: AbortSignal,
-  ): Promise<{ server: string; diagnostics: import("./types.js").Diagnostic[] } | null> {
+  async diagnosticsAfterMutation(filePath: string, signal?: AbortSignal): Promise<AggregatedDiagnostics | null> {
     if (!this.config.diagnostics.enabled) return null;
-    const result = await this.registry.syncDiagnostics(filePath, this.config.diagnostics.deferredTimeoutMs, signal);
-    if (!result) return null;
-    return { server: result.client.name, diagnostics: result.diagnostics.diagnostics };
+    return this.registry.syncDiagnostics(filePath, this.config.diagnostics.deferredTimeoutMs, signal);
   }
 
-  makeDiagnosticCard(
-    filePath: string,
-    result: { server: string; diagnostics: import("./types.js").Diagnostic[] },
-    delayed: boolean,
-  ): DiagnosticCardData | null {
+  makeDiagnosticCard(filePath: string, result: AggregatedDiagnostics, delayed: boolean): DiagnosticCardData | null {
     return this.ledger.update(
       this.cwd,
       filePath,
-      result.server,
+      result.servers.join(", "),
       result.diagnostics,
       this.config.diagnostics.maxDiagnostics,
       delayed,
+      result.complete,
     );
   }
 

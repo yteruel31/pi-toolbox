@@ -210,12 +210,15 @@ export async function executeLspOperation(context: OperationContext, input: LspT
   if (input.action === "diagnostics") {
     const result = await context.registry.syncDiagnostics(filePath, timeoutMs(input), signal);
     if (!result) throw new Error(`No language server is available for ${file}`);
-    const diagnostics = result.diagnostics.diagnostics;
-    const counts = countDiagnostics(diagnostics);
+    const counts = countDiagnostics(result.diagnostics);
+    const partial = result.complete ? "" : ` (partial; ${result.failures.length} server failure${result.failures.length === 1 ? "" : "s"})`;
     return {
       action: input.action,
-      summary: `${file}: ${counts.errors} errors, ${counts.warnings} warnings, ${counts.information} info, ${counts.hints} hints`,
-      lines: diagnosticLines(file, diagnostics),
+      summary: `${file}: ${counts.errors} errors, ${counts.warnings} warnings, ${counts.information} info, ${counts.hints} hints${partial}`,
+      lines: [
+        ...diagnosticLines(file, result.diagnostics),
+        ...result.failures.map((failure) => `server failure: ${failure.server} — ${failure.message}`),
+      ],
     };
   }
 

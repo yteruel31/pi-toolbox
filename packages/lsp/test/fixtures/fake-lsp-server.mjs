@@ -1,3 +1,9 @@
+const options = Object.fromEntries(process.argv.slice(2).map((argument) => {
+  const [key, ...value] = argument.replace(/^--/, "").split("=");
+  return [key, value.join("=") || "true"];
+}));
+const serverName = options.name ?? "fake";
+const diagnosticToken = options.token ?? "BROKEN";
 const documents = new Map();
 let buffer = Buffer.alloc(0);
 
@@ -13,15 +19,17 @@ function positionAt(text, offset) {
 }
 
 function publish(uri, text) {
-  const index = text.indexOf("BROKEN");
+  if (options["no-diagnostics"] === "true") return;
+  const index = text.indexOf(diagnosticToken);
   const diagnostics = index === -1 ? [] : [{
-    range: { start: positionAt(text, index), end: positionAt(text, index + 6) },
+    range: { start: positionAt(text, index), end: positionAt(text, index + diagnosticToken.length) },
     severity: 1,
-    code: "fake-error",
-    source: "fake",
-    message: "BROKEN is not valid",
+    code: `${serverName}-error`,
+    ...(options["omit-source"] === "true" ? {} : { source: serverName }),
+    message: `${diagnosticToken} is not valid`,
   }];
-  setTimeout(() => send({ method: "textDocument/publishDiagnostics", params: { uri, diagnostics } }), Number(process.env.FAKE_LSP_DELAY_MS ?? 0));
+  const delay = Number(options.delay ?? process.env.FAKE_LSP_DELAY_MS ?? 0);
+  setTimeout(() => send({ method: "textDocument/publishDiagnostics", params: { uri, diagnostics } }), delay);
 }
 
 function rangesFor(text, needle, newText) {
@@ -38,8 +46,10 @@ function handle(message) {
   const { id, method, params } = message;
   if (method === "initialize") {
     setTimeout(
-      () => send({ id, result: { capabilities: { textDocumentSync: 1, hoverProvider: true, definitionProvider: true, referencesProvider: true, documentSymbolProvider: true, renameProvider: { prepareProvider: true } } } }),
-      Number(process.env.FAKE_LSP_INIT_DELAY_MS ?? 0),
+      () => options["init-error"] === "true"
+        ? send({ id, error: { code: -32603, message: `${serverName} initialization failed` } })
+        : send({ id, result: { capabilities: { textDocumentSync: 1, hoverProvider: true, definitionProvider: true, referencesProvider: true, documentSymbolProvider: true, renameProvider: { prepareProvider: true } } } }),
+      Number(options["init-delay"] ?? process.env.FAKE_LSP_INIT_DELAY_MS ?? 0),
     );
     return;
   }
