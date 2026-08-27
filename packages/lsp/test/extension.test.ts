@@ -10,22 +10,31 @@ import lspExtension from "../src/index.js";
 
 const fakeServer = path.join(import.meta.dirname, "fixtures", "fake-lsp-server.mjs");
 
-test("wires fresh write diagnostics into model content and a post-result transcript entry", async () => {
+test("wires merged write diagnostics into model content and a post-result transcript entry", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-extension-"));
   await mkdir(path.join(root, ".pi"));
   await writeFile(path.join(root, ".pi", "lsp.json"), JSON.stringify({
     servers: {
       fake: {
         command: process.execPath,
-        args: [fakeServer],
+        args: [fakeServer, "--name=typescript", "--token=BROKEN"],
         fileTypes: [".ts"],
         rootMarkers: ["."],
         languageId: "typescript",
         priority: 0,
       },
+      biome: {
+        command: process.execPath,
+        args: [fakeServer, "--name=biome", "--token=BIOME"],
+        fileTypes: [".ts"],
+        rootMarkers: ["."],
+        languageId: "typescript",
+        features: { diagnostics: true, semantics: false },
+        priority: 1,
+      },
     },
   }));
-  await writeFile(path.join(root, "index.ts"), "const alpha = BROKEN;\n");
+  await writeFile(path.join(root, "index.ts"), "const alpha = BROKEN + BIOME;\n");
 
   const handlers = new Map<string, (...args: any[]) => any>();
   const entries: Array<{ type: string; data: unknown }> = [];
@@ -51,12 +60,13 @@ test("wires fresh write diagnostics into model content and a post-result transcr
       type: "tool_result",
       toolName: "write",
       toolCallId: "write-1",
-      input: { path: "index.ts", content: "const alpha = BROKEN;\n" },
+      input: { path: "index.ts", content: "const alpha = BROKEN + BIOME;\n" },
       content: [{ type: "text", text: "Wrote index.ts" }],
       details: undefined,
       isError: false,
     }, ctx);
-    assert.match(patched.content.at(-1).text, /fake:fake-error BROKEN is not valid/);
+    assert.match(patched.content.at(-1).text, /typescript:typescript-error BROKEN is not valid/);
+    assert.match(patched.content.at(-1).text, /biome:biome-error BIOME is not valid/);
     assert.equal(entries.length, 0, "card waits for the finalized tool result message");
 
     await handlers.get("message_end")?.({ message: { role: "toolResult", toolCallId: "write-1" } }, ctx);

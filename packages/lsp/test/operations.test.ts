@@ -18,6 +18,7 @@ function config(): LspConfig {
     fileTypes: [".ts"],
     rootMarkers: ["."],
     languageIds: { ".ts": "typescript" },
+    features: { diagnostics: true, semantics: true },
     priority: 1,
   };
   return {
@@ -51,6 +52,37 @@ test("runs navigation and preview-first semantic rename operations", async () =>
     const applied = await executeLspOperation(context, { action: "rename", file: "index.ts", line: 1, symbol: "alpha", new_name: "beta", apply: true });
     assert.equal(applied.applied, true);
     assert.equal(await readFile(file, "utf8"), "const beta = beta;\n");
+  } finally {
+    await registry.shutdownAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reports merged diagnostics and isolated server failures", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-operations-diagnostics-"));
+  const file = path.join(root, "index.ts");
+  await writeFile(file, "const value = BROKEN + BIOME;\n");
+  const lspConfig = config();
+  lspConfig.servers[0] = {
+    ...lspConfig.servers[0]!,
+    name: "typescript",
+    args: [fakeServer, "--name=typescript", "--token=BROKEN"],
+  };
+  lspConfig.servers.push({
+    ...lspConfig.servers[0],
+    name: "biome",
+    args: [fakeServer, "--name=biome", "--token=BIOME"],
+    features: { diagnostics: true, semantics: false },
+    priority: 2,
+  });
+  const registry = new LspRegistry(root, lspConfig, true);
+  const context = { cwd: root, registry, reload: async () => registry };
+
+  try {
+    const result = await executeLspOperation(context, { action: "diagnostics", file: "index.ts" });
+    assert.match(result.summary, /2 errors/);
+    assert.match(result.lines.join("\n"), /typescript:typescript-error BROKEN is not valid/);
+    assert.match(result.lines.join("\n"), /biome:biome-error BIOME is not valid/);
   } finally {
     await registry.shutdownAll();
     await rm(root, { recursive: true, force: true });

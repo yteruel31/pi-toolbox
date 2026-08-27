@@ -18,6 +18,7 @@ function definition(): ServerDefinition {
     fileTypes: [".ts"],
     rootMarkers: ["."],
     languageIds: { ".ts": "typescript" },
+    features: { diagnostics: true, semantics: true },
     priority: 1,
   };
 }

@@ -30,10 +30,54 @@ test("loads user config before trusted project overrides", async () => {
     assert.equal(trusted.diagnostics.inlineTimeoutMs, 1_200);
     assert.equal(trusted.servers.some((server) => server.name === "pyright"), false);
     assert.deepEqual(trusted.servers.find((server) => server.name === "custom")?.args, ["serve"]);
+    assert.deepEqual(trusted.servers.find((server) => server.name === "custom")?.features, { diagnostics: true, semantics: true });
 
     const untrusted = await loadConfig({ cwd: project, agentDir, configDirName: ".pi", projectTrusted: false });
     assert.equal(untrusted.diagnostics.inlineTimeoutMs, 900);
     assert.deepEqual(untrusted.servers.find((server) => server.name === "custom")?.args, ["--stdio"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("configures Biome as a diagnostics-only sidecar", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-biome-config-"));
+  const agentDir = path.join(root, "agent");
+  await mkdir(agentDir, { recursive: true });
+
+  try {
+    const config = await loadConfig({ cwd: root, agentDir, configDirName: ".pi", projectTrusted: true });
+    const biome = config.servers.find((server) => server.name === "biome");
+    assert.ok(biome);
+    assert.deepEqual(biome.args, ["lsp-proxy"]);
+    assert.deepEqual(biome.rootMarkers, ["biome.json", "biome.jsonc"]);
+    assert.deepEqual(biome.features, { diagnostics: true, semantics: false });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("merges per-server feature overrides without changing legacy defaults", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-feature-config-"));
+  const agentDir = path.join(root, "agent");
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(path.join(agentDir, "lsp.json"), JSON.stringify({
+    servers: {
+      typescript: { features: { diagnostics: false } },
+      custom: {
+        command: "custom-lsp",
+        fileTypes: [".mine"],
+        rootMarkers: ["mine.json"],
+        languageId: "mine",
+        features: { semantics: false },
+      },
+    },
+  }));
+
+  try {
+    const config = await loadConfig({ cwd: root, agentDir, configDirName: ".pi", projectTrusted: true });
+    assert.deepEqual(config.servers.find((server) => server.name === "typescript")?.features, { diagnostics: false, semantics: true });
+    assert.deepEqual(config.servers.find((server) => server.name === "custom")?.features, { diagnostics: true, semantics: false });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

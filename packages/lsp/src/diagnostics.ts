@@ -59,6 +59,7 @@ export class DiagnosticLedger {
     diagnostics: Diagnostic[],
     maxDiagnostics: number,
     delayed: boolean,
+    allowClear = true,
   ): DiagnosticCardData | null {
     const key = path.resolve(filePath);
     const previous = this.reported.get(key) ?? new Map<string, number>();
@@ -67,6 +68,7 @@ export class DiagnosticLedger {
       const identity = fingerprint(diagnostic);
       current.set(identity, (current.get(identity) ?? 0) + 1);
     }
+    if (current.size === 0 && !allowClear) return null;
     this.reported.set(key, current);
 
     if (current.size === 0) {

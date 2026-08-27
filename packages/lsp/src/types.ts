@@ -77,6 +77,11 @@ export interface SymbolInformation {
   containerName?: string;
 }
 
+export interface ServerFeatures {
+  diagnostics: boolean;
+  semantics: boolean;
+}
+
 export interface ServerDefinition {
   name: string;
   command: string;
@@ -88,6 +93,7 @@ export interface ServerDefinition {
   settings?: Record<string, unknown>;
   disabled?: boolean;
   priority: number;
+  features: ServerFeatures;
 }
 
 export interface DiagnosticsConfig {
@@ -141,6 +147,18 @@ export interface PublishedDiagnostics {
   diagnostics: Diagnostic[];
   generation: number;
   version?: number;
+}
+
+export interface DiagnosticServerFailure {
+  server: string;
+  message: string;
+}
+
+export interface AggregatedDiagnostics {
+  servers: string[];
+  diagnostics: Diagnostic[];
+  complete: boolean;
+  failures: DiagnosticServerFailure[];
 }
 
 export type JsonRpcId = string | number;
