@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Show the selected named-agent profile beside custom run titles and preserve it across session reloads.
+- Show the selected named-agent profile beside custom run titles in spawn transcript headings and run views, and preserve it across session reloads.
 
 ## 0.1.0
 

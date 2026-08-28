@@ -138,6 +138,32 @@ afterEach(async () => {
 });
 
 describe("Pi extension composition", () => {
+  it("renders named spawn calls with profile provenance and concise fallbacks", () => {
+    const runtime = fakePi();
+    createPiSubagentsExtension()(runtime.pi);
+    const renderCall = runtime.tools.get("subagent_spawn")?.renderCall;
+    expect(renderCall).toBeTypeOf("function");
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as any;
+    const render = (params: Record<string, unknown>) =>
+      renderCall!(params as never, theme, {} as never).render(240).join("\n").trimEnd();
+
+    expect(render({
+      prompt: "secret full prompt",
+      name: "spawn-transcript-profile",
+      agent: "unit-implementer",
+    })).toBe("Spawn subagent spawn-transcript-profile (unit-implementer)");
+    expect(render({ prompt: "secret full prompt", agent: "unit-implementer" }))
+      .toBe("Spawn subagent (unit-implementer)");
+    expect(render({ prompt: "secret full prompt", name: "custom-name" }))
+      .toBe("Spawn subagent custom-name");
+    expect(render({ prompt: "secret full prompt" })).toBe("Spawn subagent");
+    expect(render({ prompt: "secret full prompt", name: "unsafe\u001b[31m\nname", agent: "profile" }))
+      .toBe("Spawn subagent unsafe[31m name (profile)");
+  });
+
   it("registers six strict tools and composes wait, delivery, persistence, and shutdown", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-extension-"));
     temporary.push(cwd);

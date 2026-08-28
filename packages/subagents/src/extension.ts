@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { StringEnum } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import {
   DefaultPackageManager,
   SettingsManager,
@@ -39,7 +40,7 @@ import {
   type PiModelRuntimeLike,
 } from "./harnesses/pi.js";
 import { describeError } from "./shared/errors.js";
-import { formatRunIdentity } from "./shared/run-identity.js";
+import { formatRunIdentity, formatSpawnCallIdentity } from "./shared/run-identity.js";
 import { truncateText } from "./shared/truncate.js";
 import type {
   PersistedRunState,
@@ -236,6 +237,13 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       model: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
       reasoning_effort: Type.Optional(StringEnum(THINKING_LEVELS)),
     }),
+    renderCall(params, theme) {
+      return new Text(
+        theme.fg("toolTitle", theme.bold(`Spawn subagent${formatSpawnCallIdentity(params)}`)),
+        0,
+        0,
+      );
+    },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       sessionContext = ctx;
       const runtime = requireSession();
