@@ -905,11 +905,14 @@ export class RunManager {
     let maxSeq = 0;
     for (const record of state.runs) {
       maxSerial = Math.max(maxSerial, record.serial);
+      const restoredAgentProfile = record.agentProfile === undefined
+        ? undefined
+        : toDisplayTitle(sanitizeTerminalText(record.agentProfile));
       const run: InternalRun = {
         id: record.id,
         serial: record.serial,
         title: record.title,
-        agentProfile: record.agentProfile,
+        agentProfile: restoredAgentProfile === "" ? undefined : restoredAgentProfile,
         harness: record.harness,
         status: record.status,
         createdAt: record.createdAt,

@@ -147,16 +147,24 @@ describe("restore across session reloads", () => {
     return latest!;
   }
 
-  it("restores profile metadata and accepts older version-1 records without it", async () => {
+  it("normalizes restored profile metadata and accepts legacy records without it", async () => {
     const state = await buildPersistedState();
-    state.runs[0]!.agentProfile = "unit-implementer";
-    delete state.runs[1]!.agentProfile;
+    state.runs[0]!.agentProfile = "  unit\u001b[31m\n implementer  ";
+    state.runs[1]!.agentProfile = " \n\t ";
+    state.runs[2]!.agentProfile = "p".repeat(500);
+    const legacyRecord = state.runs[1]!;
+    delete legacyRecord.agentProfile;
 
+    const legacyRestored = new RunManager({ restore: state });
+    expect(legacyRestored.snapshot("run-2").agentProfile).toBeUndefined();
+
+    state.runs[1]!.agentProfile = " \n\t ";
     const restored = new RunManager({ restore: state });
-    expect(restored.snapshot("run-1").agentProfile).toBe("unit-implementer");
-    expect(restored.list()[0]!.agentProfile).toBe("unit-implementer");
-    expect(restored.check("run-1").agentProfile).toBe("unit-implementer");
+    expect(restored.snapshot("run-1").agentProfile).toBe("unit[31m implementer");
+    expect(restored.list()[0]!.agentProfile).toBe("unit[31m implementer");
+    expect(restored.check("run-1").agentProfile).toBe("unit[31m implementer");
     expect(restored.snapshot("run-2").agentProfile).toBeUndefined();
+    expect(restored.snapshot("run-3").agentProfile!.length).toBeLessThanOrEqual(60);
   });
 
   it("does not re-deliver consumed results, re-queues owed ones, fails interrupted ones", async () => {

@@ -64,6 +64,7 @@ const STATE_ENTRY = "pi-subagents-state-v1";
 const BTW_ENTRY = "pi-subagents-btw-v1";
 const MAX_TOOL_TEXT = 49_000;
 const MAX_IDS = 64;
+const MAX_AGENT_PROFILE_CHARS = 100;
 const THINKING_LEVELS = [
   "off",
   "minimal",
@@ -782,7 +783,10 @@ function isPersistedState(value: unknown): value is PersistedRunState {
       typeof record.id === "string" && /^run-[1-9][0-9]*$/.test(record.id) &&
       isPositiveInteger(record.serial) &&
       typeof record.title === "string" &&
-      (record.agentProfile === undefined || typeof record.agentProfile === "string") &&
+      (record.agentProfile === undefined || (
+        typeof record.agentProfile === "string" &&
+        record.agentProfile.length <= MAX_AGENT_PROFILE_CHARS
+      )) &&
       (record.harness === "pi" || record.harness === "claude") &&
       ["queued", "running", "completed", "failed", "cancelled"].includes(String(record.status)) &&
       typeof record.createdAt === "number" && Number.isFinite(record.createdAt) &&
