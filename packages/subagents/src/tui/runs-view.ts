@@ -1,4 +1,5 @@
 import { isSettledStatus } from "../shared/types.js";
+import { formatRunIdentity } from "../shared/run-identity.js";
 import type { RunInspection, RunListEntry } from "../shared/types.js";
 import type { KeyHint, RunsKeyAction } from "./keys.js";
 import {
@@ -303,7 +304,7 @@ export function formatRunRow(
   const marker = selected ? "›" : " ";
   const model = run.model ? ` ${run.model}` : "";
   return fitLine(
-    `${marker} ${statusGlyph(run.status)} ${run.id} [${run.harness}] ${run.title} · ${run.status} ${formatElapsed(run.elapsedMs)}${model}`,
+    `${marker} ${statusGlyph(run.status)} ${run.id} [${run.harness}] ${formatRunIdentity(run)} · ${run.status} ${formatElapsed(run.elapsedMs)}${model}`,
     width,
   );
 }
@@ -339,7 +340,7 @@ export function runDetailLines(
   } else {
     const model = inspection.model ? ` · ${inspection.model}` : "";
     lines.push(fitLine(
-      `${statusGlyph(inspection.status)} ${inspection.id} [${inspection.harness}] ${inspection.title}`,
+      `${statusGlyph(inspection.status)} ${inspection.id} [${inspection.harness}] ${formatRunIdentity(inspection)}`,
       width,
     ));
     lines.push(fitLine(

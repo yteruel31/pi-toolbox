@@ -1,3 +1,4 @@
+import { formatRunIdentity } from "../shared/run-identity.js";
 import { isSettledStatus } from "../shared/types.js";
 import type { RunListEntry } from "../shared/types.js";
 import { fitLine, formatElapsed, statusGlyph } from "./text.js";
@@ -51,7 +52,7 @@ export function widgetLines(
   const roomForRows = active.length > maxLines ? maxLines - 1 : maxLines;
   for (const run of active.slice(0, roomForRows)) {
     lines.push(fitLine(
-      `${statusGlyph(run.status)} ${run.id} ${run.title} · ${formatElapsed(run.elapsedMs)}`,
+      `${statusGlyph(run.status)} ${run.id} ${formatRunIdentity(run)} · ${formatElapsed(run.elapsedMs)}`,
       width,
     ));
   }

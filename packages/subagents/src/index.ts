@@ -96,6 +96,7 @@ export type {
 } from "./shared/types.js";
 
 // Shared errors and utilities
+export { formatRunIdentity } from "./shared/run-identity.js";
 export {
   ConcurrencyLimitError,
   InvalidArgumentError,

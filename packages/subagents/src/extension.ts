@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { StringEnum } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import {
   DefaultPackageManager,
   SettingsManager,
@@ -39,6 +40,7 @@ import {
   type PiModelRuntimeLike,
 } from "./harnesses/pi.js";
 import { describeError } from "./shared/errors.js";
+import { formatRunIdentity, formatSpawnCallIdentity } from "./shared/run-identity.js";
 import { truncateText } from "./shared/truncate.js";
 import type {
   PersistedRunState,
@@ -62,6 +64,7 @@ const STATE_ENTRY = "pi-subagents-state-v1";
 const BTW_ENTRY = "pi-subagents-btw-v1";
 const MAX_TOOL_TEXT = 49_000;
 const MAX_IDS = 64;
+const MAX_AGENT_PROFILE_CHARS = 100;
 const THINKING_LEVELS = [
   "off",
   "minimal",
@@ -235,6 +238,13 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       model: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
       reasoning_effort: Type.Optional(StringEnum(THINKING_LEVELS)),
     }),
+    renderCall(params, theme) {
+      return new Text(
+        theme.fg("toolTitle", theme.bold(`Spawn subagent${formatSpawnCallIdentity(params)}`)),
+        0,
+        0,
+      );
+    },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       sessionContext = ctx;
       const runtime = requireSession();
@@ -268,6 +278,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       const snapshot = runtime.manager.spawn({
         prompt: params.prompt,
         title: params.name,
+        agentProfile: params.agent,
         harness,
         systemPrompt: resolution.agent?.systemPrompt,
         tools: resolution.agent?.tools,
@@ -277,7 +288,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       });
       updateStatus();
       return textResult(
-        `Started ${snapshot.id} (${snapshot.harness}, ${snapshot.status})${snapshot.title ? `: ${snapshot.title}` : ""}.`,
+        `Started ${snapshot.id} (${snapshot.harness}, ${snapshot.status})${snapshot.title ? `: ${formatRunIdentity(snapshot)}` : ""}.`,
         {
           snapshot,
           route: resolution.route,
@@ -488,7 +499,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       const runs = requireSession().manager.list();
       const lines = runs.length === 0
         ? ["No subagent runs in this session."]
-        : runs.map((run) => `${run.id}  ${run.status}  ${run.harness}  ${run.title}`);
+        : runs.map((run) => `${run.id}  ${run.status}  ${run.harness}  ${formatRunIdentity(run)}`);
       showHuman(ctx, ["Subagent runs", ...lines].join("\n"));
     },
   });
@@ -772,6 +783,10 @@ function isPersistedState(value: unknown): value is PersistedRunState {
       typeof record.id === "string" && /^run-[1-9][0-9]*$/.test(record.id) &&
       isPositiveInteger(record.serial) &&
       typeof record.title === "string" &&
+      (record.agentProfile === undefined || (
+        typeof record.agentProfile === "string" &&
+        record.agentProfile.length <= MAX_AGENT_PROFILE_CHARS
+      )) &&
       (record.harness === "pi" || record.harness === "claude") &&
       ["queued", "running", "completed", "failed", "cancelled"].includes(String(record.status)) &&
       typeof record.createdAt === "number" && Number.isFinite(record.createdAt) &&
@@ -853,7 +868,7 @@ function formatDeliveredResults(results: readonly RunResult[]): string {
 }
 
 function formatOneResult(result: RunResult): string {
-  const header = `${result.id} (${result.harness}) ${result.status}: ${result.title}`;
+  const header = `${result.id} (${result.harness}) ${result.status}: ${formatRunIdentity(result)}`;
   const body = result.status === "completed"
     ? result.finalText || "(no final text)"
     : result.errorText || result.finalText || "(no diagnostics)";

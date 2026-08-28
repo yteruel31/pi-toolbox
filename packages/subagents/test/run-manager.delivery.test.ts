@@ -105,7 +105,12 @@ describe("result delivery and de-duplication", () => {
       hooks: { persist: (s) => states.push(structuredClone(s)) },
     });
     const harness = new FakeHarness();
-    manager.spawn({ prompt: "a", harness });
+    manager.spawn({
+      prompt: "a",
+      title: "Custom review title",
+      agentProfile: "unit-implementer",
+      harness,
+    });
     harness.last.resolve({ finalText: "A" });
     await flush();
     manager.drainDeliveries();
@@ -114,6 +119,8 @@ describe("result delivery and de-duplication", () => {
     const last = states[states.length - 1]!;
     expect(last.version).toBe(1);
     expect(last.runs[0]!.consumption).toBe("delivered");
+    expect(last.runs[0]!.title).toBe("Custom review title");
+    expect(last.runs[0]!.agentProfile).toBe("unit-implementer");
     // Must round-trip through JSON for custom session entries.
     expect(() => JSON.stringify(last)).not.toThrow();
   });
@@ -139,6 +146,26 @@ describe("restore across session reloads", () => {
     await manager.wait(["run-1"]);
     return latest!;
   }
+
+  it("normalizes restored profile metadata and accepts legacy records without it", async () => {
+    const state = await buildPersistedState();
+    state.runs[0]!.agentProfile = "  unit\u001b[31m\n implementer  ";
+    state.runs[1]!.agentProfile = " \n\t ";
+    state.runs[2]!.agentProfile = "p".repeat(500);
+    const legacyRecord = state.runs[1]!;
+    delete legacyRecord.agentProfile;
+
+    const legacyRestored = new RunManager({ restore: state });
+    expect(legacyRestored.snapshot("run-2").agentProfile).toBeUndefined();
+
+    state.runs[1]!.agentProfile = " \n\t ";
+    const restored = new RunManager({ restore: state });
+    expect(restored.snapshot("run-1").agentProfile).toBe("unit[31m implementer");
+    expect(restored.list()[0]!.agentProfile).toBe("unit[31m implementer");
+    expect(restored.check("run-1").agentProfile).toBe("unit[31m implementer");
+    expect(restored.snapshot("run-2").agentProfile).toBeUndefined();
+    expect(restored.snapshot("run-3").agentProfile!.length).toBeLessThanOrEqual(60);
+  });
 
   it("does not re-deliver consumed results, re-queues owed ones, fails interrupted ones", async () => {
     const state = await buildPersistedState();

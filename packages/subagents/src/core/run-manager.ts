@@ -116,6 +116,8 @@ export interface SpawnRunRequest {
   harness: SubagentHarness;
   /** Short display title; defaults to a bounded first line of the prompt. */
   title?: string;
+  /** Selected named-agent profile, separate from the display title. */
+  agentProfile?: string;
   /** Optional named-agent system prompt, passed through to the harness. */
   systemPrompt?: string;
   /** Optional exact tool allowlist, passed through to the harness. */
@@ -139,6 +141,7 @@ interface InternalRun {
   id: string;
   serial: number;
   title: string;
+  agentProfile: string | undefined;
   harness: HarnessKind;
   status: RunStatus;
   createdAt: number;
@@ -231,6 +234,9 @@ export class RunManager {
         request.title !== undefined && request.title.trim() !== ""
           ? toDisplayTitle(sanitizeTerminalText(request.title))
           : toDisplayTitle(sanitizeTerminalText(prompt)),
+      agentProfile: request.agentProfile === undefined
+        ? undefined
+        : toDisplayTitle(sanitizeTerminalText(request.agentProfile)),
       harness: request.harness.kind,
       status: "queued",
       createdAt: this.clock(),
@@ -723,6 +729,7 @@ export class RunManager {
     return Object.freeze({
       id: run.id,
       title: run.title,
+      agentProfile: run.agentProfile,
       harness: run.harness,
       status: run.status,
       createdAt: run.createdAt,
@@ -776,6 +783,7 @@ export class RunManager {
       return {
         id: run.id,
         title: run.title,
+        agentProfile: run.agentProfile,
         harness: run.harness,
         status: run.status,
         elapsedMs: this.elapsedMs(run),
@@ -862,6 +870,7 @@ export class RunManager {
           id: run.id,
           serial: run.serial,
           title: run.title,
+          agentProfile: run.agentProfile,
           harness: run.harness,
           status: run.status,
           createdAt: run.createdAt,
@@ -896,10 +905,14 @@ export class RunManager {
     let maxSeq = 0;
     for (const record of state.runs) {
       maxSerial = Math.max(maxSerial, record.serial);
+      const restoredAgentProfile = record.agentProfile === undefined
+        ? undefined
+        : toDisplayTitle(sanitizeTerminalText(record.agentProfile));
       const run: InternalRun = {
         id: record.id,
         serial: record.serial,
         title: record.title,
+        agentProfile: restoredAgentProfile === "" ? undefined : restoredAgentProfile,
         harness: record.harness,
         status: record.status,
         createdAt: record.createdAt,
@@ -1000,6 +1013,7 @@ export class RunManager {
     return {
       id: run.id,
       title: run.title,
+      agentProfile: run.agentProfile,
       harness: run.harness,
       status: run.status,
       createdAt: run.createdAt,
@@ -1025,6 +1039,7 @@ export class RunManager {
     return {
       id: run.id,
       title: run.title,
+      agentProfile: run.agentProfile,
       harness: run.harness,
       status: run.status as SettledRunStatus,
       finalText: run.finalText ?? "",

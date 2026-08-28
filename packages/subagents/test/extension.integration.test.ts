@@ -132,12 +132,71 @@ async function execute(runtime: FakeRuntime, name: string, params: unknown, ctx:
   return tool.execute("call-1", params, undefined, undefined, ctx);
 }
 
+function persistedState(agentProfile?: string) {
+  return {
+    version: 1,
+    nextSerial: 8,
+    nextSettlementSeq: 2,
+    runs: [{
+      id: "run-7",
+      serial: 7,
+      title: "legacy run",
+      ...(agentProfile === undefined ? {} : { agentProfile }),
+      harness: "pi",
+      status: "completed",
+      createdAt: 1,
+      settledAt: 2,
+      settlementSeq: 1,
+      workingDir: undefined,
+      requestedModel: undefined,
+      effectiveModel: undefined,
+      thinkingLevel: undefined,
+      cancelRequested: false,
+      autoDeliver: true,
+      consumption: "delivered",
+      finalText: "done",
+      errorText: undefined,
+      usage: undefined,
+      activity: [],
+      activityDropped: 0,
+      transcript: [],
+      transcriptDropped: 0,
+    }],
+  };
+}
+
 const temporary: string[] = [];
 afterEach(async () => {
   await Promise.all(temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
 describe("Pi extension composition", () => {
+  it("renders named spawn calls with profile provenance and concise fallbacks", () => {
+    const runtime = fakePi();
+    createPiSubagentsExtension()(runtime.pi);
+    const renderCall = runtime.tools.get("subagent_spawn")?.renderCall;
+    expect(renderCall).toBeTypeOf("function");
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as any;
+    const render = (params: Record<string, unknown>) =>
+      renderCall!(params as never, theme, {} as never).render(240).join("\n").trimEnd();
+
+    expect(render({
+      prompt: "secret full prompt",
+      name: "spawn-transcript-profile",
+      agent: "unit-implementer",
+    })).toBe("Spawn subagent spawn-transcript-profile (unit-implementer)");
+    expect(render({ prompt: "secret full prompt", agent: "unit-implementer" }))
+      .toBe("Spawn subagent (unit-implementer)");
+    expect(render({ prompt: "secret full prompt", name: "custom-name" }))
+      .toBe("Spawn subagent custom-name");
+    expect(render({ prompt: "secret full prompt" })).toBe("Spawn subagent");
+    expect(render({ prompt: "secret full prompt", name: "unsafe\u001b[31m\nname", agent: "profile" }))
+      .toBe("Spawn subagent unsafe[31m name (profile)");
+  });
+
   it("registers six strict tools and composes wait, delivery, persistence, and shutdown", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-extension-"));
     temporary.push(cwd);
@@ -287,6 +346,7 @@ describe("Pi extension composition", () => {
     const spawned = await execute(runtime, "subagent_spawn", {
       prompt: "review now",
       agent: "reviewer",
+      name: "Custom review",
     }, ctx);
     expect(piHarness.requests).toEqual([]);
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -299,8 +359,15 @@ describe("Pi extension composition", () => {
       thinkingLevel: "high",
     });
     expect(spawned.details).toMatchObject({
+      snapshot: {
+        title: "Custom review",
+        agentProfile: "reviewer",
+      },
       skills: { requested: ["code-review"] },
     });
+    expect((spawned.content[0] as { text: string }).text).toContain(
+      "Custom review (reviewer)",
+    );
 
     await execute(runtime, "subagent_spawn", {
       prompt: "review with claude",
@@ -318,20 +385,34 @@ describe("Pi extension composition", () => {
     });
   });
 
-  it("fails closed on a malformed latest persisted state", async () => {
+  it("restores valid legacy version-1 state without profile metadata", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-restore-legacy-"));
+    temporary.push(cwd);
+    const runtime = fakePi();
+    runtime.entries.push({ customType: "pi-subagents-state-v1", data: persistedState() });
+    createPiSubagentsExtension({
+      createPiHarness: () => new ControlledHarness("pi"),
+      createClaudeHarness: () => new ControlledHarness("claude"),
+    })(runtime.pi);
+    const ctx = fakeContext(cwd, runtime.entries);
+    await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
+
+    const listed = await execute(runtime, "subagent_list", {}, ctx);
+    expect((listed.content[0] as { text: string }).text).toContain("run-7");
+    expect((listed.content[0] as { text: string }).text).not.toContain("legacy run (");
+    const spawned = await execute(runtime, "subagent_spawn", { prompt: "fresh" }, ctx);
+    expect((spawned.content[0] as { text: string }).text).toContain("run-8");
+  });
+
+  it("fails closed on an oversized profile in the latest persisted state", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-restore-"));
     temporary.push(cwd);
     const runtime = fakePi();
+    runtime.entries.push({ customType: "pi-subagents-state-v1", data: persistedState() });
     runtime.entries.push({
       customType: "pi-subagents-state-v1",
-      data: {
-        version: 1,
-        nextSerial: 8,
-        nextSettlementSeq: 1,
-        runs: [],
-      },
+      data: persistedState("p".repeat(101)),
     });
-    runtime.entries.push({ customType: "pi-subagents-state-v1", data: { version: 1 } });
     const harness = new ControlledHarness("pi");
     createPiSubagentsExtension({
       createPiHarness: () => harness,
