@@ -5,6 +5,7 @@
  * builders; every output is bounded.
  */
 
+import { formatRunModel } from "../shared/run-display.js";
 import { formatRunIdentity } from "../shared/run-identity.js";
 import type { RunInspection, RunListEntry } from "../shared/types.js";
 import type { RoutingAgentRow } from "./routing-view.js";
@@ -36,7 +37,8 @@ export function chooserSummaryText(): string {
 export function runsSummaryText(runs: readonly RunListEntry[]): string {
   if (runs.length === 0) return "No subagent runs in this session.";
   const rows = runs.map((run) => {
-    const model = run.model ? ` · ${run.model}` : "";
+    const modelLabel = formatRunModel(run.model, run.thinkingLevel);
+    const model = modelLabel ? ` · ${modelLabel}` : "";
     return fitLine(
       `${statusGlyph(run.status)} ${run.id} [${run.harness}] ${run.status} ${formatElapsed(run.elapsedMs)}${model} · ${formatRunIdentity(run)}`,
       SUMMARY_WIDTH,
@@ -53,7 +55,8 @@ export function runInspectionSummaryText(inspection: RunInspection): string {
       SUMMARY_WIDTH,
     ),
   ];
-  if (inspection.model) lines.push(fitLine(`model: ${inspection.model}`, SUMMARY_WIDTH));
+  const model = formatRunModel(inspection.model, inspection.thinkingLevel);
+  if (model) lines.push(fitLine(`model: ${model}`, SUMMARY_WIDTH));
   if (inspection.transcriptDropped > 0) {
     lines.push(`… ${inspection.transcriptDropped} earlier transcript entries`);
   }

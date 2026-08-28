@@ -177,6 +177,7 @@ describe("theme-native Pi panel renderer", () => {
         status: "completed",
         elapsedMs: 4_000,
         model: "openai-codex/gpt-5.6-sol",
+        thinkingLevel: "low",
       },
     ]);
     const lines = renderRunsPanel(theme, state, 72, 24, RUNS_LIST_KEY_HINTS, RUN_DETAIL_KEY_HINTS);
@@ -188,6 +189,7 @@ describe("theme-native Pi panel renderer", () => {
     expect(output).toContain("▸ ● run-3");
     expect(output).toContain("Custom review (unit-implementer)");
     expect(output).toContain("CLAUDE  ·  fable");
+    expect(output).toContain("PI  ·  openai-codex/gpt-5.6-sol (low)");
     expect(output).toContain("RUNNING  12s");
   });
 
@@ -221,6 +223,7 @@ describe("theme-native Pi panel renderer", () => {
           elapsedMs: 2_000,
           cancelRequested: false,
           model: "openai-codex/gpt-5.6-sol",
+          thinkingLevel: "low" as const,
           usage: {
             input: 100,
             output: 50,
@@ -261,6 +264,7 @@ describe("theme-native Pi panel renderer", () => {
 
     expectBounded(lines, 78, 24);
     expect(output).toContain("Inspect release behavior (unit-implementer)");
+    expect(output).toContain("PI  ·  openai-codex/gpt-5.6-sol (low)  ·  2s");
     expect(output).toContain("YOU");
     expect(output).toContain("Inspect the release");
     expect(output).toContain("ASSISTANT");

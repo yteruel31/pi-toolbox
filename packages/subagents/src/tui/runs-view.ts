@@ -1,5 +1,6 @@
 import { isSettledStatus } from "../shared/types.js";
 import { formatRunIdentity } from "../shared/run-identity.js";
+import { formatRunModel } from "../shared/run-display.js";
 import type { RunInspection, RunListEntry } from "../shared/types.js";
 import type { KeyHint, RunsKeyAction } from "./keys.js";
 import {
@@ -302,7 +303,8 @@ export function formatRunRow(
   width: number,
 ): string {
   const marker = selected ? "›" : " ";
-  const model = run.model ? ` ${run.model}` : "";
+  const modelLabel = formatRunModel(run.model, run.thinkingLevel);
+  const model = modelLabel ? ` ${modelLabel}` : "";
   return fitLine(
     `${marker} ${statusGlyph(run.status)} ${run.id} [${run.harness}] ${formatRunIdentity(run)} · ${run.status} ${formatElapsed(run.elapsedMs)}${model}`,
     width,
@@ -338,7 +340,8 @@ export function runDetailLines(
   if (!inspection) {
     lines.push(fitLine(`${detail.runId} · loading…`, width));
   } else {
-    const model = inspection.model ? ` · ${inspection.model}` : "";
+    const modelLabel = formatRunModel(inspection.model, inspection.thinkingLevel);
+    const model = modelLabel ? ` · ${modelLabel}` : "";
     lines.push(fitLine(
       `${statusGlyph(inspection.status)} ${inspection.id} [${inspection.harness}] ${formatRunIdentity(inspection)}`,
       width,

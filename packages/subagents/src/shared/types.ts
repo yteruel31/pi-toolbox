@@ -160,6 +160,7 @@ export interface RunListEntry {
   status: RunStatus;
   elapsedMs: number;
   model: string | undefined;
+  thinkingLevel?: ThinkingLevel;
 }
 
 /** subagent_check output: status plus bounded recent activity, non-consuming. */
@@ -174,6 +175,7 @@ export interface RunInspection {
   elapsedMs: number;
   cancelRequested: boolean;
   model: string | undefined;
+  thinkingLevel?: ThinkingLevel;
   usage: RunUsage | undefined;
   activity: readonly RunActivityEntry[];
   /** How many activity entries were dropped by the bounded buffer. */
