@@ -163,7 +163,8 @@ describe("theme-native Pi panel renderer", () => {
     const state = initialRunsViewState([
       {
         id: "run-3",
-        title: "Review the authentication boundary",
+        title: "Custom review",
+        agentProfile: "unit-implementer",
         harness: "claude",
         status: "running",
         elapsedMs: 12_500,
@@ -185,6 +186,7 @@ describe("theme-native Pi panel renderer", () => {
     expect(output).toContain("╭─ SUBAGENT RUNS");
     expect(output).toContain("1 running");
     expect(output).toContain("▸ ● run-3");
+    expect(output).toContain("Custom review (unit-implementer)");
     expect(output).toContain("CLAUDE  ·  fable");
     expect(output).toContain("RUNNING  12s");
   });
@@ -211,6 +213,7 @@ describe("theme-native Pi panel renderer", () => {
         inspection: {
           id: "run-1",
           title: "Inspect release behavior",
+          agentProfile: "unit-implementer",
           harness: "pi" as const,
           status: "completed" as const,
           createdAt: 0,
@@ -257,6 +260,7 @@ describe("theme-native Pi panel renderer", () => {
     const output = plain(lines);
 
     expectBounded(lines, 78, 24);
+    expect(output).toContain("Inspect release behavior (unit-implementer)");
     expect(output).toContain("YOU");
     expect(output).toContain("Inspect the release");
     expect(output).toContain("ASSISTANT");

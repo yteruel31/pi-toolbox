@@ -39,6 +39,7 @@ import {
   type PiModelRuntimeLike,
 } from "./harnesses/pi.js";
 import { describeError } from "./shared/errors.js";
+import { formatRunIdentity } from "./shared/run-identity.js";
 import { truncateText } from "./shared/truncate.js";
 import type {
   PersistedRunState,
@@ -268,6 +269,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       const snapshot = runtime.manager.spawn({
         prompt: params.prompt,
         title: params.name,
+        agentProfile: params.agent,
         harness,
         systemPrompt: resolution.agent?.systemPrompt,
         tools: resolution.agent?.tools,
@@ -277,7 +279,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       });
       updateStatus();
       return textResult(
-        `Started ${snapshot.id} (${snapshot.harness}, ${snapshot.status})${snapshot.title ? `: ${snapshot.title}` : ""}.`,
+        `Started ${snapshot.id} (${snapshot.harness}, ${snapshot.status})${snapshot.title ? `: ${formatRunIdentity(snapshot)}` : ""}.`,
         {
           snapshot,
           route: resolution.route,
@@ -488,7 +490,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       const runs = requireSession().manager.list();
       const lines = runs.length === 0
         ? ["No subagent runs in this session."]
-        : runs.map((run) => `${run.id}  ${run.status}  ${run.harness}  ${run.title}`);
+        : runs.map((run) => `${run.id}  ${run.status}  ${run.harness}  ${formatRunIdentity(run)}`);
       showHuman(ctx, ["Subagent runs", ...lines].join("\n"));
     },
   });
@@ -772,6 +774,7 @@ function isPersistedState(value: unknown): value is PersistedRunState {
       typeof record.id === "string" && /^run-[1-9][0-9]*$/.test(record.id) &&
       isPositiveInteger(record.serial) &&
       typeof record.title === "string" &&
+      (record.agentProfile === undefined || typeof record.agentProfile === "string") &&
       (record.harness === "pi" || record.harness === "claude") &&
       ["queued", "running", "completed", "failed", "cancelled"].includes(String(record.status)) &&
       typeof record.createdAt === "number" && Number.isFinite(record.createdAt) &&
@@ -853,7 +856,7 @@ function formatDeliveredResults(results: readonly RunResult[]): string {
 }
 
 function formatOneResult(result: RunResult): string {
-  const header = `${result.id} (${result.harness}) ${result.status}: ${result.title}`;
+  const header = `${result.id} (${result.harness}) ${result.status}: ${formatRunIdentity(result)}`;
   const body = result.status === "completed"
     ? result.finalText || "(no final text)"
     : result.errorText || result.finalText || "(no diagnostics)";

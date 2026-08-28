@@ -114,6 +114,8 @@ export interface RunMessagingState {
 export interface RunSnapshot {
   id: string;
   title: string;
+  /** Selected named-agent profile, kept separate from the display title. */
+  agentProfile?: string;
   harness: HarnessKind;
   status: RunStatus;
   createdAt: number;
@@ -134,6 +136,7 @@ export interface RunSnapshot {
 export interface RunResult {
   id: string;
   title: string;
+  agentProfile?: string;
   harness: HarnessKind;
   status: SettledRunStatus;
   /** Bounded final text; empty string when the run produced no output. */
@@ -152,6 +155,7 @@ export interface RunResult {
 export interface RunListEntry {
   id: string;
   title: string;
+  agentProfile?: string;
   harness: HarnessKind;
   status: RunStatus;
   elapsedMs: number;
@@ -162,6 +166,7 @@ export interface RunListEntry {
 export interface RunInspection {
   id: string;
   title: string;
+  agentProfile?: string;
   harness: HarnessKind;
   status: RunStatus;
   createdAt: number;
@@ -209,6 +214,8 @@ export interface PersistedRunRecord {
   id: string;
   serial: number;
   title: string;
+  /** Optional so persisted version-1 records from earlier releases remain valid. */
+  agentProfile?: string;
   harness: HarnessKind;
   status: RunStatus;
   createdAt: number;

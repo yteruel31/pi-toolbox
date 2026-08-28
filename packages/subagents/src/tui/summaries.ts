@@ -5,6 +5,7 @@
  * builders; every output is bounded.
  */
 
+import { formatRunIdentity } from "../shared/run-identity.js";
 import type { RunInspection, RunListEntry } from "../shared/types.js";
 import type { RoutingAgentRow } from "./routing-view.js";
 import { formatRouteSummary } from "./routing-view.js";
@@ -37,7 +38,7 @@ export function runsSummaryText(runs: readonly RunListEntry[]): string {
   const rows = runs.map((run) => {
     const model = run.model ? ` · ${run.model}` : "";
     return fitLine(
-      `${statusGlyph(run.status)} ${run.id} [${run.harness}] ${run.status} ${formatElapsed(run.elapsedMs)}${model} · ${run.title}`,
+      `${statusGlyph(run.status)} ${run.id} [${run.harness}] ${run.status} ${formatElapsed(run.elapsedMs)}${model} · ${formatRunIdentity(run)}`,
       SUMMARY_WIDTH,
     );
   });
@@ -48,7 +49,7 @@ export function runsSummaryText(runs: readonly RunListEntry[]): string {
 export function runInspectionSummaryText(inspection: RunInspection): string {
   const lines = [
     fitLine(
-      `${inspection.id} [${inspection.harness}] ${inspection.status}${inspection.cancelRequested ? " (cancel requested)" : ""} · ${formatElapsed(inspection.elapsedMs)} · ${inspection.title}`,
+      `${inspection.id} [${inspection.harness}] ${inspection.status}${inspection.cancelRequested ? " (cancel requested)" : ""} · ${formatElapsed(inspection.elapsedMs)} · ${formatRunIdentity(inspection)}`,
       SUMMARY_WIDTH,
     ),
   ];

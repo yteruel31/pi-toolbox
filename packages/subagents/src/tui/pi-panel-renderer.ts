@@ -11,6 +11,7 @@ import type {
 import type { KeyHint } from "./keys.js";
 import type { RoutingEditorField, RoutingEditorState } from "./routing-editor.js";
 import type { RoutingAgentRow, RoutingViewState } from "./routing-view.js";
+import { formatRunIdentity } from "../shared/run-identity.js";
 import type { RunsViewState } from "./runs-view.js";
 import { formatElapsed, wrapText } from "./text.js";
 
@@ -116,7 +117,7 @@ function runRow(
 ): string[] {
   const glyph = theme.fg(statusColor(run.status), statusGlyph(run.status));
   const marker = selected ? theme.fg("accent", "▸") : " ";
-  const identity = `${marker} ${glyph} ${theme.fg("accent", run.id)}  ${theme.fg("text", run.title)}`;
+  const identity = `${marker} ${glyph} ${theme.fg("accent", run.id)}  ${theme.fg("text", formatRunIdentity(run))}`;
   const status = theme.fg(statusColor(run.status), run.status.toUpperCase());
   const first = columns(identity, `${status}  ${theme.fg("dim", formatElapsed(run.elapsedMs))}`, width);
   const harness = theme.fg("muted", run.harness.toUpperCase());
@@ -143,7 +144,7 @@ function renderRunDetail(
 
   const glyph = theme.fg(statusColor(inspection.status), statusGlyph(inspection.status));
   const identity = columns(
-    `${glyph} ${theme.fg("accent", inspection.id)}  ${theme.bold(inspection.title)}`,
+    `${glyph} ${theme.fg("accent", inspection.id)}  ${theme.bold(formatRunIdentity(inspection))}`,
     theme.fg(statusColor(inspection.status), inspection.status.toUpperCase()),
     width,
   );
@@ -197,9 +198,10 @@ function cancelConfirmationBlock(
   const runId = state.pendingCancelId;
   if (!runId) return [];
   const run = state.runs.find((candidate) => candidate.id === runId);
-  const title = state.detail?.runId === runId
-    ? state.detail.inspection?.title ?? run?.title
-    : run?.title;
+  const identity = state.detail?.runId === runId
+    ? state.detail.inspection ?? run
+    : run;
+  const title = identity ? formatRunIdentity(identity) : undefined;
   return [
     sectionLabel(theme, "CONFIRM CANCELLATION", width),
     padAnsi(

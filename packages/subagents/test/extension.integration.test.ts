@@ -287,6 +287,7 @@ describe("Pi extension composition", () => {
     const spawned = await execute(runtime, "subagent_spawn", {
       prompt: "review now",
       agent: "reviewer",
+      name: "Custom review",
     }, ctx);
     expect(piHarness.requests).toEqual([]);
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -299,8 +300,15 @@ describe("Pi extension composition", () => {
       thinkingLevel: "high",
     });
     expect(spawned.details).toMatchObject({
+      snapshot: {
+        title: "Custom review",
+        agentProfile: "reviewer",
+      },
       skills: { requested: ["code-review"] },
     });
+    expect((spawned.content[0] as { text: string }).text).toContain(
+      "Custom review (reviewer)",
+    );
 
     await execute(runtime, "subagent_spawn", {
       prompt: "review with claude",

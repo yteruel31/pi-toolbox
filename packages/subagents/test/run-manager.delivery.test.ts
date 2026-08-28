@@ -105,7 +105,12 @@ describe("result delivery and de-duplication", () => {
       hooks: { persist: (s) => states.push(structuredClone(s)) },
     });
     const harness = new FakeHarness();
-    manager.spawn({ prompt: "a", harness });
+    manager.spawn({
+      prompt: "a",
+      title: "Custom review title",
+      agentProfile: "unit-implementer",
+      harness,
+    });
     harness.last.resolve({ finalText: "A" });
     await flush();
     manager.drainDeliveries();
@@ -114,6 +119,8 @@ describe("result delivery and de-duplication", () => {
     const last = states[states.length - 1]!;
     expect(last.version).toBe(1);
     expect(last.runs[0]!.consumption).toBe("delivered");
+    expect(last.runs[0]!.title).toBe("Custom review title");
+    expect(last.runs[0]!.agentProfile).toBe("unit-implementer");
     // Must round-trip through JSON for custom session entries.
     expect(() => JSON.stringify(last)).not.toThrow();
   });
@@ -139,6 +146,18 @@ describe("restore across session reloads", () => {
     await manager.wait(["run-1"]);
     return latest!;
   }
+
+  it("restores profile metadata and accepts older version-1 records without it", async () => {
+    const state = await buildPersistedState();
+    state.runs[0]!.agentProfile = "unit-implementer";
+    delete state.runs[1]!.agentProfile;
+
+    const restored = new RunManager({ restore: state });
+    expect(restored.snapshot("run-1").agentProfile).toBe("unit-implementer");
+    expect(restored.list()[0]!.agentProfile).toBe("unit-implementer");
+    expect(restored.check("run-1").agentProfile).toBe("unit-implementer");
+    expect(restored.snapshot("run-2").agentProfile).toBeUndefined();
+  });
 
   it("does not re-deliver consumed results, re-queues owed ones, fails interrupted ones", async () => {
     const state = await buildPersistedState();
