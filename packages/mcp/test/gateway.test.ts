@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import test from "node:test";
 import { McpAppController } from "../src/apps/controller.js";
 import { DEFAULT_UI_SETTINGS } from "../src/config.js";
 import { GatewayClient, GatewayIncompatibleError } from "../src/gateway/client.js";
+import { gatewayControlEndpoint, isFilesystemControlEndpoint } from "../src/gateway/control-endpoint.js";
 import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, settingsSignature, type GatewayDaemonSettings, type Session } from "../src/gateway/protocol.js";
 import { startGatewayServer } from "../src/gateway/server.js";
 import { renderDashboard } from "../src/ui/dashboard.js";
@@ -65,6 +66,18 @@ async function waitUntil(predicate: () => Promise<boolean>, timeoutMs = 2_000): 
 function wrongLease(session: Session): Session {
 	return { ...session, leaseSecret: "wrong-lease" };
 }
+
+test("control endpoints use filesystem sockets on POSIX and named pipes on Windows", () => {
+	const filesystem = gatewayControlEndpoint("control-directory", "linux");
+	const windows = gatewayControlEndpoint("C:\\Users\\tester\\pi-mcp", "win32");
+	assert.equal(filesystem, join("control-directory", "control.sock"));
+	const pipePrefix = "\\\\.\\pipe\\pi-mcp-";
+	assert.equal(windows.startsWith(pipePrefix), true);
+	assert.match(windows.slice(pipePrefix.length), /^[a-f0-9]{24}$/);
+	assert.equal(isFilesystemControlEndpoint(filesystem, "linux"), true);
+	assert.equal(isFilesystemControlEndpoint(windows, "win32"), false);
+	assert.notEqual(windows, gatewayControlEndpoint("C:\\Users\\other\\pi-mcp", "win32"));
+});
 
 test("dashboard renderer handles empty, singular, multiple, hostile, and accessible cards", () => {
 	const empty = renderDashboard([]);
@@ -276,7 +289,7 @@ test("a reachable previous-protocol gateway fails closed and is not replaced", a
 	await new Promise<void>((resolve, reject) => incompatible.once("error", reject).listen(client.socket, resolve));
 	try {
 		await assert.rejects(client.ensure(), GatewayIncompatibleError);
-		assert.ok((await stat(client.socket)).isSocket());
+		assert.equal(incompatible.listening, true);
 	} finally {
 		await new Promise<void>((resolve) => incompatible.close(() => resolve()));
 		await rm(home, { recursive: true, force: true });
@@ -520,10 +533,12 @@ test("expired sessions lose their capability", async () => {
 
 test("the real daemon removes its owned socket and PID before idle exit", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-mcp-daemon-idle-"));
-	const socketPath = join(directory, "control.sock");
-	const pidPath = join(directory, "daemon.pid");
-	const configPath = join(directory, "launch.json");
 	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 100 };
+	const client = new GatewayClient({ settings, hostnameResolver: async () => "node.ts.net", homeDir: directory });
+	await mkdir(client.dir, { recursive: true });
+	const socketPath = client.socket;
+	const pidPath = client.pid;
+	const configPath = join(directory, "launch.json");
 	await writeFile(configPath, JSON.stringify({ settings, hostname: "node.ts.net", socketPath, pidPath }), { mode: 0o600 });
 	const daemonPath = fileURLToPath(new URL("../src/gateway/daemon.ts", import.meta.url));
 	const child = spawn(process.execPath, ["--import", "tsx", daemonPath, configPath], { cwd: process.cwd(), stdio: ["ignore", "ignore", "pipe"] });
@@ -546,12 +561,16 @@ test("the real daemon removes its owned socket and PID before idle exit", async 
 	}
 });
 
-test("the real daemon handles SIGTERM with owned socket and PID cleanup", async () => {
+test("the real daemon handles SIGTERM with owned socket and PID cleanup", {
+	skip: process.platform === "win32" ? "Windows terminates the process instead of delivering SIGTERM" : false,
+}, async () => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-mcp-daemon-signal-"));
-	const socketPath = join(directory, "control.sock");
-	const pidPath = join(directory, "daemon.pid");
-	const configPath = join(directory, "launch.json");
 	const settings = { ...DEFAULT_UI_SETTINGS, gatewayPort: await freePort(), idleTimeoutMs: 10_000 };
+	const client = new GatewayClient({ settings, hostnameResolver: async () => "node.ts.net", homeDir: directory });
+	await mkdir(client.dir, { recursive: true });
+	const socketPath = client.socket;
+	const pidPath = client.pid;
+	const configPath = join(directory, "launch.json");
 	await writeFile(configPath, JSON.stringify({ settings, hostname: "node.ts.net", socketPath, pidPath }), { mode: 0o600 });
 	const daemonPath = fileURLToPath(new URL("../src/gateway/daemon.ts", import.meta.url));
 	const child = spawn(process.execPath, ["--import", "tsx", daemonPath, configPath], { cwd: process.cwd(), stdio: ["ignore", "ignore", "pipe"] });
@@ -674,7 +693,8 @@ test("accepted shutdown rejects pipelined registration before closing", async ()
 		await complete;
 		await gateway.closed;
 		assert.match(raw, /^HTTP\/1\.1 202 /);
-		assert.match(raw, /HTTP\/1\.1 503 /);
+		// Windows may close a named pipe before Node dispatches the second pipelined request.
+		if (process.platform !== "win32") assert.match(raw, /HTTP\/1\.1 503 /);
 		assert.doesNotMatch(raw, /HTTP\/1\.1 201 /);
 		assert.equal(gateway.sessions.size, 0);
 	} finally {
@@ -774,7 +794,7 @@ test("dead launch owners are recovered while a live recorded owner is never dist
 	const deadPid = socketFixture.pid!;
 	socketFixture.kill("SIGKILL");
 	await new Promise<void>((resolve) => socketFixture.once("exit", () => resolve()));
-	assert.equal(await exists(staleClient.socket), true);
+	if (isFilesystemControlEndpoint(staleClient.socket)) assert.equal(await exists(staleClient.socket), true);
 	await writeFile(staleClient.pid, String(deadPid));
 	await writeFile(join(staleClient.dir, "launch.lock"), JSON.stringify({ pid: deadPid, createdAt: Date.now() }));
 
@@ -796,11 +816,11 @@ test("dead launch owners are recovered while a live recorded owner is never dist
 	const liveClient = new GatewayClient({ settings: { ...settings, gatewayPort: await freePort() }, hostnameResolver: async () => "node.ts.net", homeDir: liveHome, spawnDaemon: () => { spawned = true; } });
 	await mkdir(liveClient.dir, { recursive: true, mode: 0o700 });
 	await writeFile(liveClient.pid, String(process.pid));
-	await writeFile(liveClient.socket, "owned by live process");
+	if (isFilesystemControlEndpoint(liveClient.socket)) await writeFile(liveClient.socket, "owned by live process");
 	try {
 		await assert.rejects(liveClient.ensure(), /still alive/);
 		assert.equal(spawned, false);
-		assert.equal(await readFile(liveClient.socket, "utf8"), "owned by live process");
+		if (isFilesystemControlEndpoint(liveClient.socket)) assert.equal(await readFile(liveClient.socket, "utf8"), "owned by live process");
 		assert.equal(await readFile(liveClient.pid, "utf8"), String(process.pid));
 	} finally {
 		await rm(liveHome, { recursive: true, force: true });

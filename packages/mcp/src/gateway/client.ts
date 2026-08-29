@@ -7,6 +7,7 @@ import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { McpUiSettings } from "../config.js";
+import { gatewayControlEndpoint, isFilesystemControlEndpoint } from "./control-endpoint.js";
 import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, settingsSignature, type GatewayDaemonSettings, type Registration, type Session } from "./protocol.js";
 
 export interface GatewayClientOptions {
@@ -29,7 +30,7 @@ export class GatewayClient {
 
 	constructor(private readonly options: GatewayClientOptions) {
 		this.dir = join(options.homeDir ?? homedir(), ".pi", "agent", "pi-mcp");
-		this.socket = join(this.dir, "control.sock");
+		this.socket = gatewayControlEndpoint(this.dir);
 		this.pid = join(this.dir, "daemon.pid");
 	}
 
@@ -173,7 +174,7 @@ export class GatewayClient {
 		if (recordedPid && pidIsLive(recordedPid)) throw new GatewayUnavailableError("Recorded gateway owner is still alive; refusing recovery");
 		try { await this.hello(); return; }
 		catch (error) { if (!(error instanceof GatewayUnavailableError)) throw error; }
-		await rm(this.socket, { force: true });
+		if (isFilesystemControlEndpoint(this.socket)) await rm(this.socket, { force: true });
 		await rm(this.pid, { force: true });
 	}
 }
