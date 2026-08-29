@@ -4,6 +4,7 @@ import { createServer, request as httpRequest, type IncomingHttpHeaders, type In
 import { dirname } from "node:path";
 import type { McpUiSettings } from "../config.js";
 import { renderDashboard } from "../ui/dashboard.js";
+import { isFilesystemControlEndpoint } from "./control-endpoint.js";
 import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, isLoopbackOrigin, settingsSignature, type GatewayDaemonSettings, type Registration, type Session } from "./protocol.js";
 
 interface StoredSession extends Session {
@@ -277,17 +278,23 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		} else idleSince = undefined;
 	}, Math.min(250, settings.idleTimeoutMs)).unref();
 
-	await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
-	await chmod(dirname(options.socketPath), 0o700);
+	const filesystemControlSocket = isFilesystemControlEndpoint(options.socketPath);
+	if (filesystemControlSocket) {
+		await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
+		await chmod(dirname(options.socketPath), 0o700);
+	}
 	await new Promise<void>((resolve, reject) => controlServer.once("error", reject).listen(options.socketPath, resolve));
-	await chmod(options.socketPath, 0o600);
-	const ownedSocket = await stat(options.socketPath);
+	let ownedSocket: Awaited<ReturnType<typeof stat>> | undefined;
+	if (filesystemControlSocket) {
+		await chmod(options.socketPath, 0o600);
+		ownedSocket = await stat(options.socketPath);
+	}
 	try {
 		await new Promise<void>((resolve, reject) => publicServer.once("error", reject).listen(settings.gatewayPort, settings.listenAddress, resolve));
 		if (options.pidPath) await writeFile(options.pidPath, String(process.pid), { mode: 0o600 });
 	} catch (error) {
 		controlServer.close();
-		await removeOwned(options.socketPath, ownedSocket);
+		if (ownedSocket) await removeOwned(options.socketPath, ownedSocket);
 		throw error;
 	}
 
@@ -295,7 +302,7 @@ export async function startGatewayServer(options: GatewayServerOptions) {
 		closePromise ??= (async () => {
 			clearInterval(sweep);
 			await Promise.all([closeServer(controlServer, true), closeServer(publicServer, true)]);
-			await removeOwned(options.socketPath, ownedSocket);
+			if (ownedSocket) await removeOwned(options.socketPath, ownedSocket);
 			if (options.pidPath) {
 				try {
 					if ((await (await import("node:fs/promises")).readFile(options.pidPath, "utf8")).trim() === String(process.pid)) await rm(options.pidPath);

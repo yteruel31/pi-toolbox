@@ -5,6 +5,7 @@
 This package does not claim universal `pi-mcp-adapter` parity; see `PARITY.md` for gaps and migration guidance.
 
 ### Fixed
+- Windows gateway daemons use a per-user named pipe for control traffic instead of an unsupported Unix-domain socket path.
 - Resource-capable MCP servers that omit `resources/templates/list` remain connected with an empty template list.
 - Managed Tailscale setup verifies that Serve installed the exact route instead of reporting success when Serve/HTTPS is disabled.
 - Adapter-compatible OAuth/lazy server definitions remain valid in `/mcp`, while actions on unsupported definitions now explain why they cannot run.
