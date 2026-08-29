@@ -737,6 +737,7 @@ export class RunManager {
       elapsedMs: this.elapsedMs(run),
       cancelRequested: run.cancelRequested,
       model: run.effectiveModel ?? run.requestedModel,
+      thinkingLevel: run.thinkingLevel,
       usage,
       activity,
       activityDropped: run.activity.dropped,
@@ -788,6 +789,7 @@ export class RunManager {
         status: run.status,
         elapsedMs: this.elapsedMs(run),
         model: run.effectiveModel ?? run.requestedModel,
+        thinkingLevel: run.thinkingLevel,
       };
     });
   }

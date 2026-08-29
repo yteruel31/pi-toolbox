@@ -209,6 +209,26 @@ describe("headless command summaries", () => {
     expect(agentLines.every((line) => textWidth(line) <= 120)).toBe(true);
   });
 
+  it("shows thinking after the model in list and detail summaries", () => {
+    const listEntry = {
+      ...run("run-1", "running"),
+      model: "openai-codex/gpt-5.6-sol",
+      thinkingLevel: "low" as const,
+    };
+    const inspection = {
+      ...inspect(),
+      model: "openai-codex/gpt-5.6-sol",
+      thinkingLevel: "low" as const,
+    };
+
+    expect(runsSummaryText([listEntry])).toContain("openai-codex/gpt-5.6-sol (low)");
+    expect(runInspectionSummaryText(inspection)).toContain(
+      "model: openai-codex/gpt-5.6-sol (low)",
+    );
+    expect(runsSummaryText([run("run-2", "running")])).toContain("· fable ·");
+    expect(runsSummaryText([run("run-2", "running")])).not.toContain("fable (");
+  });
+
   it("bounds inspection activity and multiline output", () => {
     const lines = runInspectionSummaryText(inspect()).split("\n");
     expect(lines.length).toBeLessThanOrEqual(30);

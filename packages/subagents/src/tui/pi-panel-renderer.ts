@@ -11,6 +11,7 @@ import type {
 import type { KeyHint } from "./keys.js";
 import type { RoutingEditorField, RoutingEditorState } from "./routing-editor.js";
 import type { RoutingAgentRow, RoutingViewState } from "./routing-view.js";
+import { formatRunModel } from "../shared/run-display.js";
 import { formatRunIdentity } from "../shared/run-identity.js";
 import type { RunsViewState } from "./runs-view.js";
 import { formatElapsed, wrapText } from "./text.js";
@@ -121,7 +122,10 @@ function runRow(
   const status = theme.fg(statusColor(run.status), run.status.toUpperCase());
   const first = columns(identity, `${status}  ${theme.fg("dim", formatElapsed(run.elapsedMs))}`, width);
   const harness = theme.fg("muted", run.harness.toUpperCase());
-  const model = theme.fg(run.model ? "text" : "dim", run.model ?? "parent model");
+  const model = theme.fg(
+    run.model ? "text" : "dim",
+    formatRunModel(run.model, run.thinkingLevel, "parent model")!,
+  );
   const second = padAnsi(`    ${harness}${theme.fg("dim", "  ·  ")}${model}`, width);
   return selected
     ? [theme.bg("selectedBg", first), theme.bg("selectedBg", second)]
@@ -149,7 +153,7 @@ function renderRunDetail(
     width,
   );
   const metadata = padAnsi(
-    `${theme.fg("muted", inspection.harness.toUpperCase())}${theme.fg("dim", "  ·  ")}${theme.fg(inspection.model ? "text" : "dim", inspection.model ?? "parent model")}${theme.fg("dim", `  ·  ${formatElapsed(inspection.elapsedMs)}`)}`,
+    `${theme.fg("muted", inspection.harness.toUpperCase())}${theme.fg("dim", "  ·  ")}${theme.fg(inspection.model ? "text" : "dim", formatRunModel(inspection.model, inspection.thinkingLevel, "parent model")!)}${theme.fg("dim", `  ·  ${formatElapsed(inspection.elapsedMs)}`)}`,
     width,
   );
   const usage = inspection.usage

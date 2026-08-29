@@ -238,10 +238,24 @@ describe("runs line models", () => {
     expect(() => assertBoundedRender(lines, 32)).not.toThrow();
   });
 
+  it("shows thinking after the model without adding empty parentheses", () => {
+    const withThinking = {
+      ...run("run-1"),
+      model: "openai-codex/gpt-5.6-sol",
+      thinkingLevel: "low" as const,
+    };
+    expect(runsListLines(initialRunsViewState([withThinking]), 80, 1)[0]).toContain(
+      "openai-codex/gpt-5.6-sol (low)",
+    );
+    expect(runsListLines(initialRunsViewState([run("run-2")]), 80, 1)[0]).not.toContain("()");
+  });
+
   it("preserves detail identity while bounding long progress and output", () => {
     const base = initialRunsViewState([run("run-1")]);
     const detail = {
       ...inspection("run-1", "completed"),
+      model: "openai-codex/gpt-5.6-sol",
+      thinkingLevel: "low" as const,
       transcript: Array.from({ length: 20 }, (_, index) => ({
         kind: "assistant" as const,
         at: index,
@@ -260,10 +274,10 @@ describe("runs line models", () => {
         submitting: false,
       },
     };
-    const lines = runDetailLines(state, 30, 6);
+    const lines = runDetailLines(state, 60, 6);
     expect(lines).toHaveLength(6);
     expect(lines[0]).toContain("run-1");
-    expect(lines[1]).toContain("completed");
-    expect(() => assertBoundedRender(lines, 30)).not.toThrow();
+    expect(lines[1]).toContain("openai-codex/gpt-5.6-sol (low)");
+    expect(() => assertBoundedRender(lines, 60)).not.toThrow();
   });
 });

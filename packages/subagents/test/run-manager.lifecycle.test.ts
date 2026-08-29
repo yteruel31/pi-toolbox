@@ -18,6 +18,27 @@ describe("run lifecycle", () => {
     expect(manager.list().map((r) => r.id)).toEqual(["run-1", "run-2", "run-3"]);
   });
 
+  it("projects the stored thinking level into list and inspection views", () => {
+    const manager = new RunManager();
+    const harness = new FakeHarness();
+    const spawned = manager.spawn({
+      prompt: "think briefly",
+      harness,
+      model: "openai-codex/gpt-5.6-sol",
+      thinkingLevel: "low",
+    });
+
+    expect(manager.list()[0]).toMatchObject({
+      id: spawned.id,
+      model: "openai-codex/gpt-5.6-sol",
+      thinkingLevel: "low",
+    });
+    expect(manager.check(spawned.id)).toMatchObject({
+      model: "openai-codex/gpt-5.6-sol",
+      thinkingLevel: "low",
+    });
+  });
+
   it("rejects an empty prompt immediately", () => {
     const manager = new RunManager();
     const harness = new FakeHarness();
