@@ -43,16 +43,19 @@ The extension registers exactly 11 tools:
 - `kb_read` — read a known indexed note.
 - `recall` — inspect an observational item and its available sources.
 
-It registers exactly eight commands:
+It registers exactly nine commands:
 
 - `/memory-consolidate`
 - `/session-sync`
 - `/session-reindex`
 - `/knowledge-search-setup`
 - `/knowledge-overview`
+- `/knowledge-refresh`
 - `/knowledge-reindex`
 - `/om:status`
 - `/om:view`
+
+It also provides the `knowledge-capture` skill. The skill creates or updates durable Markdown notes only after a direct user request or explicit confirmation of a proactive suggestion. Invoke it directly with `/skill:knowledge-capture`.
 
 All search is lexical SQLite FTS5 search ranked with BM25. Semantic similarity and embedding fallback are not provided.
 
@@ -122,7 +125,7 @@ Choose knowledge roots as a disclosure boundary: tool results requested by the p
 
 Tool and command registration is side-effect free. Databases and default runtime state are created only when a Pi session starts. Session shutdown closes the runtime and rejects stale operations.
 
-Use `/session-sync` for an incremental session index update and `/session-reindex` for a full session rebuild. Use `/knowledge-reindex` after changing files or configuration to force a safe full knowledge rebuild. `/knowledge-overview` reports the bounded current index.
+Use `/session-sync` for an incremental session index update and `/session-reindex` for a full session rebuild. Use `/knowledge-refresh` after adding or editing notes to incrementally update changed files. Use `/knowledge-reindex` after configuration changes or when a forced full rebuild is needed. `/knowledge-overview` reports the bounded current index.
 
 ### Degraded operation
 
@@ -137,7 +140,7 @@ At startup the package probes SQLite FTS5. If FTS5 is unavailable, persistent `m
   node -e "const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(':memory:');d.exec('CREATE VIRTUAL TABLE probe USING fts5(value)');console.log('FTS5 available')"
   ```
 
-- **Results stale or absent:** check configured roots, extensions, excludes, and limits; run the appropriate reindex command.
+- **Results stale or absent:** check configured roots, extensions, excludes, and limits; run `/knowledge-refresh`, then use `/knowledge-reindex` if a forced rebuild is needed.
 - **Reset all package data:** stop Pi, then remove `~/.pi/agent/context/`. This permanently deletes configuration and all three indexes. Session-ledger observational entries remain in their Pi session files.
 
 ## Rollout and compatibility

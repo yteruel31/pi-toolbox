@@ -220,6 +220,38 @@ export function registerKnowledgeCommands(
       }
     },
   });
+  pi.registerCommand("knowledge-refresh", {
+    description: "Incrementally refresh changed local knowledge files",
+    handler: async (_args, ctx) => {
+      const handle = controller.currentHandle;
+      if (!handle) {
+        ctx.ui.notify("Knowledge index is not ready yet.", "warning");
+        return;
+      }
+      ctx.ui.setStatus("context-knowledge", "Refreshing knowledge…");
+      try {
+        const result = await handle.run(
+          Effect.flatMap(KnowledgeSyncService, (sync) =>
+            Effect.promise(sync.sync)
+          )
+        );
+        const count = await handle.run(
+          Effect.map(KnowledgeIndexService, (index) => index.size())
+        );
+        ctx.ui.notify(
+          `Refreshed knowledge: ${summary(result)} (${count} total)`,
+          "info"
+        );
+      } catch {
+        ctx.ui.notify(
+          "Knowledge refresh failed; the existing index remains available.",
+          "error"
+        );
+      } finally {
+        ctx.ui.setStatus("context-knowledge", undefined);
+      }
+    },
+  });
   pi.registerCommand("knowledge-reindex", {
     description: "Force a safe full rebuild of the local knowledge FTS index",
     handler: async (_args, ctx) => {

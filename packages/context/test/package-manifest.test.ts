@@ -20,15 +20,16 @@ describe("context package manifest", () => {
     expect(manifest.type).toBe("module");
     expect(manifest.engines).toEqual({ node: ">=22.19.0" });
     expect(dependencies.effect).toBe("4.0.0-beta.107");
-    expect(manifest.pi).toEqual({ extensions: ["./src/index.ts"] });
+    expect(manifest.pi).toEqual({ extensions: ["./src/index.ts"], skills: ["./skills"] });
   });
 
   it("is registered by the root package with the same exact Effect pin", async () => {
     const manifest = await readJson(path.join(repositoryRoot, "package.json"));
-    const pi = manifest.pi as { extensions: string[] };
+    const pi = manifest.pi as { extensions: string[]; skills: string[] };
     const dependencies = manifest.dependencies as Record<string, string>;
 
     expect(pi.extensions).toContain("./packages/context/src/index.ts");
+    expect(pi.skills).toContain("./packages/context/skills");
     expect(dependencies.effect).toBe("4.0.0-beta.107");
   });
 

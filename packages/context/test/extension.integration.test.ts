@@ -30,7 +30,7 @@ const expectedTools = [
 ];
 const expectedCommands = [
   "memory-consolidate", "session-sync", "session-reindex", "knowledge-search-setup",
-  "knowledge-overview", "knowledge-reindex", "om:status", "om:view",
+  "knowledge-overview", "knowledge-refresh", "knowledge-reindex", "om:status", "om:view",
 ];
 
 describe("final extension integration contract", () => {

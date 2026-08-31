@@ -45,7 +45,8 @@
       "./packages/unslop/src/index.ts"
     ],
     "skills": [
-      "./packages/ask/skills"
+      "./packages/ask/skills",
+      "./packages/context/skills"
     ],
     "themes": [
       "./themes/*.json"
