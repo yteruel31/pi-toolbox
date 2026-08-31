@@ -113,6 +113,7 @@ describe("knowledge extension", () => {
     expect([...commands.keys()].filter((name) => name.startsWith("knowledge-"))).toEqual([
       "knowledge-search-setup",
       "knowledge-overview",
+      "knowledge-refresh",
       "knowledge-reindex",
     ]);
     expect(hooks.get("session_start")).toHaveLength(2);
@@ -290,7 +291,7 @@ describe("knowledge extension", () => {
     expect(cancelled.reload).not.toHaveBeenCalled();
   });
 
-  it("executes overview and reindex commands with notifications and finally-cleared status", async () => {
+  it("executes overview, refresh, and reindex commands with notifications and finally-cleared status", async () => {
     const { pi, commands } = host();
     const files = [
       {
@@ -307,6 +308,13 @@ describe("knowledge extension", () => {
     let fail = false;
     const sync = {
       status: () => ({ state: "ready" }),
+      sync: vi.fn(async () => ({
+        added: 0,
+        updated: 1,
+        removed: 0,
+        unchanged: 0,
+        skipped: [],
+      })),
       reindex: vi.fn(async () => {
         if (fail) throw new Error("fail");
         return { added: 1, updated: 0, removed: 0, unchanged: 0, skipped: [] };
@@ -334,10 +342,16 @@ describe("knowledge extension", () => {
       expect.stringContaining("empty"),
       "warning"
     );
+    await commands.get("knowledge-refresh").handler("", ctx);
     await commands.get("knowledge-reindex").handler("", ctx);
     fail = true;
     await commands.get("knowledge-reindex").handler("", ctx);
+    expect(sync.sync).toHaveBeenCalledOnce();
     expect(sync.reindex).toHaveBeenCalledTimes(2);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Refreshed"),
+      "info"
+    );
     expect(ctx.ui.notify).toHaveBeenCalledWith(
       expect.stringContaining("Re-indexed"),
       "info"
@@ -348,7 +362,7 @@ describe("knowledge extension", () => {
     );
     expect(
       ctx.ui.setStatus.mock.calls.filter((call: any[]) => call[1] === undefined)
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   it("serializes startup and manual sync, rejects stale work, and drains before disposal", async () => {

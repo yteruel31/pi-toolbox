@@ -10,7 +10,7 @@ const exec = promisify(execFile);
 const root = path.resolve(import.meta.dirname, "..");
 const packageRoot = path.join(root, "packages/context");
 const expectedTools = ["memory_search", "memory_remember", "memory_forget", "memory_lessons", "memory_stats", "session_search", "session_list", "session_read", "knowledge_search", "kb_read", "recall"];
-const expectedCommands = ["memory-consolidate", "session-sync", "session-reindex", "knowledge-search-setup", "knowledge-overview", "knowledge-reindex", "om:status", "om:view"];
+const expectedCommands = ["memory-consolidate", "session-sync", "session-reindex", "knowledge-search-setup", "knowledge-overview", "knowledge-refresh", "knowledge-reindex", "om:status", "om:view"];
 const excludedCommands = ["session-embeddings-setup", "knowledge-add-kb"];
 let temporary;
 let tarball;
@@ -27,7 +27,7 @@ try {
   assert(Array.isArray(report) && report.length === 1, "npm pack did not return one JSON result");
   tarball = path.resolve(root, report[0].filename);
   const files = report[0].files.map((entry) => entry.path);
-  for (const required of ["dist/index.js", "dist/index.d.ts", "src/index.ts", "README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]) {
+  for (const required of ["dist/index.js", "dist/index.d.ts", "src/index.ts", "skills/knowledge-capture/SKILL.md", "README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"]) {
     assert(files.includes(required), `tarball is missing ${required}`);
   }
   for (const file of files) {
@@ -46,7 +46,10 @@ try {
   const packageManager = new DefaultPackageManager({ cwd: project, agentDir, settingsManager: SettingsManager.inMemory({}, { projectTrusted: true }) });
   const resolved = await packageManager.resolveExtensionSources([installed], { local: true, temporary: true });
   const enabled = resolved.extensions.filter((resource) => resource.enabled);
+  const enabledSkills = resolved.skills.filter((resource) => resource.enabled);
   assert(enabled.length === 1, `expected exactly one Pi extension, resolved ${enabled.length}`);
+  assert(enabledSkills.length === 1, `expected exactly one Pi skill, resolved ${enabledSkills.length}`);
+  assert(enabledSkills[0].path.endsWith("skills/knowledge-capture/SKILL.md"), `unexpected skill path: ${enabledSkills[0].path}`);
 
   const { loadExtensions } = await import(path.join(root, "node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js"));
   const loaded = await loadExtensions(enabled.map((resource) => resource.path), project);
@@ -62,7 +65,7 @@ try {
 
   const exported = await import(path.join(installed, "dist/index.js"));
   assert(typeof exported.default === "function", "built default export is not importable");
-  console.log(`context tarball smoke passed: ${files.length} files, 1 extension, 11 tools, 8 commands`);
+  console.log(`context tarball smoke passed: ${files.length} files, 1 extension, 1 skill, 11 tools, 9 commands`);
 } catch (error) {
   console.error(error instanceof Error ? error.stack : error);
   process.exitCode = 1;
