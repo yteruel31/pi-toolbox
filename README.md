@@ -68,6 +68,14 @@ pi install npm:@yteruel31/pi-context
 
 Local-first observational context, durable memory, session search, and knowledge search using SQLite FTS5/BM25 only, with no embeddings or vector layer.
 
+### [`@yteruel31/pi-diagram`](./packages/diagram)
+
+```bash
+pi install npm:@yteruel31/pi-diagram
+```
+
+Create and edit structured box-and-arrow diagrams from Pi, inspect inline PNG previews, and share a capability-scoped live viewer through localhost, Tailscale Serve, or a user-owned HTTPS reverse proxy.
+
 ### [`@yteruel31/pi-learning`](./packages/pi-learning)
 
 ```bash

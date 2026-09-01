@@ -35,6 +35,7 @@
       "./packages/claude-rules/src/index.ts",
       "./packages/ask/src/index.ts",
       "./packages/context/src/index.ts",
+      "./packages/diagram/src/index.ts",
       "./packages/pi-learning/src/index.ts",
       "./packages/lsp/src/index.ts",
       "./packages/session-title/src/index.ts",
