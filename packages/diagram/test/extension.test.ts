@@ -88,9 +88,16 @@ test("create and update return inline PNG previews and a live viewer URL", async
     assert.equal(created.content[1].type, "image");
     assert.equal(created.content[1].mimeType, "image/png");
     assert.match(created.content[0].text, /http:\/\/127\.0\.0\.1:/);
+    assert.match(created.content[0].text, /Review:/);
     const id = created.details.id;
     const updated = await tool.execute("call-2", { action: "update", id, patch: { set_nodes: [{ id: "api", label: "Public API" }] } }, new AbortController().signal);
     assert.equal(updated.details.revision, 2);
     assert.equal((await service.store.get(id))!.spec.nodes.find((node) => node.id === "api")?.label, "Public API");
+    const reviewed = await tool.execute("call-3", { action: "review", id }, new AbortController().signal);
+    assert.equal(reviewed.content[1].type, "image");
+    assert.equal(reviewed.content[1].mimeType, "image/png");
+    assert.match(reviewed.content[0].text, /Review:/);
+    assert.doesNotMatch(reviewed.content[0].text, /https?:\/\//);
+    assert.equal(reviewed.details.url, undefined);
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });

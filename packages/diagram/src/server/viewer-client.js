@@ -162,6 +162,13 @@
     connection.classList.remove("stale");
     connectionText.textContent = "Live";
   });
+  stream.addEventListener("deleted", () => {
+    stream.close();
+    connection.classList.add("stale");
+    connectionText.textContent = "Deleted";
+    image.removeAttribute("src");
+    notify("Diagram deleted");
+  });
   stream.onopen = () => { connection.classList.remove("stale"); connectionText.textContent = "Live"; };
   stream.onerror = () => { connection.classList.add("stale"); connectionText.textContent = "Reconnecting"; };
 })();

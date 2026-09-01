@@ -58,6 +58,23 @@ test("serializes read-modify-write patches without losing concurrent changes", a
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("serializes mutations from independent Pi processes through the shared store lock", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pi-diagram-store-processes-"));
+  try {
+    const first = new DiagramStore(directory);
+    const second = new DiagramStore(directory);
+    const created = await first.create("Flow", sample);
+    await Promise.all([
+      first.updateWith(created.id, (current) => ({ spec: applyPatch(current.spec, { set_nodes: [{ id: "a", label: "Updated A" }] }).spec })),
+      second.updateWith(created.id, (current) => ({ spec: applyPatch(current.spec, { set_nodes: [{ id: "b", label: "Updated B" }] }).spec })),
+    ]);
+    const updated = await first.get(created.id);
+    assert.equal(updated?.spec.nodes.find(({ id }) => id === "a")?.label, "Updated A");
+    assert.equal(updated?.spec.nodes.find(({ id }) => id === "b")?.label, "Updated B");
+    assert.equal(updated?.revision, 3);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("refuses a symlinked storage directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-diagram-store-symlink-"));
   const target = path.join(root, "target");

@@ -1,6 +1,6 @@
 # `@yteruel31/pi-diagram`
 
-Create, edit, render, and host structured diagrams directly from Pi. The package returns a PNG preview to the model after each mutation and a capability-scoped viewer URL for human inspection and export.
+Create, edit, render, review, and host structured diagrams directly from Pi. The package returns a PNG preview and deterministic readability summary after each mutation, plus a capability-scoped viewer URL for human inspection and export.
 
 This is a native Pi package. It does not start an MCP server or provide adapters for other agent harnesses.
 
@@ -31,6 +31,7 @@ The extension registers one `diagram` tool with these actions:
 - `create` — create a document from a complete `spec`;
 - `update` — replace the spec or apply a focused patch;
 - `render` — return the current PNG and viewer URL again;
+- `review` — lint readability and return an annotated PNG without exposing the capability URL;
 - `inspect` — read the normalized spec and metadata;
 - `list` — list persisted documents and their viewer URLs;
 - `delete` — delete a document and immediately invalidate its capability URL.
@@ -71,6 +72,8 @@ Keep ids stable and use `update.patch` for small changes:
 ```
 
 The model sees a PNG generated from the exact SVG served by the viewer. Inline previews are bounded to 2048 px per dimension; viewer downloads are bounded to 4096 px.
+
+After `create` and `update`, the result includes a bounded review summary. Call `review` with the diagram id to receive numbered annotations for text overflow, WCAG contrast, edge crossings, edge/node or edge/text collisions, label collisions, group collisions, and detached empty groups. Review findings are deterministic checks against the renderer's shared model-space scene; they complement rather than replace visual inspection. The reviewer never edits a diagram automatically.
 
 ## Viewer
 
@@ -168,11 +171,13 @@ Consequences:
 - listing or rendering a document in a later Pi session makes its existing URL available again;
 - deleting a document invalidates its token permanently.
 
-The package does not install a detached daemon.
+The package does not install a detached daemon. On operating systems with fixed-port socket reuse support (including Linux), multiple concurrent Pi sessions can share the configured port. They synchronize mutations through the persisted store and propagate external-session revisions to connected viewers. Other platforms retain normal single-session hosting and report `EADDRINUSE` if a second session tries to own the same fixed port.
 
 ## Security model
 
 Viewer URLs contain a random 256-bit capability. Anyone who obtains a custom-hosted capability URL can view and download that diagram. Do not publish sensitive diagrams through an untrusted reverse proxy or paste capability URLs into public channels.
+
+The security boundary is the operating-system user: another process running as the same user can read stored capabilities and, on reuse-port platforms, join the configured listener. Tailscale's injected identity header is defense in depth for proxied requests, not an authentication boundary against local same-user processes; the capability remains the authorization secret.
 
 The host additionally uses strict CSP, `nosniff`, same-origin resource policy, no-referrer, and no-store headers. Labels are XML-escaped, custom colors accept only six-digit hex values, unsupported spec keys are rejected, and arbitrary SVG imports are not accepted.
 

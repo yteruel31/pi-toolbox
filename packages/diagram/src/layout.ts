@@ -39,6 +39,16 @@ const NODE_MAX_WIDTH = 280;
 const CHARACTER_WIDTH = 8.2;
 const GROUP_PADDING = 28;
 
+export interface BoxSize { width: number; height: number }
+
+export function edgeLabelDimensions(lines: string[]): BoxSize {
+  const longest = Math.max(0, ...lines.map((line) => line.length));
+  return {
+    width: lines.length ? Math.min(220, Math.max(40, longest * 7.2 + 18)) : 0,
+    height: lines.length ? lines.length * 15 + 9 : 0,
+  };
+}
+
 export function layoutDiagram(spec: DiagramSpec): DiagramLayout {
   if (spec.nodes.length === 0) return { width: 640, height: 360, nodes: [], edges: [], groups: [] };
 
@@ -58,8 +68,11 @@ export function layoutDiagram(spec: DiagramSpec): DiagramLayout {
     const labelLines = wrapLabel(node.label, 28);
     const noteLines = node.note ? wrapLabel(node.note, 34) : [];
     const longest = Math.max(8, ...labelLines.map((line) => line.length), ...noteLines.map((line) => line.length));
-    const width = Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, longest * CHARACTER_WIDTH + 42));
-    const height = Math.max(60, 34 + labelLines.length * 18 + noteLines.length * 15 + (noteLines.length ? 8 : 0));
+    const baseWidth = Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, longest * CHARACTER_WIDTH + 42));
+    const baseHeight = Math.max(60, 34 + labelLines.length * 18 + noteLines.length * 15 + (noteLines.length ? 8 : 0));
+    const shape = node.shape ?? "rounded";
+    const width = shape === "diamond" ? baseWidth * 1.55 : shape === "ellipse" ? baseWidth * 1.22 : baseWidth;
+    const height = shape === "diamond" ? baseHeight * 1.45 : shape === "ellipse" ? baseHeight * 1.18 : shape === "cylinder" ? baseHeight * 1.12 : baseHeight;
     dimensions.set(node.id, { width, height, labelLines, noteLines });
     graph.setNode(node.id, { width, height });
   }
@@ -68,9 +81,8 @@ export function layoutDiagram(spec: DiagramSpec): DiagramLayout {
   for (const edge of spec.edges) {
     const labelLines = edge.label ? wrapLabel(edge.label, 28) : [];
     edgeLabels.set(edge.id, labelLines);
-    const longest = Math.max(0, ...labelLines.map((line) => line.length));
-    const labelWidth = labelLines.length ? Math.min(220, Math.max(40, longest * 7.2 + 18)) : 0;
-    graph.setEdge(edge.from, edge.to, { width: labelWidth, height: labelLines.length ? labelLines.length * 15 + 9 : 0 }, edge.id);
+    const label = edgeLabelDimensions(labelLines);
+    graph.setEdge(edge.from, edge.to, label, edge.id);
   }
   runDagreLayout(graph);
 
