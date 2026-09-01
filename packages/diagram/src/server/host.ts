@@ -1,9 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 
 import type { DiagramHostingSettings } from "../config.js";
-import { renderPng } from "../render/png.js";
+import { renderPngAsync } from "../render/png.js";
 import { renderSvg } from "../render/svg.js";
 import type { DiagramDocument, DiagramStore } from "../store.js";
 import { renderViewer } from "./viewer.js";
@@ -25,7 +26,6 @@ export interface DiagramHostOptions {
 export class DiagramHost {
   private server: Server | undefined;
   private baseUrl: string | undefined;
-  private readonly challenges = new Set<string>();
   private readonly streams = new Map<string, Set<ServerResponse>>();
   private readonly svgCache = new Map<string, ReturnType<typeof renderSvg>>();
   private readonly pngCache = new Map<string, Buffer>();
@@ -40,7 +40,8 @@ export class DiagramHost {
   async start(): Promise<void> {
     if (this.server) return;
     const server = createServer((request, response) => {
-      void this.route(request.method ?? "GET", request.url ?? "/", request.headers, response).catch(() => this.notFound(response));
+      const method = request.method ?? "GET";
+      void this.route(method, request.url ?? "/", request.headers, response).catch(() => this.notFound(response, method));
     });
     server.requestTimeout = 15_000;
     server.headersTimeout = 10_000;
@@ -50,7 +51,7 @@ export class DiagramHost {
       server.listen({
         port: this.options.settings.port,
         host: this.options.settings.listenAddress,
-        reusePort: this.options.settings.port !== 0,
+        reusePort: this.options.settings.port !== 0 && supportsReusePort(),
       }, () => {
         server.off("error", reject);
         resolve();
@@ -68,7 +69,9 @@ export class DiagramHost {
     this.heartbeat.unref();
     try { await this.pollRevisions(false); }
     catch (error) { await this.close(); throw error; }
-    this.revisionPoll = setInterval(() => { void this.pollRevisions(true).catch(() => undefined); }, 1_000);
+    this.revisionPoll = setInterval(() => {
+      if (this.streams.size > 0) void this.pollRevisions(true).catch(() => undefined);
+    }, 1_000);
     this.revisionPoll.unref();
   }
 
@@ -81,9 +84,10 @@ export class DiagramHost {
     return `${this.publicBaseUrl}/d/${document.token}/`;
   }
 
-  setChallenge(token: string): () => void {
-    this.challenges.add(token);
-    return () => this.challenges.delete(token);
+  async setChallenge(token: string): Promise<() => Promise<void>> {
+    const path = this.challengePath(token);
+    await writeFile(path, token, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    return () => rm(path, { force: true });
   }
 
   notifyUpdated(document: DiagramDocument): void {
@@ -124,26 +128,30 @@ export class DiagramHost {
 
   private async route(method: string, rawUrl: string, headers: Record<string, string | string[] | undefined>, response: ServerResponse): Promise<void> {
     if (method !== "GET" && method !== "HEAD") return this.methodNotAllowed(response);
-    if (this.options.settings.mode === "tailscale" && this.options.settings.requireTailscaleIdentity && !validIdentity(headers["tailscale-user-login"])) return this.notFound(response);
+    if (this.options.settings.mode === "tailscale" && this.options.settings.requireTailscaleIdentity && !validIdentity(headers["tailscale-user-login"])) return this.notFound(response, method);
     const url = new URL(rawUrl, "http://diagram.local");
     const basePath = this.options.settings.basePath;
-    if (basePath !== "/" && url.pathname !== basePath && !url.pathname.startsWith(`${basePath}/`)) return this.notFound(response);
+    if (basePath !== "/" && url.pathname !== basePath && !url.pathname.startsWith(`${basePath}/`)) return this.notFound(response, method);
     const relative = basePath === "/" ? url.pathname : url.pathname.slice(basePath.length) || "/";
 
     if (relative === "/assets/viewer.js") return this.send(response, 200, "text/javascript; charset=utf-8", await VIEWER_JS, method);
     if (relative === "/assets/viewer.css") return this.send(response, 200, "text/css; charset=utf-8", await VIEWER_CSS, method);
     const challenge = /^\/_challenge\/([A-Za-z0-9_-]{32})$/.exec(relative);
     if (challenge) {
-      if (!this.challenges.has(challenge[1]!)) return this.notFound(response);
-      return this.send(response, 200, "text/plain; charset=utf-8", challenge[1]!, method);
+      const token = challenge[1]!;
+      let stored: string;
+      try { stored = await readFile(this.challengePath(token), "utf8"); }
+      catch { return this.notFound(response, method); }
+      if (stored !== token) return this.notFound(response, method);
+      return this.send(response, 200, "text/plain; charset=utf-8", token, method);
     }
 
     const match = /^\/d\/([A-Za-z0-9_-]{43})(?:\/(.*))?$/.exec(relative);
-    if (!match || !TOKEN_PATTERN.test(match[1]!)) return this.notFound(response);
+    if (!match || !TOKEN_PATTERN.test(match[1]!)) return this.notFound(response, method);
     const token = match[1]!;
     const suffix = match[2];
     const document = await this.options.store.getByToken(token);
-    if (!document) return this.notFound(response);
+    if (!document) return this.notFound(response, method);
     if (suffix === undefined) {
       const prefix = basePath === "/" ? "" : basePath;
       response.writeHead(308, { location: `${prefix}/d/${token}/`, ...baseHeaders() });
@@ -199,13 +207,17 @@ export class DiagramHost {
       const cacheKey = `${renderKey}:${scale}`;
       let png = this.pngCache.get(cacheKey);
       if (!png) {
-        png = renderPng(rendered, scale).png;
+        png = (await renderPngAsync(rendered, scale)).png;
         this.cachePng(cacheKey, png);
       }
       const attachment: Record<string, string> = suffix.startsWith("download") ? { "content-disposition": `attachment; filename="${safeFilename(document.title)}.png"` } : {};
       return this.send(response, 200, "image/png", png, method, attachment);
     }
-    return this.notFound(response);
+    return this.notFound(response, method);
+  }
+
+  private challengePath(token: string): string {
+    return join(this.options.store.directory, `.challenge-${token}`);
   }
 
   private async pollRevisions(emitChanges: boolean): Promise<void> {
@@ -226,8 +238,11 @@ export class DiagramHost {
           this.streams.delete(id);
         }
       }
-      this.knownRevisions.clear();
-      for (const [id, revision] of current) this.knownRevisions.set(id, revision);
+      for (const id of this.knownRevisions.keys()) if (!current.has(id)) this.knownRevisions.delete(id);
+      for (const [id, revision] of current) {
+        const known = this.knownRevisions.get(id);
+        if (known === undefined || revision > known) this.knownRevisions.set(id, revision);
+      }
     } finally {
       this.polling = false;
     }
@@ -271,12 +286,12 @@ export class DiagramHost {
     response.end(method === "HEAD" ? undefined : body);
   }
 
-  private notFound(response: ServerResponse): void {
+  private notFound(response: ServerResponse, method: string): void {
     if (response.headersSent) {
       response.end();
       return;
     }
-    this.send(response, 404, "text/plain; charset=utf-8", "Not found", "GET");
+    this.send(response, 404, "text/plain; charset=utf-8", "Not found", method);
   }
 
   private methodNotAllowed(response: ServerResponse): void {
@@ -301,6 +316,10 @@ function numericScale(value: string | null): number | undefined {
 
 function validIdentity(value: string | string[] | undefined): boolean {
   return typeof value === "string" && IDENTITY_PATTERN.test(value);
+}
+
+export function supportsReusePort(platform = process.platform): boolean {
+  return platform === "linux" || platform === "aix" || platform === "freebsd" || platform === "sunos";
 }
 
 function loopbackHost(address: string): string {

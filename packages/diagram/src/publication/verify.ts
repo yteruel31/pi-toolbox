@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
 
 export interface ChallengeHost {
-  setChallenge(token: string): () => void;
+  setChallenge(token: string): Promise<() => Promise<void> | void>;
 }
 
 export async function verifyExternalPublication(publicBaseUrl: string, host: ChallengeHost, fetcher: typeof fetch = fetch): Promise<void> {
   const token = randomBytes(24).toString("base64url");
-  const clear = host.setChallenge(token);
+  const clear = await host.setChallenge(token);
   try {
     const response = await fetcher(`${publicBaseUrl}/_challenge/${token}`, {
       headers: { accept: "text/plain" },
@@ -20,6 +20,6 @@ export async function verifyExternalPublication(publicBaseUrl: string, host: Cha
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Diagram external URL could not reach this Pi host: ${reason}`);
   } finally {
-    clear();
+    await clear();
   }
 }

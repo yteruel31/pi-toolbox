@@ -5,5 +5,6 @@
 - `@dagrejs/dagre` — MIT License. Copyright Dagre contributors.
 - `@dagrejs/graphlib` — MIT License. Copyright Graphlib contributors.
 - `@resvg/resvg-js` and resvg — Mozilla Public License 2.0. Copyright resvg contributors.
+- `proper-lockfile` — MIT License. Copyright André Cruz and contributors.
 
 The package does not modify or redistribute source from `svg-mcp`. Its diagram model, rendering pipeline, and host are an independent clean-room implementation.

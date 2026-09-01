@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { layoutDiagram, wrapLabel } from "../src/layout.js";
-import { renderPng } from "../src/render/png.js";
+import { renderPng, renderPngAsync } from "../src/render/png.js";
 import { renderSvg } from "../src/render/svg.js";
 import { normalizeSpec } from "../src/spec.js";
 
@@ -39,6 +39,15 @@ test("renders PNG from the exact serialized SVG", () => {
   assert.equal(png.png.subarray(1, 4).toString(), "PNG");
   assert.ok(png.width > 0 && png.height > 0);
   assert.ok(png.width <= 4096 && png.height <= 4096);
+});
+
+test("renders the same PNG asynchronously for HTTP requests", async () => {
+  const svg = renderSvg("Architecture", spec);
+  const synchronous = renderPng(svg, 2);
+  const asynchronous = await renderPngAsync(svg, 2);
+  assert.equal(asynchronous.width, synchronous.width);
+  assert.equal(asynchronous.height, synchronous.height);
+  assert.deepEqual(asynchronous.png, synchronous.png);
 });
 
 test("wraps long labels without losing text", () => {

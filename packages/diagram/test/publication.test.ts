@@ -44,7 +44,7 @@ test("derives the local machine Tailscale hostname", async () => {
 
 test("verifies an external URL with a one-time matching challenge", async () => {
   let active = "";
-  const host = { setChallenge(token: string) { active = token; return () => { active = ""; }; } };
+  const host = { async setChallenge(token: string) { active = token; return () => { active = ""; }; } };
   await verifyExternalPublication("https://diagram.example/diagram", host, async (input) => {
     const token = new URL(String(input)).pathname.split("/").at(-1)!;
     assert.equal(token, active);
@@ -54,6 +54,6 @@ test("verifies an external URL with a one-time matching challenge", async () => 
 });
 
 test("rejects mismatched external challenge responses", async () => {
-  const host = { setChallenge() { return () => undefined; } };
+  const host = { async setChallenge() { return () => undefined; } };
   await assert.rejects(() => verifyExternalPublication("https://diagram.example/diagram", host, async () => new Response("wrong", { status: 200 })), /did not match/);
 });

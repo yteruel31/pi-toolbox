@@ -62,7 +62,7 @@ export function reviewScene(scene: DiagramScene, options: ReviewOptions = {}): R
   }
   findings.sort(compareFindings);
   const counts = countFindings(findings);
-  const maximum = options.maximumFindings ?? 50;
+  const maximum = options.maximumFindings ?? 25;
   return { findings: findings.slice(0, maximum), counts, truncated: findings.length > maximum };
 }
 

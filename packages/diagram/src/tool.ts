@@ -1,6 +1,6 @@
 import { DEFAULT_MAX_BYTES, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { renderPng } from "./render/png.js";
+import { boundedPngScale, renderPng } from "./render/png.js";
 import { resolveScene } from "./render/scene.js";
 import { renderSceneSvg } from "./render/svg.js";
 import { annotateReview, reviewScene, reviewSummary, type ReviewReport } from "./review.js";
@@ -143,8 +143,8 @@ function imageResult(action: "create" | "update" | "render", document: DiagramDo
 function reviewResult(document: DiagramDocument, scale = 2) {
   const scene = resolveScene(document.spec);
   const svg = renderSceneSvg(document.title, scene);
-  const original = renderPng(svg, scale, 2_048);
-  const report = reviewScene(scene, { requestedScale: scale, renderedScale: original.scale });
+  const renderedScale = boundedPngScale(svg, scale, 2_048);
+  const report = reviewScene(scene, { requestedScale: scale, renderedScale });
   const annotated = renderPng(annotateReview(svg, report), scale, 2_048);
   const lines = report.findings.map((finding, index) => {
     const elements = finding.elements.length ? ` [${finding.elements.join(", ")}]` : "";

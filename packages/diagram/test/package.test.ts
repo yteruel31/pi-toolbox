@@ -15,6 +15,7 @@ test("manifest exposes exactly one native Pi extension with required runtime dep
   assert.deepEqual(manifest.pi?.extensions, ["./src/index.ts"]);
   assert.ok(manifest.dependencies?.["@dagrejs/dagre"]);
   assert.ok(manifest.dependencies?.["@resvg/resvg-js"]);
+  assert.ok(manifest.dependencies?.["proper-lockfile"]);
   assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], "*");
   assert.equal(manifest.peerDependencies?.typebox, "*");
   assert.equal(manifest.engines?.node, ">=22.19.0");

@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+import { lock } from "proper-lockfile";
 
 import { normalizeSpec, type DiagramSpec } from "./spec.js";
 
@@ -110,6 +112,7 @@ export class DiagramStore {
     const documents = new Map<string, DiagramDocument>();
     const tokenIndex = new Map<string, string>();
     for (const entry of entries) {
+      if (documents.size >= MAX_DOCUMENTS) break;
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
       const expectedId = entry.name.slice(0, -5);
       try {
@@ -174,39 +177,15 @@ export class DiagramStore {
 
 async function withStoreLock<T>(directory: string, operation: () => Promise<T>): Promise<T> {
   await secureDirectory(directory);
-  const path = join(directory, ".mutation.lock");
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  for (let attempt = 0; attempt < 500; attempt += 1) {
-    try {
-      const candidate = await open(path, "wx", 0o600);
-      try { await candidate.writeFile(`${process.pid}\n`, "utf8"); }
-      catch (error) { await candidate.close().catch(() => undefined); await rm(path, { force: true }); throw error; }
-      handle = candidate;
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try {
-        const [lock, ownerText] = await Promise.all([stat(path), readFile(path, "utf8")]);
-        const owner = Number(ownerText.trim());
-        if (Date.now() - lock.mtimeMs > 1_000 && (!Number.isInteger(owner) || owner <= 0 || !processExists(owner))) await rm(path, { force: true });
-      } catch (inspectionError) {
-        if ((inspectionError as NodeJS.ErrnoException).code !== "ENOENT") throw inspectionError;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-  if (!handle) throw new Error("Timed out waiting for the diagram store lock");
-  try {
-    return await operation();
-  } finally {
-    await handle.close().catch(() => undefined);
-    await rm(path, { force: true });
-  }
-}
-
-function processExists(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+  const release = await lock(directory, {
+    realpath: false,
+    lockfilePath: join(directory, ".mutation.lock"),
+    stale: 10_000,
+    update: 3_000,
+    retries: { retries: 50, factor: 1.2, minTimeout: 10, maxTimeout: 100, randomize: true },
+  });
+  try { return await operation(); }
+  finally { await release(); }
 }
 
 async function secureDirectory(directory: string): Promise<void> {

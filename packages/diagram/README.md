@@ -171,11 +171,13 @@ Consequences:
 - listing or rendering a document in a later Pi session makes its existing URL available again;
 - deleting a document invalidates its token permanently.
 
-The package does not install a detached daemon. Multiple concurrent Pi sessions can share the configured fixed port using the operating system's port reuse support. They synchronize mutations through the persisted store and propagate external-session revisions to connected viewers.
+The package does not install a detached daemon. On operating systems with fixed-port socket reuse support (including Linux), multiple concurrent Pi sessions can share the configured port. They synchronize mutations through the persisted store and propagate external-session revisions to connected viewers. Other platforms retain normal single-session hosting and report `EADDRINUSE` if a second session tries to own the same fixed port.
 
 ## Security model
 
 Viewer URLs contain a random 256-bit capability. Anyone who obtains a custom-hosted capability URL can view and download that diagram. Do not publish sensitive diagrams through an untrusted reverse proxy or paste capability URLs into public channels.
+
+The security boundary is the operating-system user: another process running as the same user can read stored capabilities and, on reuse-port platforms, join the configured listener. Tailscale's injected identity header is defense in depth for proxied requests, not an authentication boundary against local same-user processes; the capability remains the authorization secret.
 
 The host additionally uses strict CSP, `nosniff`, same-origin resource policy, no-referrer, and no-store headers. Labels are XML-escaped, custom colors accept only six-digit hex values, unsupported spec keys are rejected, and arbitrary SVG imports are not accepted.
 

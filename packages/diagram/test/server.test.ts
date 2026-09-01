@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import test from "node:test";
 
 import { DEFAULT_HOSTING_SETTINGS } from "../src/config.js";
-import { DiagramHost } from "../src/server/host.js";
+import { DiagramHost, supportsReusePort } from "../src/server/host.js";
 import { DiagramStore } from "../src/store.js";
 
 async function fixture() {
@@ -17,6 +17,12 @@ async function fixture() {
   await host.start();
   return { directory, store, document, host, url: host.urlFor(document) };
 }
+
+test("enables fixed-port sharing only on supported operating systems", () => {
+  assert.equal(supportsReusePort("linux"), true);
+  assert.equal(supportsReusePort("darwin"), false);
+  assert.equal(supportsReusePort("win32"), false);
+});
 
 test("serves a capability-scoped viewer with strict headers and assets", async () => {
   const current = await fixture();
@@ -31,7 +37,9 @@ test("serves a capability-scoped viewer with strict headers and assets", async (
     const asset = await fetch(new URL("../../assets/viewer.js", current.url));
     assert.equal(asset.status, 200);
     assert.match(asset.headers.get("content-type") ?? "", /text\/javascript/);
-    assert.match(await asset.text(), /ClipboardItem/);
+    const client = await asset.text();
+    assert.match(client, /ClipboardItem/);
+    assert.match(client, /Diagram deleted/);
   } finally { await current.host.close(); await rm(current.directory, { recursive: true, force: true }); }
 });
 
@@ -125,6 +133,13 @@ test("shares one fixed port and persisted updates across concurrent Pi sessions"
   await firstHost.start();
   await secondHost.start();
   try {
+    const challenge = "C".repeat(32);
+    const clearChallenge = await firstHost.setChallenge(challenge);
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      assert.equal(await (await fetch(`${firstHost.publicBaseUrl}/_challenge/${challenge}`)).text(), challenge);
+    }
+    await clearChallenge();
+
     const document = await firstStore.create("Shared", { nodes: [{ id: "node", label: "First" }], edges: [] });
     const url = firstHost.urlFor(document);
     for (let attempt = 0; attempt < 6; attempt += 1) assert.equal((await fetch(url)).status, 200);
@@ -158,10 +173,10 @@ test("serves one-time publication challenges", async () => {
   const current = await fixture();
   try {
     const token = "B".repeat(32);
-    const clear = current.host.setChallenge(token);
+    const clear = await current.host.setChallenge(token);
     const url = `${current.host.publicBaseUrl}/_challenge/${token}`;
     assert.equal(await (await fetch(url)).text(), token);
-    clear();
+    await clear();
     assert.equal((await fetch(url)).status, 404);
   } finally { await current.host.close(); await rm(current.directory, { recursive: true, force: true }); }
 });
