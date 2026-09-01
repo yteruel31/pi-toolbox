@@ -31,6 +31,9 @@ export class DiagramHost {
   private readonly pngCache = new Map<string, Buffer>();
   private pngCacheBytes = 0;
   private heartbeat: NodeJS.Timeout | undefined;
+  private revisionPoll: NodeJS.Timeout | undefined;
+  private polling = false;
+  private readonly knownRevisions = new Map<string, number>();
 
   constructor(private readonly options: DiagramHostOptions) {}
 
@@ -44,7 +47,11 @@ export class DiagramHost {
     server.keepAliveTimeout = 5_000;
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(this.options.settings.port, this.options.settings.listenAddress, () => {
+      server.listen({
+        port: this.options.settings.port,
+        host: this.options.settings.listenAddress,
+        reusePort: this.options.settings.port !== 0,
+      }, () => {
         server.off("error", reject);
         resolve();
       });
@@ -59,6 +66,10 @@ export class DiagramHost {
       }
     }, 15_000);
     this.heartbeat.unref();
+    try { await this.pollRevisions(false); }
+    catch (error) { await this.close(); throw error; }
+    this.revisionPoll = setInterval(() => { void this.pollRevisions(true).catch(() => undefined); }, 1_000);
+    this.revisionPoll.unref();
   }
 
   get publicBaseUrl(): string {
@@ -76,10 +87,12 @@ export class DiagramHost {
   }
 
   notifyUpdated(document: DiagramDocument): void {
+    this.knownRevisions.set(document.id, document.revision);
     this.emit(document.id, "updated", String(document.revision));
   }
 
   notifyDeleted(id: string): void {
+    this.knownRevisions.delete(id);
     this.emit(id, "deleted", "deleted");
     const responses = this.streams.get(id);
     if (responses) for (const response of responses) response.end();
@@ -93,7 +106,10 @@ export class DiagramHost {
 
   async close(): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.revisionPoll) clearInterval(this.revisionPoll);
     this.heartbeat = undefined;
+    this.revisionPoll = undefined;
+    this.knownRevisions.clear();
     for (const responses of this.streams.values()) for (const response of responses) response.end();
     this.streams.clear();
     this.svgCache.clear();
@@ -142,6 +158,7 @@ export class DiagramHost {
     }
     if (suffix === "events") {
       if (method === "HEAD") return this.methodNotAllowed(response);
+      this.knownRevisions.set(document.id, document.revision);
       const streams = this.streams.get(document.id) ?? new Set<ServerResponse>();
       if (this.streamCount() >= MAX_STREAMS || streams.size >= MAX_STREAMS_PER_DOCUMENT) {
         return this.send(response, 503, "text/plain; charset=utf-8", "Live update capacity reached", method, { "retry-after": "15" });
@@ -189,6 +206,31 @@ export class DiagramHost {
       return this.send(response, 200, "image/png", png, method, attachment);
     }
     return this.notFound(response);
+  }
+
+  private async pollRevisions(emitChanges: boolean): Promise<void> {
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      const documents = await this.options.store.list();
+      const current = new Map(documents.map((document) => [document.id, document.revision]));
+      if (emitChanges) {
+        for (const document of documents) {
+          const previous = this.knownRevisions.get(document.id);
+          if (previous !== undefined && previous !== document.revision) this.emit(document.id, "updated", String(document.revision));
+        }
+        for (const id of this.knownRevisions.keys()) if (!current.has(id)) {
+          this.emit(id, "deleted", "deleted");
+          const responses = this.streams.get(id);
+          if (responses) for (const response of responses) response.end();
+          this.streams.delete(id);
+        }
+      }
+      this.knownRevisions.clear();
+      for (const [id, revision] of current) this.knownRevisions.set(id, revision);
+    } finally {
+      this.polling = false;
+    }
   }
 
   private emit(id: string, event: string, data: string): void {

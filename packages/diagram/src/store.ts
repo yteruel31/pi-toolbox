@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -26,7 +26,6 @@ export function defaultStoreDirectory(home = homedir()): string {
 export class DiagramStore {
   private readonly documents = new Map<string, DiagramDocument>();
   private readonly tokenIndex = new Map<string, string>();
-  private initialized: Promise<void> | undefined;
   private mutationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(readonly directory = defaultStoreDirectory()) {}
@@ -35,7 +34,6 @@ export class DiagramStore {
     const normalizedTitle = normalizeTitle(title);
     const spec = normalizeSpec(specValue);
     return this.mutate(async () => {
-      await this.ensureInitialized();
       if (this.documents.size >= MAX_DOCUMENTS) throw new Error(`Diagram store is limited to ${MAX_DOCUMENTS} documents`);
       let id: string;
       do id = `diag_${randomBytes(6).toString("hex")}`;
@@ -57,7 +55,6 @@ export class DiagramStore {
 
   async updateWith(id: string, transform: (current: DiagramDocument) => { title?: string; spec: DiagramSpec }): Promise<DiagramDocument> {
     return this.mutate(async () => {
-      await this.ensureInitialized();
       const current = this.documents.get(id);
       if (!current) throw new Error(`Unknown diagram: ${id}`);
       const change = transform(cloneDocument(current));
@@ -74,30 +71,30 @@ export class DiagramStore {
     });
   }
 
-  async get(id: string): Promise<DiagramDocument | undefined> {
-    await this.ensureInitialized();
-    const document = this.documents.get(id);
-    return document ? cloneDocument(document) : undefined;
+  get(id: string): Promise<DiagramDocument | undefined> {
+    return this.read(() => {
+      const document = this.documents.get(id);
+      return document ? cloneDocument(document) : undefined;
+    });
   }
 
-  async getByToken(token: string): Promise<DiagramDocument | undefined> {
-    await this.ensureInitialized();
-    const id = this.tokenIndex.get(token);
-    if (!id) return undefined;
-    const document = this.documents.get(id);
-    return document ? cloneDocument(document) : undefined;
+  getByToken(token: string): Promise<DiagramDocument | undefined> {
+    return this.read(() => {
+      const id = this.tokenIndex.get(token);
+      if (!id) return undefined;
+      const document = this.documents.get(id);
+      return document ? cloneDocument(document) : undefined;
+    });
   }
 
-  async list(): Promise<DiagramDocument[]> {
-    await this.ensureInitialized();
-    return [...this.documents.values()]
+  list(): Promise<DiagramDocument[]> {
+    return this.read(() => [...this.documents.values()]
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .map(cloneDocument);
+      .map(cloneDocument));
   }
 
   async delete(id: string): Promise<boolean> {
     return this.mutate(async () => {
-      await this.ensureInitialized();
       const document = this.documents.get(id);
       if (!document) return false;
       await rm(this.pathFor(id), { force: true });
@@ -107,25 +104,28 @@ export class DiagramStore {
     });
   }
 
-  private ensureInitialized(): Promise<void> {
-    this.initialized ??= this.load();
-    return this.initialized;
-  }
-
   private async load(): Promise<void> {
     await secureDirectory(this.directory);
     const entries = await readdir(this.directory, { withFileTypes: true });
+    const documents = new Map<string, DiagramDocument>();
+    const tokenIndex = new Map<string, string>();
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
       const expectedId = entry.name.slice(0, -5);
       try {
         const text = await readFile(join(this.directory, entry.name), "utf8");
         const document = parseDocument(JSON.parse(text), expectedId);
-        if (this.documents.size < MAX_DOCUMENTS && !this.tokenIndex.has(document.token)) this.remember(document);
+        if (documents.size < MAX_DOCUMENTS && !tokenIndex.has(document.token)) {
+          documents.set(document.id, document);
+          tokenIndex.set(document.token, document.id);
+        }
       } catch {
         // A corrupt or user-created file is ignored rather than making every diagram unavailable.
       }
     }
+    this.documents.clear();
+    this.tokenIndex.clear();
+    for (const document of documents.values()) this.remember(document);
   }
 
   private remember(document: DiagramDocument): void {
@@ -153,11 +153,60 @@ export class DiagramStore {
     return join(this.directory, `${id}.json`);
   }
 
-  private mutate<T>(operation: () => Promise<T>): Promise<T> {
-    const next = this.mutationQueue.catch(() => undefined).then(operation);
+  private read<T>(operation: () => T): Promise<T> {
+    const next = this.mutationQueue.catch(() => undefined).then(async () => {
+      await this.load();
+      return operation();
+    });
     this.mutationQueue = next;
     return next;
   }
+
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.mutationQueue.catch(() => undefined).then(() => withStoreLock(this.directory, async () => {
+      await this.load();
+      return operation();
+    }));
+    this.mutationQueue = next;
+    return next;
+  }
+}
+
+async function withStoreLock<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+  await secureDirectory(directory);
+  const path = join(directory, ".mutation.lock");
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    try {
+      const candidate = await open(path, "wx", 0o600);
+      try { await candidate.writeFile(`${process.pid}\n`, "utf8"); }
+      catch (error) { await candidate.close().catch(() => undefined); await rm(path, { force: true }); throw error; }
+      handle = candidate;
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const [lock, ownerText] = await Promise.all([stat(path), readFile(path, "utf8")]);
+        const owner = Number(ownerText.trim());
+        if (Date.now() - lock.mtimeMs > 1_000 && (!Number.isInteger(owner) || owner <= 0 || !processExists(owner))) await rm(path, { force: true });
+      } catch (inspectionError) {
+        if ((inspectionError as NodeJS.ErrnoException).code !== "ENOENT") throw inspectionError;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  if (!handle) throw new Error("Timed out waiting for the diagram store lock");
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => undefined);
+    await rm(path, { force: true });
+  }
+}
+
+function processExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 async function secureDirectory(directory: string): Promise<void> {
