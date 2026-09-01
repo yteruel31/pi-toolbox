@@ -6,7 +6,7 @@ export const THEMES = ["light", "dark", "neutral"] as const;
 export const SHAPES = ["box", "rounded", "ellipse", "diamond", "cylinder"] as const;
 export const EDGE_STYLES = ["solid", "dashed", "dotted"] as const;
 export const ARROWS = ["none", "end", "both"] as const;
-export const DIAGRAM_ACTIONS = ["create", "update", "render", "inspect", "list", "delete"] as const;
+export const DIAGRAM_ACTIONS = ["create", "update", "render", "review", "inspect", "list", "delete"] as const;
 
 export type Direction = (typeof DIRECTIONS)[number];
 export type DiagramTheme = (typeof THEMES)[number];

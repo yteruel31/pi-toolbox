@@ -1,23 +1,6 @@
-import { layoutDiagram, type LayoutEdge, type LayoutNode, type Point } from "../layout.js";
-import type { DiagramSpec, DiagramTheme } from "../spec.js";
-
-interface Palette {
-  surface: string;
-  node: string;
-  nodeStroke: string;
-  text: string;
-  muted: string;
-  edge: string;
-  edgeLabel: string;
-  group: string;
-  groupStroke: string;
-}
-
-const PALETTES: Record<DiagramTheme, Palette> = {
-  light: { surface: "#ffffff", node: "#ffffff", nodeStroke: "#3157d5", text: "#172036", muted: "#69728a", edge: "#64708c", edgeLabel: "#ffffff", group: "#edf2ff", groupStroke: "#9db1f1" },
-  dark: { surface: "#0b1120", node: "#151f35", nodeStroke: "#6f8dff", text: "#f3f6ff", muted: "#a8b2ca", edge: "#9ba8c7", edgeLabel: "#151f35", group: "#101a30", groupStroke: "#40568f" },
-  neutral: { surface: "#f6f5f2", node: "#fffefa", nodeStroke: "#4b5563", text: "#24282f", muted: "#707780", edge: "#767d86", edgeLabel: "#fffefa", group: "#eceae4", groupStroke: "#a7a39a" },
-};
+import type { Point } from "../layout.js";
+import type { DiagramSpec } from "../spec.js";
+import { resolveScene, type DiagramScene, type Palette, type SceneEdge, type SceneNode } from "./scene.js";
 
 export interface SvgRenderResult {
   svg: string;
@@ -27,18 +10,23 @@ export interface SvgRenderResult {
 }
 
 export function renderSvg(title: string, spec: DiagramSpec): SvgRenderResult {
-  const layout = layoutDiagram(spec);
-  const palette = PALETTES[spec.theme];
+  return renderSceneSvg(title, resolveScene(spec));
+}
+
+export function renderSceneSvg(title: string, scene: DiagramScene): SvgRenderResult {
+  const { layout, palette } = scene;
   const body: string[] = [];
   body.push(`<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="${palette.edge}"/></marker></defs>`);
 
-  for (const group of layout.groups) {
-    body.push(`<rect x="${number(group.x)}" y="${number(group.y)}" width="${number(group.width)}" height="${number(group.height)}" rx="18" fill="${group.fill ?? palette.group}" fill-opacity="0.7" stroke="${palette.groupStroke}" stroke-width="1.5" stroke-dasharray="7 6"/>`);
-    if (group.label) body.push(`<text x="${number(group.x + 16)}" y="${number(group.y + 23)}" fill="${palette.muted}" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="650" letter-spacing="0.6">${escapeXml(group.label)}</text>`);
+  for (const group of scene.groups) {
+    const { source } = group;
+    body.push(`<rect x="${number(source.x)}" y="${number(source.y)}" width="${number(source.width)}" height="${number(source.height)}" rx="18" fill="${group.fill}" fill-opacity="0.7" stroke="${palette.groupStroke}" stroke-width="1.5" stroke-dasharray="7 6"/>`);
+    const line = group.textLines[0];
+    if (line) body.push(`<text x="${number(line.x)}" y="${number(line.baseline)}" fill="${line.fill}" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="650" letter-spacing="0.6">${escapeXml(line.text)}</text>`);
   }
 
-  for (const edge of layout.edges) body.push(renderEdge(edge, palette));
-  for (const node of layout.nodes) body.push(renderNode(node, palette));
+  for (const edge of scene.edges) body.push(renderEdge(edge, palette));
+  for (const node of scene.nodes) body.push(renderNode(node, palette));
   if (layout.nodes.length === 0) {
     body.push(`<rect x="160" y="96" width="320" height="168" rx="24" fill="${palette.node}" stroke="${palette.nodeStroke}" stroke-width="2" stroke-dasharray="8 8"/>`);
     body.push(`<text x="320" y="184" text-anchor="middle" fill="${palette.muted}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="18">Empty diagram</text>`);
@@ -48,58 +36,46 @@ export function renderSvg(title: string, spec: DiagramSpec): SvgRenderResult {
   return { svg, width: layout.width, height: layout.height, background: palette.surface };
 }
 
-function renderEdge(edge: LayoutEdge, palette: Palette): string {
+function renderEdge(edge: SceneEdge, palette: Palette): string {
+  const { source } = edge;
   if (edge.points.length < 2) return "";
-  const dash = edge.style === "dashed" ? "8 6" : edge.style === "dotted" ? "2 6" : undefined;
-  const markers = edge.arrow === "none"
+  const dash = source.style === "dashed" ? "8 6" : source.style === "dotted" ? "2 6" : undefined;
+  const markers = source.arrow === "none"
     ? ""
-    : edge.arrow === "both"
+    : source.arrow === "both"
       ? ` marker-start="url(#arrow)" marker-end="url(#arrow)"`
       : ` marker-end="url(#arrow)"`;
   const path = roundedPath(edge.points);
   const pieces = [`<path d="${path}" fill="none" stroke="${palette.edge}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${dash ? ` stroke-dasharray="${dash}"` : ""}${markers}/>`];
-  if (edge.labelLines.length && edge.labelX !== undefined && edge.labelY !== undefined) {
-    const longest = Math.max(...edge.labelLines.map((line) => line.length));
-    const width = Math.min(220, Math.max(40, longest * 7.2 + 18));
-    const height = edge.labelLines.length * 15 + 9;
-    pieces.push(`<rect x="${number(edge.labelX - width / 2)}" y="${number(edge.labelY - height / 2)}" width="${number(width)}" height="${number(height)}" rx="8" fill="${palette.edgeLabel}" stroke="${palette.edge}" stroke-opacity="0.24"/>`);
-    let labelY = edge.labelY - (edge.labelLines.length - 1) * 7.5 + 4;
-    for (const line of edge.labelLines) {
-      pieces.push(`<text x="${number(edge.labelX)}" y="${number(labelY)}" text-anchor="middle" fill="${palette.muted}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="550">${escapeXml(line)}</text>`);
-      labelY += 15;
+  if (edge.labelBounds) {
+    const bounds = edge.labelBounds;
+    pieces.push(`<rect x="${number(bounds.x)}" y="${number(bounds.y)}" width="${number(bounds.width)}" height="${number(bounds.height)}" rx="8" fill="${palette.edgeLabel}" stroke="${palette.edge}" stroke-opacity="0.24"/>`);
+    for (const line of edge.textLines) {
+      pieces.push(`<text x="${number(line.x)}" y="${number(line.baseline)}" text-anchor="middle" fill="${line.fill}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="550">${escapeXml(line.text)}</text>`);
     }
   }
   return pieces.join("");
 }
 
-function renderNode(node: LayoutNode, palette: Palette): string {
-  const left = node.x - node.width / 2;
-  const top = node.y - node.height / 2;
-  const fill = node.fill ?? palette.node;
-  const text = readableText(fill, palette.text);
-  const shape = node.shape ?? "rounded";
+function renderNode(node: SceneNode, palette: Palette): string {
+  const { source, bounds, shape } = node;
+  const left = bounds.x;
+  const top = bounds.y;
   const pieces: string[] = [];
   if (shape === "ellipse") {
-    pieces.push(`<ellipse cx="${number(node.x)}" cy="${number(node.y)}" rx="${number(node.width / 2)}" ry="${number(node.height / 2)}" fill="${fill}" stroke="${palette.nodeStroke}" stroke-width="2"/>`);
+    pieces.push(`<ellipse cx="${number(source.x)}" cy="${number(source.y)}" rx="${number(source.width / 2)}" ry="${number(source.height / 2)}" fill="${node.fill}" stroke="${palette.nodeStroke}" stroke-width="2"/>`);
   } else if (shape === "diamond") {
-    pieces.push(`<path d="M ${number(node.x)} ${number(top)} L ${number(left + node.width)} ${number(node.y)} L ${number(node.x)} ${number(top + node.height)} L ${number(left)} ${number(node.y)} Z" fill="${fill}" stroke="${palette.nodeStroke}" stroke-width="2"/>`);
+    pieces.push(`<path d="M ${number(source.x)} ${number(top)} L ${number(left + source.width)} ${number(source.y)} L ${number(source.x)} ${number(top + source.height)} L ${number(left)} ${number(source.y)} Z" fill="${node.fill}" stroke="${palette.nodeStroke}" stroke-width="2"/>`);
   } else if (shape === "cylinder") {
-    const cap = Math.min(14, node.height / 5);
-    pieces.push(`<path d="M ${number(left)} ${number(top + cap)} C ${number(left)} ${number(top - cap / 3)} ${number(left + node.width)} ${number(top - cap / 3)} ${number(left + node.width)} ${number(top + cap)} L ${number(left + node.width)} ${number(top + node.height - cap)} C ${number(left + node.width)} ${number(top + node.height + cap / 3)} ${number(left)} ${number(top + node.height + cap / 3)} ${number(left)} ${number(top + node.height - cap)} Z" fill="${fill}" stroke="${palette.nodeStroke}" stroke-width="2"/><path d="M ${number(left)} ${number(top + cap)} C ${number(left)} ${number(top + cap * 2)} ${number(left + node.width)} ${number(top + cap * 2)} ${number(left + node.width)} ${number(top + cap)}" fill="none" stroke="${palette.nodeStroke}" stroke-width="1.5"/>`);
+    const cap = Math.min(14, source.height / 5);
+    pieces.push(`<path d="M ${number(left)} ${number(top + cap)} C ${number(left)} ${number(top - cap / 3)} ${number(left + source.width)} ${number(top - cap / 3)} ${number(left + source.width)} ${number(top + cap)} L ${number(left + source.width)} ${number(top + source.height - cap)} C ${number(left + source.width)} ${number(top + source.height + cap / 3)} ${number(left)} ${number(top + source.height + cap / 3)} ${number(left)} ${number(top + source.height - cap)} Z" fill="${node.fill}" stroke="${palette.nodeStroke}" stroke-width="2"/><path d="M ${number(left)} ${number(top + cap)} C ${number(left)} ${number(top + cap * 2)} ${number(left + source.width)} ${number(top + cap * 2)} ${number(left + source.width)} ${number(top + cap)}" fill="none" stroke="${palette.nodeStroke}" stroke-width="1.5"/>`);
   } else {
-    pieces.push(`<rect x="${number(left)}" y="${number(top)}" width="${number(node.width)}" height="${number(node.height)}" rx="${shape === "rounded" ? 16 : 3}" fill="${fill}" stroke="${palette.nodeStroke}" stroke-width="2"/>`);
+    pieces.push(`<rect x="${number(left)}" y="${number(top)}" width="${number(source.width)}" height="${number(source.height)}" rx="${shape === "rounded" ? 16 : 3}" fill="${node.fill}" stroke="${palette.nodeStroke}" stroke-width="2"/>`);
   }
 
-  const totalHeight = node.labelLines.length * 18 + node.noteLines.length * 15 + (node.noteLines.length ? 8 : 0);
-  let y = node.y - totalHeight / 2 + 14;
-  for (const line of node.labelLines) {
-    pieces.push(`<text x="${number(node.x)}" y="${number(y)}" text-anchor="middle" fill="${text}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="650">${escapeXml(line)}</text>`);
-    y += 18;
-  }
-  if (node.noteLines.length) y += 5;
-  for (const line of node.noteLines) {
-    pieces.push(`<text x="${number(node.x)}" y="${number(y)}" text-anchor="middle" fill="${text}" fill-opacity="0.7" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5">${escapeXml(line)}</text>`);
-    y += 15;
+  for (const line of node.textLines) {
+    const isNote = line.role === "node-note";
+    pieces.push(`<text x="${number(line.x)}" y="${number(line.baseline)}" text-anchor="middle" fill="${line.fill}"${isNote ? ` fill-opacity="${line.opacity}"` : ""} font-family="ui-sans-serif, system-ui, sans-serif" font-size="${line.fontSize}"${isNote ? "" : ` font-weight="${line.fontWeight}"`}>${escapeXml(line.text)}</text>`);
   }
   return pieces.join("");
 }
@@ -112,16 +88,6 @@ function roundedPath(points: Point[]): string {
     commands.push(`L ${number(current.x)} ${number(current.y)}`);
   }
   return commands.join(" ");
-}
-
-function readableText(fill: string, fallback: string): string {
-  const match = /^#([0-9a-f]{6})$/i.exec(fill);
-  if (!match) return fallback;
-  const value = Number.parseInt(match[1]!, 16);
-  const red = (value >> 16) & 255;
-  const green = (value >> 8) & 255;
-  const blue = value & 255;
-  return (red * 299 + green * 587 + blue * 114) / 1000 > 150 ? "#172036" : "#f7f9ff";
 }
 
 export function escapeXml(value: string): string {

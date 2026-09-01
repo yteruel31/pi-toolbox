@@ -23,7 +23,10 @@ export { DEFAULT_HOSTING_SETTINGS, diagramConfigPath, loadDiagramConfig, parseDi
 export type { DiagramConfig, DiagramHostingSettings, HostingMode } from "./config.js";
 export { layoutDiagram } from "./layout.js";
 export { renderPng } from "./render/png.js";
+export { resolveScene } from "./render/scene.js";
 export { renderSvg } from "./render/svg.js";
+export { annotateReview, reviewScene, reviewSummary } from "./review.js";
+export type { ReviewFinding, ReviewReport, ReviewRule, ReviewSeverity } from "./review.js";
 export { DiagramRuntimeController } from "./runtime.js";
 export { DiagramService } from "./service.js";
 export { applyPatch, normalizeSpec } from "./spec.js";
