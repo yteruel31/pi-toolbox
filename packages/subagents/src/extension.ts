@@ -33,7 +33,10 @@ import type {
 } from "./agents/types.js";
 import type { SubagentHarness } from "./core/harness.js";
 import { RunManager } from "./core/run-manager.js";
-import { ClaudeHarness, type ClaudeHarnessOptions } from "./harnesses/claude.js";
+import {
+  ClaudeHarness,
+  type ClaudeHarnessOptions,
+} from "./harnesses/claude.js";
 import {
   PiHarness,
   type PiHarnessOptions,
@@ -48,6 +51,11 @@ import type {
   RunUsage,
 } from "./shared/types.js";
 import type { RoutingDataPort, RunsDataPort } from "./tui/binding.js";
+import {
+  loadRoutingModelCatalog,
+  type RoutingModelCatalogDependencies,
+} from "./tui/model-catalog.js";
+import { routingModelDisplayValue } from "./tui/routing-editor.js";
 import type { RunCounts } from "./tui/status.js";
 import { openPiRoutingOverlay, openPiRunsOverlay } from "./tui/pi-views.js";
 import { countRuns, statusText } from "./tui/status.js";
@@ -75,7 +83,7 @@ const THINKING_LEVELS = [
   "max",
 ] as const;
 
-export interface ExtensionDependencies {
+export interface ExtensionDependencies extends RoutingModelCatalogDependencies {
   createPiHarness?(options: PiHarnessOptions): SubagentHarness;
   createClaudeHarness?(options: ClaudeHarnessOptions): SubagentHarness;
   createDiscovery?(ctx: ExtensionContext): Promise<FileAgentDiscovery>;
@@ -424,15 +432,40 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   const createRoutingPort = (ctx: ExtensionContext): RoutingDataPort => ({
     async rows() {
       const resolved = await discoverResolvedAgents(ctx, dependencies);
+      const resolver = new DefaultRouteResolver();
+      const parent = {
+        model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+        thinking: ctx.thinkingLevel,
+      };
       return {
-        rows: resolved.catalog.agents.map((agent) => ({
-          name: agent.name,
-          description: agent.description,
-          definitionScope: agent.source.scope,
-          route: resolved.routes.get(agent.name)!,
-          userEntry: resolved.userRouting?.agents[agent.name],
-          projectEntry: resolved.projectRouting?.agents[agent.name],
-        })),
+        rows: resolved.catalog.agents.map((agent) => {
+          const userEntry = resolved.userRouting?.agents[agent.name];
+          const projectEntry = resolved.projectRouting?.agents[agent.name];
+          return {
+            name: agent.name,
+            description: agent.description,
+            definitionScope: agent.source.scope,
+            route: resolved.routes.get(agent.name)!,
+            inheritedHarness: {
+              user: resolver.resolve({
+                explicit: {},
+                agent,
+                userRouting: undefined,
+                projectRouting: projectEntry,
+                parent,
+              }).harness,
+              project: resolver.resolve({
+                explicit: {},
+                agent,
+                userRouting: userEntry,
+                projectRouting: undefined,
+                parent,
+              }).harness,
+            },
+            userEntry,
+            projectEntry,
+          };
+        }),
         invalid: {
           user: resolved.routingWarnings.find((warning) => warning.startsWith("User routing")),
           project: resolved.routingWarnings.find((warning) => warning.startsWith("Project routing")),
@@ -483,7 +516,14 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
           return;
         }
         if (mode === "agents") {
-          await openPiRoutingOverlay(ctx, createRoutingPort(ctx));
+          const models = await loadRoutingModelCatalog(ctx, dependencies);
+          if (models.claudeWarning) {
+            ctx.ui.notify(
+              `Claude model catalogue unavailable: ${models.claudeWarning}`,
+              "warning",
+            );
+          }
+          await openPiRoutingOverlay(ctx, createRoutingPort(ctx), models.catalog);
           return;
         }
       }
@@ -491,7 +531,10 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         const { catalog, routes, routingWarnings } = await discoverResolvedAgents(ctx, dependencies);
         const lines = catalog.agents.map((agent) => {
           const route = routes.get(agent.name);
-          return `${agent.name}: ${route?.harness ?? "pi"}${route?.model ? ` / ${route.model}` : ""}${route?.thinking ? ` / ${route.thinking}` : ""}`;
+          const model = route?.model
+            ? routingModelDisplayValue(route.model)
+            : undefined;
+          return `${agent.name}: ${route?.harness ?? "pi"}${model ? ` / ${model}` : ""}${route?.thinking ? ` / ${route.thinking}` : ""}`;
         });
         showHuman(ctx, ["Subagent routing", ...lines, ...catalog.warnings, ...routingWarnings].join("\n"));
         return;

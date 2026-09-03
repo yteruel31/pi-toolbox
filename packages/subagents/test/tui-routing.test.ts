@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RoutingEntry } from "../src/agents/types.js";
 import { assertBoundedRender } from "../src/tui/binding.js";
 import {
+  formatRouteSummary,
   initialRoutingViewState,
   normalizeRoutingEntry,
   reduceRoutingView,
@@ -36,6 +37,16 @@ function row(
 }
 
 describe("routing reducer", () => {
+  it("sanitizes saved model IDs in route summaries", () => {
+    const route = {
+      ...row("reviewer").route,
+      model: "legacy\u001b[31m\nmodel",
+    };
+    const summary = formatRouteSummary(route);
+    expect(summary).toContain("legacy[31m model");
+    expect(summary).not.toMatch(/[\u001b\n]/);
+  });
+
   it("navigates rows and preserves the selected agent across refreshes", () => {
     let state = initialRoutingViewState({
       projectTrusted: true,
@@ -81,15 +92,19 @@ describe("routing reducer", () => {
 
   it("opens and commits an editor for the selected scope", () => {
     const current = { harness: "claude" as const, model: "opus" };
+    const mapped = row("reviewer", { user: current });
+    mapped.route = { ...mapped.route, harness: "claude" };
+    mapped.inheritedHarness = { user: "pi" };
     let state = initialRoutingViewState({
       projectTrusted: true,
-      rows: [row("reviewer", { user: current })],
+      rows: [mapped],
     });
     let result = reduceRoutingView(state, { kind: "key", action: "enter" });
     expect(result.state.editing).toEqual({
       agentName: "reviewer",
       scope: "user",
       current,
+      effectiveHarness: "pi",
     });
     expect(result.intents).toEqual([
       { kind: "open-editor", session: result.state.editing },

@@ -17,6 +17,7 @@ import type {
 import { FileAgentDiscovery } from "../src/agents/discovery.js";
 import { FileRoutingStore } from "../src/agents/routing-store.js";
 import { createPiSubagentsExtension } from "../src/extension.js";
+import { loadRoutingModelCatalog } from "../src/tui/model-catalog.js";
 
 class ControlledHarness implements SubagentHarness {
   readonly supportsActiveMessages = false;
@@ -171,6 +172,99 @@ afterEach(async () => {
 });
 
 describe("Pi extension composition", () => {
+  it("builds routing model catalogues from scoped Pi models and the Claude SDK", async () => {
+    const ctx = {
+      ...fakeContext("/tmp/project", []),
+      scopedModels: [
+        {
+          model: {
+            provider: "openai-codex",
+            id: "gpt-5.6",
+            name: "GPT-5.6",
+          },
+          thinkingLevel: "high",
+        },
+      ],
+      modelRegistry: {
+        getAvailable: () => {
+          throw new Error("unscoped registry should not be read");
+        },
+      },
+    } as unknown as ExtensionContext;
+    let requestedCwd: string | undefined;
+
+    const loaded = await loadRoutingModelCatalog(ctx, {
+      listClaudeModels: async (options) => {
+        requestedCwd = options.cwd;
+        return [
+          {
+            value: "claude-fable-5-1[1m]",
+            resolvedModel: "claude-fable-5-1",
+            displayName: "Fa\u001bble",
+            description: "Fable\u0007 5.1",
+          },
+          {
+            value: "unsafe\u001b-model",
+            displayName: "Unsafe",
+            description: "must be skipped",
+          },
+        ];
+      },
+    });
+
+    expect(requestedCwd).toBe("/tmp/project");
+    expect(loaded).toEqual({
+      catalog: {
+        pi: [
+          {
+            value: "openai-codex/gpt-5.6",
+            label: "GPT-5.6",
+            description: "openai-codex/gpt-5.6 · Scoped thinking: high",
+            aliases: ["gpt-5.6"],
+            thinking: "high",
+          },
+        ],
+        claude: [
+          {
+            value: "claude-fable-5-1[1m]",
+            label: "Fable",
+            description: "claude-fable-5-1[1m] · Fable 5.1",
+            aliases: ["claude-fable-5-1"],
+          },
+        ],
+      },
+    });
+  });
+
+  it("falls back to available Pi models when unscoped and isolates Claude discovery errors", async () => {
+    const ctx = {
+      ...fakeContext("/tmp/project", []),
+      scopedModels: [],
+      modelRegistry: {
+        getAvailable: () => [
+          { provider: "anthropic", id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+        ],
+      },
+    } as unknown as ExtensionContext;
+
+    const loaded = await loadRoutingModelCatalog(ctx, {
+      listClaudeModels: async () => {
+        throw new Error("catalog offline");
+      },
+    });
+
+    expect(loaded.catalog.pi).toEqual([
+      {
+        value: "anthropic/claude-sonnet-5",
+        label: "Claude Sonnet 5",
+        description: "anthropic/claude-sonnet-5",
+        aliases: ["claude-sonnet-5"],
+      },
+    ]);
+    expect(loaded.catalog.claude).toEqual([]);
+    expect(loaded.claudeWarning).toBe("catalog offline");
+  });
+
   it("renders named spawn calls with profile provenance and concise fallbacks", () => {
     const runtime = fakePi();
     createPiSubagentsExtension()(runtime.pi);

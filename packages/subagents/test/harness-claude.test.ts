@@ -10,8 +10,10 @@ import {
   buildClaudeOptions,
   classifyClaudeFailure,
   createDefaultClaudeQueryFactory,
+  listClaudeSupportedModels,
   mapThinkingLevel,
   normalizeClaudeModel,
+  type ClaudeQueryFactory,
 } from "../src/harnesses/claude.js";
 import { SubagentError } from "../src/shared/errors.js";
 import {
@@ -31,6 +33,126 @@ const SDK_INSTALLED = await import("@anthropic-ai/claude-agent-sdk").then(
   () => true,
   () => false,
 );
+
+describe("claude model catalogue", () => {
+  it("returns every valid SDK model and closes the temporary query", async () => {
+    let closeCalls = 0;
+    const factory: ClaudeQueryFactory = async () => () => ({
+      [Symbol.asyncIterator]: async function* () {},
+      close() {
+        closeCalls += 1;
+      },
+      async supportedModels() {
+        return [
+          {
+            value: "default",
+            resolvedModel: "claude-opus-5[1m]",
+            displayName: "Default\u001b[31m\n(recommended)",
+            description: "Opus 5\nwith 1M context",
+          },
+          {
+            value: "claude-fable-5-1[1m]",
+            resolvedModel: "claude-fable-5-1",
+            displayName: "Fable",
+            description: "Fable 5.1",
+          },
+          {
+            value: "default",
+            displayName: "duplicate",
+            description: "ignored",
+          },
+        ];
+      },
+    });
+
+    await expect(listClaudeSupportedModels({ queryFactory: factory })).resolves.toEqual([
+      {
+        value: "default",
+        resolvedModel: "claude-opus-5[1m]",
+        displayName: "Default[31m (recommended)",
+        description: "Opus 5 with 1M context",
+      },
+      {
+        value: "claude-fable-5-1[1m]",
+        resolvedModel: "claude-fable-5-1",
+        displayName: "Fable",
+        description: "Fable 5.1",
+      },
+    ]);
+    expect(closeCalls).toBe(1);
+  });
+
+  it("fails clearly when the installed SDK lacks supportedModels", async () => {
+    let closeCalls = 0;
+    const factory: ClaudeQueryFactory = async () => () => ({
+      [Symbol.asyncIterator]: async function* () {},
+      close() {
+        closeCalls += 1;
+      },
+    });
+
+    await expect(listClaudeSupportedModels({ queryFactory: factory })).rejects.toMatchObject({
+      code: "claude_sdk_incompatible",
+    });
+    expect(closeCalls).toBe(1);
+  });
+
+  it("rejects invalid timeouts before loading the SDK", async () => {
+    let factoryCalls = 0;
+    const factory: ClaudeQueryFactory = async () => {
+      factoryCalls += 1;
+      throw new Error("should not load");
+    };
+
+    await expect(
+      listClaudeSupportedModels({ queryFactory: factory, timeoutMs: Number.POSITIVE_INFINITY }),
+    ).rejects.toMatchObject({ code: "claude_model_catalog_timeout_invalid" });
+    expect(factoryCalls).toBe(0);
+  });
+
+  it("rejects oversized SDK catalogues and closes their query", async () => {
+    let closeCalls = 0;
+    const factory: ClaudeQueryFactory = async () => () => ({
+      [Symbol.asyncIterator]: async function* () {},
+      close() {
+        closeCalls += 1;
+      },
+      async supportedModels() {
+        return Array.from({ length: 257 }, (_, index) => ({
+          value: `model-${index}`,
+          displayName: `Model ${index}`,
+          description: "test",
+        }));
+      },
+    });
+
+    await expect(listClaudeSupportedModels({ queryFactory: factory })).rejects.toMatchObject({
+      code: "claude_model_catalog_too_large",
+    });
+    expect(closeCalls).toBe(1);
+  });
+
+  it("aborts and closes model discovery after its timeout", async () => {
+    let closeCalls = 0;
+    let signal: AbortSignal | undefined;
+    const factory: ClaudeQueryFactory = async () => ({ options }) => {
+      signal = options?.abortController.signal;
+      return {
+        [Symbol.asyncIterator]: async function* () {},
+        close() {
+          closeCalls += 1;
+        },
+        supportedModels: () => new Promise(() => undefined),
+      };
+    };
+
+    await expect(
+      listClaudeSupportedModels({ queryFactory: factory, timeoutMs: 5 }),
+    ).rejects.toMatchObject({ code: "claude_model_catalog_timeout" });
+    expect(signal?.aborted).toBe(true);
+    expect(closeCalls).toBe(1);
+  });
+});
 
 describe("claude harness option wiring", () => {
   it("passes prompt and maps every option through the query seam", async () => {
