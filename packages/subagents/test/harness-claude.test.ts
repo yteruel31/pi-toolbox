@@ -110,7 +110,7 @@ describe("claude harness option wiring", () => {
     expect(fake.calls[0]!.options!.thinking).toEqual({ type: "disabled" });
   });
 
-  it("builds options assignable to the installed SDK 0.3.234 public Options type", () => {
+  it("builds options assignable to the installed SDK public Options type", () => {
     const { request } = makeRequest({
       systemPrompt: "Review carefully.",
       workingDir: "/tmp/project",
@@ -138,6 +138,7 @@ describe("model and thinking mapping", () => {
   it("passes aliases and full ids through, stripping a pi provider prefix", () => {
     expect(normalizeClaudeModel("opus")).toBe("opus");
     expect(normalizeClaudeModel("fable")).toBe("fable");
+    expect(normalizeClaudeModel("claude-fable-5-1")).toBe("claude-fable-5-1");
     expect(normalizeClaudeModel("claude-sonnet-5")).toBe("claude-sonnet-5");
     expect(normalizeClaudeModel("anthropic/claude-opus-4-8")).toBe("claude-opus-4-8");
     expect(normalizeClaudeModel("anthropic/  claude-sonnet-5  ")).toBe("claude-sonnet-5");
