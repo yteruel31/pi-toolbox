@@ -49,7 +49,7 @@ Creates an isolated in-process Pi session with in-memory history. It inherits th
 
 ### Claude Code
 
-Uses `@anthropic-ai/claude-agent-sdk` in headless streaming-input mode. It applies the requested cwd, model/alias, effort, and named-agent system prompt. While active, continuation messages are written to the same query's `AsyncIterable<SDKUserMessage>` input. Claude settings sources are disabled for isolation; `CLAUDE.md`, hooks, MCP configuration, and user/project Claude settings are therefore not loaded into the child. Authentication comes from the local Claude CLI or `ANTHROPIC_API_KEY`.
+Uses `@anthropic-ai/claude-agent-sdk` in headless streaming-input mode. It applies the requested cwd, model/alias, effort, and named-agent system prompt. The `fable` alias resolves to Claude Fable 5.1; use `claude-fable-5-1` to pin that release explicitly. While active, continuation messages are written to the same query's `AsyncIterable<SDKUserMessage>` input. Claude settings sources are disabled for isolation; `CLAUDE.md`, hooks, MCP configuration, and user/project Claude settings are therefore not loaded into the child. Authentication comes from the local Claude CLI or `ANTHROPIC_API_KEY`.
 
 ## Named agents
 
