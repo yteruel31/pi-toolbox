@@ -31,7 +31,7 @@ import type {
   SubagentHarness,
 } from "../core/harness.js";
 import { SubagentError, describeError } from "../shared/errors.js";
-import { truncateText } from "../shared/truncate.js";
+import { sanitizeTerminalText, truncateText } from "../shared/truncate.js";
 import type { RunUsage, ThinkingLevel } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -140,8 +140,17 @@ export type ClaudeSdkMessage =
   | { type: string };
 
 /** Shape of the SDK's `query()`, reduced to what the harness relies on. */
+export interface ClaudeSupportedModel {
+  value: string;
+  resolvedModel?: string;
+  displayName: string;
+  description: string;
+}
+
 export interface ClaudeQuery extends AsyncIterable<ClaudeSdkMessage> {
   close(): void;
+  /** SDK catalogue available after query initialization. */
+  supportedModels?(): Promise<ClaudeSupportedModel[]>;
 }
 
 export type ClaudeSdkUserInput = {
@@ -172,9 +181,31 @@ const MAX_EFFECTIVE_MODEL_CHARS = 200;
 const MAX_RESULT_ERROR_ITEMS = 3;
 const MAX_RESULT_ERROR_ITEM_CHARS = 120;
 const MAX_SAFE_USAGE_VALUE = Number.MAX_SAFE_INTEGER;
+const DEFAULT_MODEL_CATALOG_TIMEOUT_MS = 15_000;
+const MAX_MODEL_CATALOG_TIMEOUT_MS = 60_000;
+const MAX_MODEL_CATALOG_ITEMS = 256;
+const MAX_MODEL_CATALOG_VALUE_CHARS = 200;
+const MAX_MODEL_CATALOG_LABEL_CHARS = 120;
+const MAX_MODEL_CATALOG_DESCRIPTION_CHARS = 300;
 
 function toSingleLine(text: string, maxChars: number): string {
-  return truncateText(text.replace(/\s+/g, " ").trim(), maxChars);
+  return truncateText(
+    sanitizeTerminalText(text).replace(/\s+/g, " ").trim(),
+    maxChars,
+  );
+}
+
+function modelCatalogValue(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > MAX_MODEL_CATALOG_VALUE_CHARS ||
+    /\s/.test(trimmed) ||
+    sanitizeTerminalText(trimmed) !== trimmed
+  ) {
+    return undefined;
+  }
+  return trimmed;
 }
 
 /**
@@ -448,6 +479,12 @@ export interface ClaudeHarnessOptions {
   queryFactory?: ClaudeQueryFactory;
 }
 
+export interface ClaudeModelCatalogOptions extends ClaudeHarnessOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 class ClaudeInputStream implements AsyncIterable<ClaudeSdkUserInput> {
   private readonly queued: ClaudeSdkUserInput[] = [];
   private readonly waiters: Array<(result: IteratorResult<ClaudeSdkUserInput>) => void> = [];
@@ -486,6 +523,149 @@ class ClaudeInputStream implements AsyncIterable<ClaudeSdkUserInput> {
         return { value: undefined, done: true };
       },
     };
+  }
+}
+
+function awaitWithAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("Operation aborted."));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      action();
+    };
+    const onAbort = () => finish(() => reject(new Error("Operation aborted.")));
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+/**
+ * Discover the model values accepted by the installed Claude Agent SDK.
+ * The temporary query receives no user message and is always closed.
+ */
+export async function listClaudeSupportedModels(
+  options: ClaudeModelCatalogOptions = {},
+): Promise<ClaudeSupportedModel[]> {
+  const queryFactory = options.queryFactory ?? createDefaultClaudeQueryFactory();
+  const abortController = new AbortController();
+  let timedOut = false;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_MODEL_CATALOG_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_MODEL_CATALOG_TIMEOUT_MS
+  ) {
+    throw new SubagentError(
+      "claude_model_catalog_timeout_invalid",
+      `Claude model discovery timeout must be an integer from 1 to ${MAX_MODEL_CATALOG_TIMEOUT_MS}ms.`,
+    );
+  }
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    abortController.abort();
+  }, timeoutMs);
+  const onExternalAbort = () => abortController.abort();
+  options.signal?.addEventListener("abort", onExternalAbort, { once: true });
+  if (options.signal?.aborted) onExternalAbort();
+
+  const input = new ClaudeInputStream();
+  let sdkQuery: ClaudeQuery | undefined;
+  try {
+    const queryFn = await resolveQueryFactory(queryFactory, abortController.signal);
+    sdkQuery = queryFn({
+      prompt: input,
+      options: buildClaudeOptions(
+        {
+          systemPrompt: undefined,
+          tools: undefined,
+          workingDir: options.cwd,
+          model: undefined,
+          thinkingLevel: undefined,
+        },
+        abortController,
+      ),
+    });
+    if (typeof sdkQuery.supportedModels !== "function") {
+      throw new SubagentError(
+        "claude_sdk_incompatible",
+        `${SDK_PACKAGE} does not expose query.supportedModels(); install a compatible 0.3.x version.`,
+      );
+    }
+    const discovered = await awaitWithAbort(
+      Promise.resolve().then(() => sdkQuery!.supportedModels!()),
+      abortController.signal,
+    );
+    if (!Array.isArray(discovered)) {
+      throw new SubagentError(
+        "claude_sdk_incompatible",
+        `${SDK_PACKAGE} returned an invalid model catalogue.`,
+      );
+    }
+    if (discovered.length > MAX_MODEL_CATALOG_ITEMS) {
+      throw new SubagentError(
+        "claude_model_catalog_too_large",
+        `Claude model discovery returned more than ${MAX_MODEL_CATALOG_ITEMS} entries.`,
+      );
+    }
+
+    const seen = new Set<string>();
+    const normalized: ClaudeSupportedModel[] = [];
+    for (const candidate of discovered) {
+      if (typeof candidate?.value !== "string") continue;
+      const value = modelCatalogValue(candidate.value);
+      if (value === undefined || seen.has(value)) continue;
+      seen.add(value);
+      const displayName =
+        typeof candidate.displayName === "string"
+          ? toSingleLine(candidate.displayName, MAX_MODEL_CATALOG_LABEL_CHARS)
+          : value;
+      const description =
+        typeof candidate.description === "string"
+          ? toSingleLine(candidate.description, MAX_MODEL_CATALOG_DESCRIPTION_CHARS)
+          : "";
+      const resolvedModel =
+        typeof candidate.resolvedModel === "string"
+          ? modelCatalogValue(candidate.resolvedModel)
+          : undefined;
+      normalized.push({
+        value,
+        displayName: displayName || value,
+        description,
+        ...(resolvedModel ? { resolvedModel } : {}),
+      });
+    }
+    return normalized;
+  } catch (error) {
+    if (timedOut) {
+      throw new SubagentError(
+        "claude_model_catalog_timeout",
+        `Claude model discovery did not finish within ${timeoutMs}ms.`,
+      );
+    }
+    if (options.signal?.aborted) {
+      throw new SubagentError(
+        "claude_model_catalog_cancelled",
+        "Claude model discovery was cancelled.",
+      );
+    }
+    throw classifyClaudeFailure(error);
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", onExternalAbort);
+    input.close();
+    abortController.abort();
+    try {
+      sdkQuery?.close();
+    } catch {
+      // Best-effort cleanup; discovery has already settled.
+    }
   }
 }
 

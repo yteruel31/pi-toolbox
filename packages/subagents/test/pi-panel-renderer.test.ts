@@ -120,11 +120,27 @@ describe("theme-native Pi panel renderer", () => {
   });
 
   it("renders route editing inside the same full-screen panel", () => {
-    const editor = createRoutingEditorState({
-      agentName: "gig-feasibility-reviewer",
-      scope: "project",
-      current: { harness: "claude", model: "fable", thinking: "high" },
-    });
+    const editor = createRoutingEditorState(
+      {
+        agentName: "gig-feasibility-reviewer",
+        scope: "project",
+        current: {
+          harness: "claude",
+          model: "claude-fable-5-1[1m]",
+          thinking: "high",
+        },
+      },
+      {
+        pi: [],
+        claude: [
+          {
+            value: "claude-fable-5-1[1m]",
+            label: "Fable",
+            description: "claude-fable-5-1[1m] · Fable 5.1",
+          },
+        ],
+      },
+    );
     const lines = renderRoutingEditorPanel(theme, editor, 84, 28, ROUTING_EDITOR_KEY_HINTS);
     const output = plain(lines);
 
@@ -136,7 +152,29 @@ describe("theme-native Pi panel renderer", () => {
     expect(output).toContain("01  HARNESS");
     expect(output).toContain("02  MODEL");
     expect(output).toContain("03  THINKING");
+    expect(output).toContain("‹ Fable ›");
+    expect(output).toContain("CLAUDE · claude-fable-5-1[1m] · Fable 5.1");
     expect(output).toContain("enter save");
+  });
+
+  it("renders hostile saved model IDs as inert single-line text", () => {
+    const unsafe = "legacy\u001b[31m\nmodel";
+    const editor = createRoutingEditorState({
+      agentName: "reviewer",
+      scope: "user",
+      current: { model: unsafe },
+    });
+    const lines = renderRoutingEditorPanel(
+      theme,
+      editor,
+      84,
+      28,
+      ROUTING_EDITOR_KEY_HINTS,
+    );
+
+    expect(lines.join("\n")).not.toContain("\u001b[31m");
+    expect(plain(lines)).toContain("legacy[31m model (saved)");
+    expect(plain(lines)).toContain("model=legacy[31m model");
   });
 
   it("keeps long routing values inside narrow terminals", () => {

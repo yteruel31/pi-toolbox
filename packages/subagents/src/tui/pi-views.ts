@@ -11,6 +11,7 @@ import {
 
 import type { RoutingDataPort, RunsDataPort } from "./binding.js";
 import type { RoutingKeyAction, RunsKeyAction } from "./keys.js";
+import { loadRoutingModelCatalog } from "./model-catalog.js";
 import {
   renderRoutingEditorPanel,
   renderRoutingPanel,
@@ -21,6 +22,7 @@ import {
   reduceRoutingEditorInput,
   ROUTING_EDITOR_KEY_HINTS,
   type RoutingEditorState,
+  type RoutingModelCatalog,
 } from "./routing-editor.js";
 import {
   ROUTING_KEY_HINTS,
@@ -68,11 +70,21 @@ export async function openPiRunsOverlay(
 export async function openPiRoutingOverlay(
   ctx: ExtensionContext,
   data: RoutingDataPort,
+  modelCatalog?: RoutingModelCatalog,
 ): Promise<void> {
   if (ctx.mode !== "tui") return;
+  const loaded = modelCatalog
+    ? { catalog: modelCatalog }
+    : await loadRoutingModelCatalog(ctx);
+  if (loaded.claudeWarning) {
+    ctx.ui.notify(
+      `Claude model catalogue unavailable: ${loaded.claudeWarning}`,
+      "warning",
+    );
+  }
   await ctx.ui.custom<void>(
     (tui, theme, _keybindings, done) =>
-      new RoutingOverlayComponent(tui, theme, data, ctx, done),
+      new RoutingOverlayComponent(tui, theme, data, ctx, done, loaded.catalog),
     {
       overlay: true,
       overlayOptions: FULL_SCREEN_PANEL_OPTIONS,
@@ -235,6 +247,7 @@ class RoutingOverlayComponent implements Component {
     data: RoutingDataPort,
     private readonly ctx: ExtensionContext,
     private readonly done: () => void,
+    private readonly modelCatalog: RoutingModelCatalog,
   ) {
     let model!: RoutingViewModel;
     model = createRoutingViewModel({
@@ -301,7 +314,7 @@ class RoutingOverlayComponent implements Component {
   private handleIntent(model: RoutingViewModel, intent: RoutingViewIntent): void {
     switch (intent.kind) {
       case "open-editor":
-        this.editor = createRoutingEditorState(intent.session);
+        this.editor = createRoutingEditorState(intent.session, this.modelCatalog);
         this.tui.requestRender();
         return;
       case "confirm-reset":

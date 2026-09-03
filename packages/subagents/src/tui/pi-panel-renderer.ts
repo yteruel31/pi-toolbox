@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { RouteFieldProvenance, RoutingScope } from "../agents/types.js";
 import type {
@@ -9,7 +9,13 @@ import type {
   RunTranscriptEntry,
 } from "../shared/types.js";
 import type { KeyHint } from "./keys.js";
-import type { RoutingEditorField, RoutingEditorState } from "./routing-editor.js";
+import {
+  modelHarnessForEditor,
+  routingModelDisplayValue,
+  selectedRoutingModelChoice,
+  type RoutingEditorField,
+  type RoutingEditorState,
+} from "./routing-editor.js";
 import type { RoutingAgentRow, RoutingViewState } from "./routing-view.js";
 import { formatRunModel } from "../shared/run-display.js";
 import { formatRunIdentity } from "../shared/run-identity.js";
@@ -334,6 +340,11 @@ function renderRoutingEditor(
   maxRows: number,
 ): string[] {
   const scope = state.session.scope.toUpperCase();
+  const modelChoice = selectedRoutingModelChoice(state);
+  const modelHarness = modelHarnessForEditor(state).toUpperCase();
+  const modelDescription = modelChoice.description
+    ? `${modelHarness} · ${modelChoice.description}`
+    : `${modelHarness} model override`;
   const content = [
     columns(
       `${theme.fg("accent", "◆")} ${theme.bold(theme.fg("text", state.session.agentName))}`,
@@ -357,8 +368,8 @@ function renderRoutingEditor(
       "model",
       "02",
       "MODEL",
-      modelEditorValue(theme, state),
-      "Provider/model identifier; clear the value to inherit",
+      modelChoiceValue(theme, modelChoice),
+      modelDescription,
       state.selectedField,
       width,
     ),
@@ -406,22 +417,19 @@ function choiceValue(theme: Theme, value: string): string {
   return `${theme.fg("dim", "‹")} ${theme.fg(value === "inherit" ? "muted" : "accent", label)} ${theme.fg("dim", "›")}`;
 }
 
-function modelEditorValue(theme: Theme, state: RoutingEditorState): string {
-  const characters = Array.from(state.model);
-  const cursor = Math.min(Math.max(0, state.modelCursor), characters.length);
-  const before = characters.slice(0, cursor).join("");
-  const current = characters[cursor];
-  const after = current === undefined ? "" : characters.slice(cursor + 1).join("");
-  const cursorCell = theme.inverse(current ?? " ");
-  const value = `${before}${CURSOR_MARKER}${cursorCell}${after}`;
-  if (state.model.length > 0) return theme.fg("text", value);
-  return `${theme.fg("text", value)}${theme.fg("dim", " inherit parent model")}`;
+function modelChoiceValue(
+  theme: Theme,
+  choice: ReturnType<typeof selectedRoutingModelChoice>,
+): string {
+  const color =
+    choice.value === "" ? "muted" : choice.legacy ? "warning" : "accent";
+  return `${theme.fg("dim", "‹")} ${theme.fg(color, choice.label)} ${theme.fg("dim", "›")}`;
 }
 
 function routePreview(theme: Theme, state: RoutingEditorState): string {
   const parts = [
     `harness=${state.harness}`,
-    `model=${state.model.trim() || "inherit"}`,
+    `model=${state.model ? routingModelDisplayValue(state.model) : "inherit"}`,
     `thinking=${state.thinking}`,
   ];
   return `  ${theme.fg("muted", parts.join("  ·  "))}`;
@@ -494,7 +502,10 @@ function routingRow(
   const name = theme.fg("text", row.name);
   const harness = theme.fg(row.route.harness === "claude" ? "accent" : "muted", row.route.harness.toUpperCase());
   const first = columns(`${marker} ${mapped} ${name}`, harness, width);
-  const route = `${row.route.model ?? "parent model"}  ·  ${row.route.thinking ?? "parent thinking"}`;
+  const routeModel = row.route.model
+    ? routingModelDisplayValue(row.route.model)
+    : "parent model";
+  const route = `${routeModel}  ·  ${row.route.thinking ?? "parent thinking"}`;
   const provenance = `H:${sourceLabel(row.route.provenance.harness)} M:${sourceLabel(row.route.provenance.model)} T:${sourceLabel(row.route.provenance.thinking)}`;
   const second = columns(
     `    ${theme.fg("muted", row.definitionScope)}${theme.fg("dim", "  ·  ")}${theme.fg("text", route)}`,

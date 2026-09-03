@@ -1,12 +1,14 @@
-import { decodeKittyPrintable, Key, matchesKey } from "@earendil-works/pi-tui";
+import { Key, matchesKey } from "@earendil-works/pi-tui";
 
 import type { RoutingEntry } from "../agents/types.js";
+import { sanitizeTerminalText } from "../shared/truncate.js";
+import type { HarnessKind, ThinkingLevel } from "../shared/types.js";
 import type { KeyHint } from "./keys.js";
 import type { RoutingEditSession } from "./routing-view.js";
 
 export const ROUTING_EDITOR_FIELDS = ["harness", "model", "thinking"] as const;
 export type RoutingEditorField = (typeof ROUTING_EDITOR_FIELDS)[number];
-export type HarnessChoice = "inherit" | "pi" | "claude";
+export type HarnessChoice = "inherit" | HarnessKind;
 export type ThinkingChoice =
   | "inherit"
   | "off"
@@ -17,11 +19,33 @@ export type ThinkingChoice =
   | "xhigh"
   | "max";
 
+export interface RoutingModelChoice {
+  value: string;
+  label: string;
+  description?: string;
+  /** Other accepted spellings, used only to recognize an existing saved value. */
+  aliases?: readonly string[];
+  /** Thinking level pinned by a Pi scoped-model entry. */
+  thinking?: ThinkingLevel;
+  /** A saved value absent from the currently available catalogue. */
+  legacy?: boolean;
+}
+
+export interface RoutingModelCatalog {
+  pi: readonly RoutingModelChoice[];
+  claude: readonly RoutingModelChoice[];
+}
+
+const EMPTY_MODEL_CATALOG: RoutingModelCatalog = { pi: [], claude: [] };
+const INHERIT_MODEL_CHOICE: RoutingModelChoice = {
+  value: "",
+  label: "inherit",
+  description: "Use the model from the next matching route or agent default.",
+};
 const HARNESS_CHOICES: readonly HarnessChoice[] = ["inherit", "pi", "claude"];
 export const ROUTING_EDITOR_KEY_HINTS: readonly KeyHint[] = [
   { key: "↑↓", description: "field" },
   { key: "←→", description: "change" },
-  { key: "type", description: "model" },
   { key: "enter", description: "save" },
   { key: "esc", description: "back" },
 ];
@@ -41,10 +65,13 @@ export interface RoutingEditorState {
   session: RoutingEditSession;
   selectedField: RoutingEditorField;
   harness: HarnessChoice;
+  /** Harness whose catalogue applies while harness itself is inherited. */
+  effectiveHarness: HarnessKind;
   model: string;
-  /** Unicode code-point offset used by the in-panel model editor. */
-  modelCursor: number;
+  modelByHarness: Record<HarnessKind, string>;
+  modelCatalog: RoutingModelCatalog;
   thinking: ThinkingChoice;
+  thinkingFromModel: boolean;
 }
 
 export type RoutingEditorIntent =
@@ -56,15 +83,30 @@ export interface RoutingEditorStep {
   intent?: RoutingEditorIntent;
 }
 
-export function createRoutingEditorState(session: RoutingEditSession): RoutingEditorState {
-  const model = typeof session.current.model === "string" ? session.current.model : "";
+export function createRoutingEditorState(
+  session: RoutingEditSession,
+  modelCatalog: RoutingModelCatalog = EMPTY_MODEL_CATALOG,
+): RoutingEditorState {
+  const effectiveHarness =
+    session.effectiveHarness ?? session.current.harness ?? "pi";
+  const activeHarness = session.current.harness ?? effectiveHarness;
+  const model =
+    typeof session.current.model === "string" && session.current.model.trim()
+      ? session.current.model.trim()
+      : "";
   return {
     session,
     selectedField: "harness",
     harness: session.current.harness ?? "inherit",
+    effectiveHarness,
     model,
-    modelCursor: Array.from(model).length,
+    modelByHarness: {
+      pi: activeHarness === "pi" ? model : "",
+      claude: activeHarness === "claude" ? model : "",
+    },
+    modelCatalog,
     thinking: session.current.thinking ?? "inherit",
+    thinkingFromModel: false,
   };
 }
 
@@ -90,12 +132,14 @@ export function reduceRoutingEditorInput(
     if (matchesKey(data, Key.right)) return { state: cycleHarness(state, 1) };
     return { state };
   }
-  if (state.selectedField === "thinking") {
-    if (matchesKey(data, Key.left)) return { state: cycleThinking(state, -1) };
-    if (matchesKey(data, Key.right)) return { state: cycleThinking(state, 1) };
+  if (state.selectedField === "model") {
+    if (matchesKey(data, Key.left)) return { state: cycleModel(state, -1) };
+    if (matchesKey(data, Key.right)) return { state: cycleModel(state, 1) };
     return { state };
   }
-  return { state: editModel(state, data) };
+  if (matchesKey(data, Key.left)) return { state: cycleThinking(state, -1) };
+  if (matchesKey(data, Key.right)) return { state: cycleThinking(state, 1) };
+  return { state };
 }
 
 export function routingEntryFromEditor(state: RoutingEditorState): RoutingEntry {
@@ -103,9 +147,73 @@ export function routingEntryFromEditor(state: RoutingEditorState): RoutingEntry 
     ...(state.harness === "pi" || state.harness === "claude"
       ? { harness: state.harness }
       : {}),
-    ...(state.model.trim() ? { model: state.model.trim() } : {}),
+    ...(state.model ? { model: state.model } : {}),
     ...(state.thinking !== "inherit" ? { thinking: state.thinking } : {}),
   };
+}
+
+/** Catalogue used by the current explicit harness, or the resolved harness. */
+export function modelHarnessForEditor(state: RoutingEditorState): HarnessKind {
+  return state.harness === "inherit" ? state.effectiveHarness : state.harness;
+}
+
+/** Available choices plus any no-longer-listed saved value. */
+export function routingModelChoices(
+  state: RoutingEditorState,
+): readonly RoutingModelChoice[] {
+  const available = state.modelCatalog[modelHarnessForEditor(state)];
+  if (
+    state.model === "" ||
+    available.some((choice) => choice.value === state.model)
+  ) {
+    return [INHERIT_MODEL_CHOICE, ...available];
+  }
+  const aliasMatches = available.filter((choice) =>
+    choice.aliases?.includes(state.model),
+  );
+  if (aliasMatches.length === 1) {
+    const matched = aliasMatches[0]!;
+    return [
+      INHERIT_MODEL_CHOICE,
+      {
+        ...matched,
+        value: state.model,
+        label: `${matched.label} (saved)`,
+        description: [
+          `Saved as ${routingModelDisplayValue(state.model)}`,
+          matched.description,
+        ].filter(Boolean).join(" · "),
+      },
+      ...available,
+    ];
+  }
+  return [
+    INHERIT_MODEL_CHOICE,
+    {
+      value: state.model,
+      label: `${routingModelDisplayValue(state.model)} (saved)`,
+      description:
+        "Saved model is not in the currently available catalogue; select another value to replace it.",
+      legacy: true,
+    },
+    ...available,
+  ];
+}
+
+export function routingModelDisplayValue(value: string): string {
+  return (
+    sanitizeTerminalText(value).replace(/\s+/g, " ").trim() ||
+    "(invalid model id)"
+  );
+}
+
+export function selectedRoutingModelChoice(
+  state: RoutingEditorState,
+): RoutingModelChoice {
+  return (
+    routingModelChoices(state).find((choice) => choice.value === state.model) ??
+    INHERIT_MODEL_CHOICE
+  );
 }
 
 function moveField(state: RoutingEditorState, delta: number): RoutingEditorState {
@@ -116,9 +224,83 @@ function moveField(state: RoutingEditorState, delta: number): RoutingEditorState
 
 function cycleHarness(state: RoutingEditorState, delta: number): RoutingEditorState {
   const current = HARNESS_CHOICES.indexOf(state.harness);
+  const harness =
+    HARNESS_CHOICES[modulo(current + delta, HARNESS_CHOICES.length)] ?? "inherit";
+  const previousModelHarness = modelHarnessForEditor(state);
+  const nextModelHarness = harness === "inherit" ? state.effectiveHarness : harness;
+  const modelByHarness = {
+    ...state.modelByHarness,
+    [previousModelHarness]: state.model,
+  };
+  let model = modelByHarness[nextModelHarness];
+  if (
+    !model &&
+    state.model &&
+    catalogueChoiceForValue(
+      state.modelCatalog[nextModelHarness],
+      state.model,
+    )
+  ) {
+    model = state.model;
+  }
+  modelByHarness[nextModelHarness] = model;
+  const choice = catalogueChoiceForValue(
+    state.modelCatalog[nextModelHarness],
+    model,
+  );
+  const autoThinking = state.thinkingFromModel
+    ? thinkingAfterModelChoice(state, choice)
+    : { thinking: state.thinking, thinkingFromModel: false };
   return {
     ...state,
-    harness: HARNESS_CHOICES[modulo(current + delta, HARNESS_CHOICES.length)] ?? "inherit",
+    harness,
+    model,
+    modelByHarness,
+    ...autoThinking,
+  };
+}
+
+function cycleModel(state: RoutingEditorState, delta: number): RoutingEditorState {
+  const choices = routingModelChoices(state);
+  const current = Math.max(
+    0,
+    choices.findIndex((choice) => choice.value === state.model),
+  );
+  const choice = choices[modulo(current + delta, choices.length)] ??
+    INHERIT_MODEL_CHOICE;
+  const harness = modelHarnessForEditor(state);
+  return {
+    ...state,
+    model: choice.value,
+    modelByHarness: { ...state.modelByHarness, [harness]: choice.value },
+    ...thinkingAfterModelChoice(state, choice),
+  };
+}
+
+function catalogueChoiceForValue(
+  choices: readonly RoutingModelChoice[],
+  value: string,
+): RoutingModelChoice | undefined {
+  if (!value) return undefined;
+  const exact = choices.find((choice) => choice.value === value);
+  if (exact) return exact;
+  const aliases = choices.filter((choice) => choice.aliases?.includes(value));
+  return aliases.length === 1 ? aliases[0] : undefined;
+}
+
+function thinkingAfterModelChoice(
+  state: RoutingEditorState,
+  choice: RoutingModelChoice | undefined,
+): Pick<RoutingEditorState, "thinking" | "thinkingFromModel"> {
+  if (choice?.thinking) {
+    return { thinking: choice.thinking, thinkingFromModel: true };
+  }
+  if (state.thinkingFromModel) {
+    return { thinking: "inherit", thinkingFromModel: false };
+  }
+  return {
+    thinking: state.thinking,
+    thinkingFromModel: false,
   };
 }
 
@@ -127,53 +309,8 @@ function cycleThinking(state: RoutingEditorState, delta: number): RoutingEditorS
   return {
     ...state,
     thinking: THINKING_CHOICES[modulo(current + delta, THINKING_CHOICES.length)] ?? "inherit",
+    thinkingFromModel: false,
   };
-}
-
-function editModel(state: RoutingEditorState, data: string): RoutingEditorState {
-  const characters = Array.from(state.model);
-  const cursor = Math.min(Math.max(0, state.modelCursor), characters.length);
-  if (matchesKey(data, Key.left)) {
-    return { ...state, modelCursor: Math.max(0, cursor - 1) };
-  }
-  if (matchesKey(data, Key.right)) {
-    return { ...state, modelCursor: Math.min(characters.length, cursor + 1) };
-  }
-  if (matchesKey(data, Key.home)) return { ...state, modelCursor: 0 };
-  if (matchesKey(data, Key.end)) return { ...state, modelCursor: characters.length };
-  if (matchesKey(data, Key.ctrl("u"))) {
-    return { ...state, model: "", modelCursor: 0 };
-  }
-  if (matchesKey(data, Key.backspace)) {
-    if (cursor === 0) return state;
-    characters.splice(cursor - 1, 1);
-    return { ...state, model: characters.join(""), modelCursor: cursor - 1 };
-  }
-  if (matchesKey(data, Key.delete)) {
-    if (cursor >= characters.length) return state;
-    characters.splice(cursor, 1);
-    return { ...state, model: characters.join("") };
-  }
-  const printable = printableInput(data);
-  if (!printable) return state;
-  const inserted = Array.from(printable);
-  characters.splice(cursor, 0, ...inserted);
-  return {
-    ...state,
-    model: characters.join(""),
-    modelCursor: cursor + inserted.length,
-  };
-}
-
-function printableInput(data: string): string | undefined {
-  const kitty = decodeKittyPrintable(data);
-  if (kitty !== undefined) return kitty;
-  if (data.length === 0 || data.includes("\u001b") || data.includes("\u0000")) return undefined;
-  for (const character of data) {
-    const codePoint = character.codePointAt(0);
-    if (codePoint === undefined || codePoint < 0x20 || codePoint === 0x7f) return undefined;
-  }
-  return data;
 }
 
 function modulo(value: number, divisor: number): number {

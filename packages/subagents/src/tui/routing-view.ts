@@ -23,6 +23,7 @@ import type {
   RoutingScope,
 } from "../agents/types.js";
 import type { KeyHint, RoutingKeyAction } from "./keys.js";
+import { routingModelDisplayValue } from "./routing-editor.js";
 import { boundNotice, fitLine, fitViewport } from "./text.js";
 
 /** One row of the routing list: an agent plus its routing facts. */
@@ -32,6 +33,8 @@ export interface RoutingAgentRow {
   /** Scope the agent definition came from (not the mapping scope). */
   definitionScope: AgentScope;
   route: ResolvedRoute;
+  /** Harness that would apply after removing the mapping for each scope. */
+  inheritedHarness?: Partial<Record<RoutingScope, ResolvedRoute["harness"]>>;
   userEntry: RoutingEntry | undefined;
   projectEntry: RoutingEntry | undefined;
 }
@@ -47,6 +50,8 @@ export interface RoutingEditSession {
   scope: RoutingScope;
   /** Current mapping in that scope; empty object when none exists yet. */
   current: RoutingEntry;
+  /** Resolved harness used when this mapping keeps harness inherited. */
+  effectiveHarness?: ResolvedRoute["harness"];
 }
 
 export interface RoutingViewState {
@@ -332,6 +337,8 @@ function reduceKey(
         agentName: row.name,
         scope: state.scope,
         current: scopeEntry(row, state.scope) ?? {},
+        effectiveHarness:
+          row.inheritedHarness?.[state.scope] ?? row.route.harness,
       };
       return step({ ...state, editing: session, notice: undefined }, [
         { kind: "open-editor", session },
@@ -380,7 +387,7 @@ const PROVENANCE_LABEL: Record<RouteFieldProvenance, string> = {
 export function formatRouteSummary(route: ResolvedRoute): string {
   const parts = [
     `${route.harness} (${PROVENANCE_LABEL[route.provenance.harness]})`,
-    `${route.model ?? "inherit"} (${PROVENANCE_LABEL[route.provenance.model]})`,
+    `${route.model ? routingModelDisplayValue(route.model) : "inherit"} (${PROVENANCE_LABEL[route.provenance.model]})`,
     `${route.thinking ?? "inherit"} (${PROVENANCE_LABEL[route.provenance.thinking]})`,
   ];
   return parts.join(" · ");

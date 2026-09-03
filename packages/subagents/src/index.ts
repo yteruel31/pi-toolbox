@@ -27,6 +27,7 @@ export {
   buildClaudeOptions,
   classifyClaudeFailure,
   createDefaultClaudeQueryFactory,
+  listClaudeSupportedModels,
   mapThinkingLevel,
   normalizeClaudeModel,
 } from "./harnesses/claude.js";
@@ -34,6 +35,7 @@ export type {
   ClaudeAssistantMessage,
   ClaudeEffortLevel,
   ClaudeHarnessOptions,
+  ClaudeModelCatalogOptions,
   ClaudeModelUsage,
   ClaudeQuery,
   ClaudeQueryFactory,
@@ -44,6 +46,7 @@ export type {
   ClaudeSdkUserInput,
   ClaudeUserMessage,
   ClaudeStreamEventMessage,
+  ClaudeSupportedModel,
   ClaudeSystemMessage,
   ClaudeToolProgressMessage,
 } from "./harnesses/claude.js";
@@ -116,7 +119,9 @@ export { BoundedLog } from "./shared/bounded-log.js";
 export * from "./tui/binding.js";
 export * from "./tui/command-mode.js";
 export * from "./tui/keys.js";
+export * from "./tui/model-catalog.js";
 export * from "./tui/pi-views.js";
+export * from "./tui/routing-editor.js";
 export * from "./tui/routing-view.js";
 export * from "./tui/runs-view.js";
 export * from "./tui/status.js";
