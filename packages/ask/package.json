@@ -2,12 +2,12 @@
   "name": "@yteruel31/pi-ask",
   "version": "0.0.0",
   "type": "module",
-  "description": "Interactive structured ask_user clarification flows for Pi.",
+  "description": "Interactive structured ask_user_question clarification flows for Pi.",
   "keywords": [
     "pi-package",
     "pi",
     "pi-coding-agent",
-    "ask_user",
+    "ask_user_question",
     "clarification",
     "tui"
   ],

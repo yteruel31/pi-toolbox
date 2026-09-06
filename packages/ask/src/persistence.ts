@@ -23,6 +23,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 const ASK_SOURCES = new Set<AskSource>(["tool", "answer", "answer:again", "ask:replay", "ask:resume"]);
+const ASK_TOOL_NAMES = new Set(["ask_user_question", "ask_user"]);
 
 export function payloadFromEntry(entry: EntryLike): StoredAskPayload | undefined {
   if (entry.type !== "custom" || entry.customType !== PAYLOAD_ENTRY) return undefined;
@@ -71,7 +72,8 @@ export function findPendingAsk(branch: readonly EntryLike[]): PendingAsk | undef
     if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
     for (let contentIndex = message.content.length - 1; contentIndex >= 0; contentIndex--) {
       const block = record(message.content[contentIndex]);
-      if (block?.type !== "toolCall" || block.name !== "ask_user" || typeof block.id !== "string") continue;
+      // Keep reading unresolved calls from sessions created before the public rename.
+      if (block?.type !== "toolCall" || typeof block.name !== "string" || !ASK_TOOL_NAMES.has(block.name) || typeof block.id !== "string") continue;
       if (resolved.has(block.id) || dismissed.has(block.id)) continue;
       return { toolCallId: block.id, arguments: block.arguments, ...(payloads.get(block.id) ? { payload: payloads.get(block.id) } : {}) };
     }

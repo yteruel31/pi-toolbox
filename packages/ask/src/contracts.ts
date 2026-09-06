@@ -264,7 +264,7 @@ export function invalidAskResult(input: unknown, issues: AskIssue[]): AskResult 
   return {
     content: [{
       type: "text",
-      text: `Invalid ask_user payload:\n${issues.map((issue) => `- ${issue.path}: ${issue.message}`).join("\n")}`,
+      text: `Invalid ask_user_question payload:\n${issues.map((issue) => `- ${issue.path}: ${issue.message}`).join("\n")}`,
     }],
     details: {
       cancelled: true,

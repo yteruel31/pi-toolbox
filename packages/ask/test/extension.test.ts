@@ -21,7 +21,8 @@ function harness() {
 
 test("extension registers one strict ask tool and all command surfaces", () => {
   const { tools, commands } = harness();
-  const tool = tools.get("ask_user");
+  assert.deepEqual([...tools.keys()], ["ask_user_question"]);
+  const tool = tools.get("ask_user_question");
   assert.ok(tool);
   assert.equal(tool.parameters.required.includes("questions"), true);
   const option = tool.parameters.properties.questions.items.properties.options.items;
@@ -32,7 +33,7 @@ test("extension registers one strict ask tool and all command surfaces", () => {
 test("print mode returns pending normalized choices without opening custom UI", async () => {
   const { tools, entries } = harness();
   let opened = false;
-  const result = await tools.get("ask_user").execute("call", {
+  const result = await tools.get("ask_user_question").execute("call", {
     questions: [{ id: "q", prompt: "Choose", options: [{ value: "a", label: "A" }] }],
   }, undefined, undefined, { mode: "print", ui: { custom() { opened = true; } } });
   assert.equal(opened, false);
@@ -44,7 +45,7 @@ test("print mode returns pending normalized choices without opening custom UI", 
 
 test("semantic invalid input returns structured issues before persistence", async () => {
   const { tools, entries } = harness();
-  const result = await tools.get("ask_user").execute("call", {
+  const result = await tools.get("ask_user_question").execute("call", {
     questions: [{ id: "q", prompt: " ", options: [{ value: "a", label: "A" }] }],
   }, undefined, undefined, { mode: "print" });
   assert.equal(result.details.error.kind, "invalid_input");

@@ -1,13 +1,13 @@
 ---
 name: ask-user
-description: Use ask_user to collect explicit decisions, requirements, preferences, or research constraints before ambiguous or consequential work.
+description: Use ask_user_question to collect explicit decisions, requirements, preferences, or research constraints before ambiguous or consequential work.
 metadata:
   short-description: Structured user decision gate
 ---
 
 # Structured user decision gate
 
-Use `ask_user` when the next useful action depends on information the user has not supplied and silently choosing would materially alter the outcome.
+Use `ask_user_question` when the next useful action depends on information the user has not supplied and silently choosing would materially alter the outcome.
 
 ## Before asking
 

@@ -14,7 +14,7 @@ test("single question rendering uses ASCII tabs and subtle panel dividers", () =
   const state = createAskState(form);
   const lines = renderAsk(state, DEFAULT_CONFIG, theme, 80, view);
   const text = lines.join("\n");
-  assert.match(text, /Decision \(ask_user\)/);
+  assert.match(text, /Decision \(ask_user_question\)/);
   assert.match(text, /- Scope/);
   assert.match(text, /\* Submit/);
   assert.match(text, /⇆ tab/);
@@ -35,7 +35,7 @@ test("long questions use a bounded viewport with sticky navigation and scroll hi
   const state = createAskState(form);
   const initial = renderAsk(state, DEFAULT_CONFIG, theme, 60, { ...view, maxHeight: 14, scrollOffset: 0 });
   assert.equal(initial.length, 14);
-  assert.match(initial.join("\n"), /Long decision \(ask_user\)/);
+  assert.match(initial.join("\n"), /Long decision \(ask_user_question\)/);
   assert.match(initial.join("\n"), /↓ .*more lines? · Shift\+↓/);
   assert.match(initial.at(-2)!, /Shift\+↑\/↓ scroll/);
   assert.match(initial.at(-1)!, /^─{60}$/);
@@ -130,7 +130,7 @@ test("transcript helpers are compact and include unanswered questions", () => {
   const state = createAskState(form);
   selectDeclared(state, form.questions[0]!, "a");
   const result = buildResult(state, "submit");
-  assert.equal(formatCallTranscript({ title: "T", questions: [{}, {}] }), "ask_user 2 questions · T");
+  assert.equal(formatCallTranscript({ title: "T", questions: [{}, {}] }), "ask_user_question 2 questions · T");
   assert.deepEqual(formatResultTranscript(result.details), ["✓ Q: A", "? U: (no answer)"]);
   assert.deepEqual(formatResultTranscript({ cancelled: true }), ["Cancelled"]);
   assert.deepEqual(formatResultTranscript({ error: {} }), ["Invalid tool payload"]);

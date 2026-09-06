@@ -47,6 +47,7 @@ export const PI_CHILD_EXCLUDED_TOOLS = [
   "workflow_cancel",
   "multi_tool_use",
   "multi_tool_use.parallel",
+  "ask_user_question",
   "ask_user",
   "ask-user",
   "ask_question",

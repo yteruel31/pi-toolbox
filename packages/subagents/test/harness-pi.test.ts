@@ -87,7 +87,7 @@ class FakePiSession implements PiSessionLike {
   steered: string[] = [];
   abortCount = 0;
   disposeCount = 0;
-  activeTools = ["read", "subagent_spawn", "workflow_custom", "ask_user_more"];
+  activeTools = ["read", "subagent_spawn", "workflow_custom", "ask_user_question"];
   activeToolUpdates: string[][] = [];
   promptImpl: (text: string) => Promise<void> = async () => undefined;
   abortImpl: () => Promise<void> = async () => undefined;
@@ -306,7 +306,7 @@ describe("Pi child session wiring", () => {
 
   it("intersects named-agent tools with active tools and safety exclusions", async () => {
     const fixture = makeHarness();
-    fixture.session.activeTools = ["read", "bash", "subagent_spawn", "ask_user"];
+    fixture.session.activeTools = ["read", "bash", "subagent_spawn", "ask_user_question"];
     fixture.session.promptImpl = async () => {
       fixture.session.emit(assistantMessage("done"));
     };
@@ -708,6 +708,7 @@ describe("Pi child tool exclusion", () => {
     expect(isExcludedPiChildTool("subagent_spawn")).toBe(true);
     expect(isExcludedPiChildTool("subagent_custom")).toBe(true);
     expect(isExcludedPiChildTool("workflow_deploy")).toBe(true);
+    expect(isExcludedPiChildTool("ask_user_question")).toBe(true);
     expect(isExcludedPiChildTool("ask_user_followup")).toBe(true);
     expect(isExcludedPiChildTool("questionnaire")).toBe(true);
     expect(isExcludedPiChildTool("multi_tool_use.parallel")).toBe(true);
@@ -719,6 +720,7 @@ describe("Pi child tool exclusion", () => {
     expect(isAllowedPiChildTool("bash", ["read", "grep"])).toBe(false);
     expect(isAllowedPiChildTool("subagent_spawn", ["subagent_spawn"])).toBe(false);
     expect(isAllowedPiChildTool("bash", undefined)).toBe(true);
+    expect(isAllowedPiChildTool("ask_user_question", undefined)).toBe(false);
     expect(isAllowedPiChildTool("ask_user", undefined)).toBe(false);
 
     expect(piChildToolDenial("read", ["read", "grep"])).toBeUndefined();

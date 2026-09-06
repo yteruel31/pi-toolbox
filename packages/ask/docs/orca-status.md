@@ -1,72 +1,59 @@
-# Orca status lifecycle
+# Orca native question status
 
-Ask uses OSC 9999 only in an Orca PTY (`ORCA_PANE_KEY`). If
-`ORCA_PI_STATUS_OWNED` identifies another PID, this process is an inherited child
-and must not change the parent pane's status. No HTTP credentials or endpoint
-configuration are read or changed by Ask.
+Ask does not emit OSC 9999. In an Orca-owned PTY (`ORCA_PANE_KEY` is set),
+configured bell, OSC 9/777, and command notifications are also suppressed so
+Orca remains the only status and notification owner. Outside Orca, those
+ordinary channels remain configurable.
 
-## Why cleanup alone is insufficient
+## Verified behavior in Orca 1.4.197
 
-Verified against installed Orca **1.4.197** (its CLI-served `orca-cli` guide,
-`out/main/index.js` in the application archive, and the managed
-`orca-agent-status.ts` Pi extension):
+Read-only inspection of the installed Orca application shows that its Pi-family
+hook:
 
-- OSC 9999 accepts `working`, `blocked`, `waiting`, and **`done`**. `idle` is not
-  a terminal OSC state; it belongs to other internal representations.
-- The managed native hook posts Pi's completion to `/hook/pi`; Orca maps its
-  `agent_end` hook payload to `done`. Modern Pi's `agent_settled` triggers that
-  post. The native extension also has a legacy idle-recheck fallback.
-- OSC input also creates a retained runtime agent row. In particular, the
-  mobile/session-tab projection prefers that fresh retained row over the native
-  hook row for up to 30 minutes. A later native HTTP `done` is therefore not a
-  reliable way to close an OSC `working` row.
-- The installed native hook does not provide a question-preview override API.
-  Dropping Ask's OSC signal would lose its question notification/preview.
+- normalizes tool names by removing punctuation and lowercasing, then recognizes
+  `askuserquestion` and `requestuserinput`; therefore Pi
+  `ask_user_question` is recognized, while historical `ask_user` is not;
+- maps a recognized Pi question `tool_call` or `tool_execution_start` event to
+  `blocked`;
+- maps `agent_end` to `done`, while ordinary tool and message lifecycle events
+  map to `working`;
+- serializes the tool input as the interactive prompt. Its answer-intent helper
+  expects an object with a `questions` array. For one question it inspects
+  `multiSelect` and `options`: Enter can count as submit, and a digit counts only
+  when it addresses a declared option. Multiple questions, `multiSelect: true`,
+  malformed/truncated JSON, and the synthetic custom-answer row fail closed for
+  digit-based completion.
 
-Ask must balance its own OSC lifecycle rather than replace or reconfigure the
-native integration. The native hook remains responsible for richer session and
-assistant metadata. No terminal-text parsing or timeout-based completion is used.
+Ask's public input also has `questions` and `options`, but represents selection
+mode as `type: "single" | "multi" | "preview"`, uses `prompt`, and identifies
+options with stable `value` plus `label`. It does not expose Claude's
+`multiSelect` field. Consequently Orca can recognize the tool and own its status,
+but its single-keystroke answer-intent heuristic is not a semantic adapter for
+Ask's richer multi-question, notes, preview, custom-answer, or review flow. Pi's
+Ask TUI remains responsible for collecting and returning the actual answer.
+There is no native reply-control API in the inspected files that can submit an
+Ask result or translate Orca UI answers into Ask's result contract, so this
+change does not redesign the UI around such a path.
 
-## Boundaries
+## Operational limitations
 
-- Opening a question emits `waiting`, `toolName: ask_user`, and the sanitized
-  first-question preview (at most 160 UTF-16 units, including question count).
-  The preview may appear in desktop notifications; do not put secrets in prompts.
-- Closing it emits `working` without tool fields, including cancellation, abort,
-  and UI errors. This is **not** agent completion: the model may continue.
-- `agent_settled`, guarded by `ctx.isIdle()`, emits `done`. `agent_end` is
-  deliberately ignored: retries, compaction, and queued follow-ups may remain.
-  This uses the Pi lifecycle API tested with the repository's Pi 0.84.2 dependency.
-- Cancelled/failed command replay or recovery settles immediately only if Pi is
-  idle. Successful submission waits for the injected prompt to settle, even if
-  that prompt has not started yet. `/answer` uses the same result delivery path.
-- Overlapping questions keep the remaining question's preview. Session shutdown
-  closes the retained status and invalidates late UI cleanup callbacks.
-- Once Ask has emitted OSC in a session, subsequent agent starts and settlements
-  are also mirrored. Otherwise its retained `done` could mask a later native
-  `working`, even on a run with no questions.
+- A prose question is not a structured tool event. Orca receives normal Pi
+  completion and reports `done`; Ask does not attempt semantic question
+  detection.
+- `/answer`, `/answer:again`, and `/ask:replay` open a form from a command, so
+  opening the form itself has no Pi question-tool event for Orca. If submission
+  injects a new user message, subsequent native lifecycle events describe that
+  model turn.
+- Sessions that previously received retained Ask OSC 9999 rows may continue to
+  show that stale retained state. Restart the Orca/Pi session to clear it; the
+  corrected extension does not emit a competing cleanup status.
+- The user-reported permanent-blocked problem was not reproduced in a live Orca
+  smoke test here, so this document does not claim a proven root cause. The
+  related user-reported issue is open at
+  <https://github.com/stablyai/orca/issues/10454>.
 
-Disabling notifications prevents new Ask waiting signals. If an OSC lifecycle
-was already engaged, its cleanup and subsequent start/settle synchronization
-continue until session teardown so the old row cannot strand the pane. Outside
-Orca, configured bell/OSC 9/OSC 777/command channels are unchanged. Inside Orca,
-those channels are bypassed to avoid duplicate alerts. Delivery is best effort;
-closed terminals and hard process kills cannot guarantee a final signal.
-
-## Manual smoke check
-
-Load this worktree's extension in an isolated Orca Pi terminal (do not load a
-second installed copy of Ask). Check both the desktop status and session-tab/
-mobile status:
-
-1. Ask a question: one question notification, correct prompt preview.
-2. Answer and have the model continue using tools: still working, no premature
-   completion. When Pi fully settles: done.
-3. Repeat with Esc/abort and a model error; run another prompt without Ask.
-4. Cancel `/ask:replay` while idle; submit it and verify completion is deferred
-   until the resulting model run settles.
-5. Disable notifications in a fresh session; repeat outside Orca.
-
-Automated tests exercise the real Ask extension/UI lifecycle with a fake Pi host
-and capture OSC output without sending it to the developer's live pane. They do
-not replace this end-to-end UI check against the running Orca application.
+Automated tests capture every attempted terminal write and verify that questions,
+answers, cancellation, replay, later turns, settlement, and shutdown emit no Ask
+status output in Orca. They also verify disabled notifications and ordinary
+notification delivery outside Orca. No live Orca smoke test is performed by the
+package test suite.

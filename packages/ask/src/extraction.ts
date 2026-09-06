@@ -17,8 +17,8 @@ const extractionToolSchema = Type.Object({
   })),
 });
 
-const EXTRACTION_PROMPT = `Extract decision or clarification questions from the assistant response into one ask_user form.
-Return exactly one ask_user tool call when tool calls are supported. A JSON object matching {"title"?:string,"questions": [...]} is an acceptable fallback.
+const EXTRACTION_PROMPT = `Extract decision or clarification questions from the assistant response into one ask_user_question form.
+Return exactly one ask_user_question tool call when tool calls are supported. A JSON object matching {"title"?:string,"questions": [...]} is an acceptable fallback.
 Each question needs id, prompt, type (single, multi, or preview), and options with value and label. Preserve explicit choices. For a genuinely open-ended question with no choices, set "freeform": true and use an empty options array. Use preview only when every option has non-empty preview text.
 If there are no questions, return {"questions":[]}.
 Do not answer the questions yourself.`;
@@ -116,7 +116,7 @@ export function parseExtractedAsk(response: Pick<AssistantMessage, "content"> | 
   let text = "";
   if (typeof response !== "string") {
     for (const block of response.content) {
-      if (block.type === "toolCall" && block.name === "ask_user") {
+      if (block.type === "toolCall" && block.name === "ask_user_question") {
         raw = prepareAskArguments(block.arguments);
         break;
       }
@@ -126,7 +126,7 @@ export function parseExtractedAsk(response: Pick<AssistantMessage, "content"> | 
   if (raw === undefined) {
     const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
     const candidate = fenced ?? balancedObject(text);
-    if (!candidate) return { error: "extractor returned neither ask_user nor JSON" };
+    if (!candidate) return { error: "extractor returned neither ask_user_question nor JSON" };
     try { raw = JSON.parse(candidate); }
     catch (error) { return { error: `extractor returned invalid JSON: ${(error as Error).message}` }; }
   }
@@ -186,16 +186,16 @@ export async function extractAskForm(
         : await ctx.modelRegistry.complete(model, {
           systemPrompt: EXTRACTION_PROMPT,
           messages,
-          tools: [{ name: "ask_user", description: "Return the extracted questions as one synthetic ask_user form", parameters: extractionToolSchema }],
+          tools: [{ name: "ask_user_question", description: "Return the extracted questions as one synthetic ask_user_question form", parameters: extractionToolSchema }],
         }, { signal });
       signal.throwIfAborted();
       const parsed = parseExtractedAsk(response);
       if (parsed.form) return { form: parsed.form, model };
       if (parsed.empty) return { empty: true, model };
-      feedback = `Previous malformed response (bounded): ${boundedMalformedResponse(response)}\nValidation error: ${parsed.error}. Return one valid ask_user tool call or valid JSON.`;
+      feedback = `Previous malformed response (bounded): ${boundedMalformedResponse(response)}\nValidation error: ${parsed.error}. Return one valid ask_user_question tool call or valid JSON.`;
     } catch (error) {
       if (externalSignal?.aborted) return { error: abortMessage(externalSignal), model };
-      feedback = `Previous extraction attempt failed: ${(error as Error).message}. Try again with one valid ask_user form.`;
+      feedback = `Previous extraction attempt failed: ${(error as Error).message}. Try again with one valid ask_user_question form.`;
     } finally {
       clearTimeout(timeout);
     }

@@ -264,8 +264,8 @@ function formattedSelections(answer: AskAnswer): string[] {
 
 /** Canonical text sent to the agent for tool results and command/recovery messages. */
 export function formatAgentResultContent(details: AskResult["details"]): string {
-  if (details.cancelled) return "User cancelled ask_user.";
-  const lines = [details.mode === "elaborate" ? "User requested ask_user elaboration:" : "User submitted ask_user answers:"];
+  if (details.cancelled) return "User cancelled ask_user_question.";
+  const lines = [details.mode === "elaborate" ? "User requested ask_user_question elaboration:" : "User submitted ask_user_question answers:"];
   for (const question of details.questions) {
     const answer = Object.hasOwn(details.answers, question.id) ? details.answers[question.id] : undefined;
     lines.push(`- [${question.id}] ${question.prompt}`);
@@ -392,7 +392,7 @@ export function buildResult(state: AskState, mode: "submit" | "elaborate"): AskR
   return result;
 }
 
-export function cancelledResult(form: AskForm, message = "User cancelled ask_user."): AskResult {
+export function cancelledResult(form: AskForm, message = "User cancelled ask_user_question."): AskResult {
   return {
     content: [{ type: "text", text: message }],
     details: {

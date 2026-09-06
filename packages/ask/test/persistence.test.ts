@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DISMISSED_ENTRY, findPendingAsk, latestPayload, makePayload, payloadFromEntry, PAYLOAD_ENTRY } from "../src/persistence.ts";
 
-const toolCall = (id: string) => ({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask_user", arguments: { questions: [{ id: "q", prompt: "Q", options: [{ value: "a", label: "A" }] }] } }] } });
+const toolCall = (id: string, name = "ask_user_question") => ({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: { questions: [{ id: "q", prompt: "Q", options: [{ value: "a", label: "A" }] }] } }] } });
 
 test("payload lookup is branch-local and source-aware", () => {
   const first = makePayload("tool", { title: "first" }, "a");
@@ -15,7 +15,7 @@ test("payload lookup is branch-local and source-aware", () => {
 test("recovery selects newest unresolved ask and prefers matching payload", () => {
   const persisted = makePayload("tool", { title: "persisted" }, "new");
   const branch = [
-    toolCall("old"),
+    toolCall("old", "ask_user"),
     { type: "message", message: { role: "toolResult", toolCallId: "old", toolName: "ask_user" } },
     toolCall("new"),
     { type: "custom", customType: PAYLOAD_ENTRY, data: persisted },
@@ -23,6 +23,10 @@ test("recovery selects newest unresolved ask and prefers matching payload", () =
   const pending = findPendingAsk(branch);
   assert.equal(pending?.toolCallId, "new");
   assert.equal((pending?.payload?.params as any).title, "persisted");
+});
+
+test("historical ask_user calls remain recoverable", () => {
+  assert.equal(findPendingAsk([toolCall("legacy", "ask_user")])?.toolCallId, "legacy");
 });
 
 test("dismissal markers suppress automatic recovery", () => {

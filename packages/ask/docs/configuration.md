@@ -111,7 +111,7 @@ Footer and inline-editor hints are generated from the live bindings, including c
 
 Notification channels run in order and are best effort: `bell`, `osc9`, `osc777`, or `{ "type": "command", "command": "..." }`. Commands receive `ASK_NOTIFY_EVENT`, `ASK_NOTIFY_TITLE`, and `ASK_NOTIFY_MESSAGE`, time out after five seconds, and are terminated on timeout. Control characters are removed from OSC 9/777 title and message fields before they are written.
 
-In an Orca-owned terminal (`ORCA_PANE_KEY` is present), configured channels are replaced by one native OSC 9999 waiting-state signal and its working-state cleanup when the flow submits, cancels, or aborts. This lets Orca own notification policy and prevents duplicate alerts. The waiting signal keeps `toolName` as `ask_user` and sets `toolInput` to a sanitized, Unicode-safe preview of the first question's prompt, plus the total question count when there are several. Orca may display that text in native desktop notifications. The working cleanup omits both tool fields so Orca removes the completed flow's preview. Setting `notifications.enabled` to `false` disables this signal as well. No additional configuration or Orca hook installation is required.
+In an Orca-owned terminal (`ORCA_PANE_KEY` is present), Ask suppresses all configured bell, OSC 9/777, and command channels to avoid duplicating Orca notifications. Ask emits no OSC 9999 statuses; Orca's native Pi hook owns blocked/working/done state. Outside Orca, configured channels behave normally. Setting `notifications.enabled` to `false` disables them everywhere.
 
 ## Save, reset, and live semantics
 

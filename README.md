@@ -34,7 +34,7 @@ All package names and install commands are listed below. The root toolbox remain
 pi install npm:@yteruel31/pi-ask
 ```
 
-Open structured, keyboard-first `ask_user` decision flows with notes, previews, replay, recovery, notifications, and a bundled decision-gate skill.
+Open structured, keyboard-first `ask_user_question` decision flows with notes, previews, replay, recovery, notifications, and a bundled decision-gate skill.
 
 ### [`@yteruel31/pi-claude-marketplace`](./packages/claude-marketplace)
 
