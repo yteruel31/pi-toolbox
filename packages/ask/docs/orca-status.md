@@ -35,6 +35,17 @@ There is no native reply-control API in the inspected files that can submit an
 Ask result or translate Orca UI answers into Ask's result contract, so this
 change does not redesign the UI around such a path.
 
+## Manual live verification and troubleshooting
+
+Source inspection and package tests cannot establish the status shown by a currently running Orca terminal. Installing an update is likewise not proof that the active Pi session loaded it. Reload the corrected package when supported, or use a fresh Pi session, before this read-only checklist:
+
+1. Inspect the active tool inventory and confirm that Ask exposes exactly `ask_user_question`, with no `ask_user` alias.
+2. Ask one real inline `ask_user_question`; do not use `/answer`, replay, or a prose question for this check.
+3. Confirm that Orca sends one notification and shows the pending/blocked state throughout the interaction.
+4. Answer or cancel the form, then confirm that Orca settles after that result or after any resulting later model turn.
+
+No global Pi settings or primary-checkout edits are required for this verification. Record the loaded package path/version and lifecycle observations if the result differs. A user has reported receiving one notification while Orca still displayed working during the pending interaction; that observation does not establish a causal link to the historical tool name. Until the checklist is reproduced in a live Orca session, do not infer from source inspection that status settlement is fixed.
+
 ## Operational limitations
 
 - A prose question is not a structured tool event. Orca receives normal Pi

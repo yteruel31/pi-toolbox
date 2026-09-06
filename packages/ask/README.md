@@ -8,6 +8,12 @@ pi install npm:@yteruel31/pi-ask
 
 The package also installs the `ask-user` decision-gate skill.
 
+## Updating and verifying the loaded tool
+
+The source rename to `ask_user_question` is already shipped. Updating an installation only changes files on disk; it does not prove that the current Pi session has reloaded them or that its active tool inventory comes from the corrected package. After updating, run `/reload` when the package is in a reloadable location, or start a fresh Pi session. Then inspect the active tool inventory and confirm that Ask exposes exactly `ask_user_question`, with no `ask_user` alias.
+
+These verification steps are read-only apart from reloading the session: they do not require edits to global Pi settings or the primary checkout. If the old name remains visible, identify the loaded package path/version and remove or update the stale package through your normal installation workflow before opening another fresh session.
+
 ## Commands
 
 - `/ask-settings` — change persisted behaviour and notification toggles
