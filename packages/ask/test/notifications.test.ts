@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { normalizeAsk } from "../src/contracts.ts";
 import {
-  beginWaitingNotification,
+  WaitingNotifications,
+  type NotificationDependencies,
   isOrcaEnvironment,
   NOTIFICATION_COMMAND_TIMEOUT_MS,
   notifyWaiting,
@@ -11,6 +12,15 @@ import {
   terminalSequence,
   waitingNotification,
 } from "../src/notifications.ts";
+
+function beginWaitingNotification(
+  form: Parameters<WaitingNotifications["begin"]>[0],
+  config: Parameters<WaitingNotifications["begin"]>[1],
+  dependencies: NotificationDependencies,
+  env: NodeJS.ProcessEnv,
+) {
+  return new WaitingNotifications(dependencies, env).begin(form, config);
+}
 
 test("formats terminal notification channels", () => {
   assert.equal(NOTIFICATION_COMMAND_TIMEOUT_MS, 5_000);

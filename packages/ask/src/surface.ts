@@ -32,7 +32,7 @@ import {
   type AskState,
 } from "./domain.ts";
 import { HerdrAttention, herdrWaitingLabel } from "./herdr.ts";
-import { beginWaitingNotification } from "./notifications.ts";
+import type { WaitingNotifications } from "./notifications.ts";
 import { editorBindingHint, inlineEditorWidth, SETTINGS_ROWS, renderAsk, type AskRenderView } from "./render.ts";
 import type { RemoteAskRegistry } from "./remote.ts";
 
@@ -453,6 +453,7 @@ export interface ShowAskOptions {
   signal?: AbortSignal;
   remote: RemoteAskRegistry;
   attention: HerdrAttention;
+  notifications: WaitingNotifications;
 }
 
 export async function showAskFlow(
@@ -467,6 +468,7 @@ export async function showAskFlow(
   let component: AskComponent | undefined;
   let result: AskResult | undefined;
   let clearWaitingNotification = () => {};
+  let closed = false;
   const unblockHerdr = options.attention.block(herdrWaitingLabel(form.title));
   try {
     result = await ctx.ui.custom<AskResult>((tui, theme, _keybindings, done) => {
@@ -483,13 +485,14 @@ export async function showAskFlow(
       }
       if (!component.settled && !options.signal?.aborted) {
         queueMicrotask(() => {
-          if (!component?.settled) clearWaitingNotification = beginWaitingNotification(form, store.get());
+          if (!closed && !component?.settled) clearWaitingNotification = options.notifications.begin(form, store.get());
         });
       }
       return component;
     });
     return result;
   } finally {
+    closed = true;
     clearWaitingNotification();
     unblockHerdr();
     abortListener?.();
