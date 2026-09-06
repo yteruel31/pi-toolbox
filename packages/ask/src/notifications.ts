@@ -32,16 +32,43 @@ export function terminalSequence(channel: NotificationChannel, payload: Notifica
 
 export type OrcaStatus = "waiting" | "working";
 
+// Orca currently accepts at most 160 UTF-16 code units for toolInput. Keep the
+// complete preview within that bound so its own normalizer never has to split it.
+export const ORCA_QUESTION_PREVIEW_MAX_LENGTH = 160;
+
+function truncateUnicode(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const ellipsis = "…";
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  let result = "";
+  for (const { segment } of segmenter.segment(value)) {
+    if (result.length + segment.length + ellipsis.length > maxLength) break;
+    result += segment;
+  }
+  return `${result}${ellipsis}`;
+}
+
+export function orcaQuestionPreview(form: AskForm): string {
+  const prompt = terminalSafeText(form.questions[0]?.prompt || "User input")
+    .replace(/\s+/gu, " ")
+    .trim() || "User input";
+  const countSuffix = form.questions.length > 1 ? ` (${form.questions.length} questions)` : "";
+  return `${truncateUnicode(prompt, ORCA_QUESTION_PREVIEW_MAX_LENGTH - countSuffix.length)}${countSuffix}`;
+}
+
 export function isOrcaEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
   // Orca stamps ORCA_PANE_KEY on every PTY it owns; its managed Pi hook uses
   // the same field as the required pane-attribution guard.
   return Boolean(env.ORCA_PANE_KEY?.trim());
 }
 
-export function orcaStatusSequence(state: OrcaStatus): string {
-  // Keep this payload deliberately static: question text is neither needed by
-  // Orca's status parser nor safe to place in an in-band terminal protocol.
-  return `\u001b]9999;${JSON.stringify({ state, agentType: "pi", toolName: "ask_user" })}\u0007`;
+export function orcaStatusSequence(state: OrcaStatus, form?: AskForm): string {
+  // A working payload intentionally omits tool fields: Orca replaces them on
+  // every status event, so this also removes the completed ask's preview.
+  const payload = state === "waiting"
+    ? { state, agentType: "pi", toolName: "ask_user", ...(form ? { toolInput: orcaQuestionPreview(form) } : {}) }
+    : { state, agentType: "pi" };
+  return `\u001b]9999;${JSON.stringify(payload)}\u0007`;
 }
 
 export interface NotificationDependencies {
@@ -117,7 +144,7 @@ export function beginWaitingNotification(
   }
 
   try {
-    dependencies.write(orcaStatusSequence("waiting"));
+    dependencies.write(orcaStatusSequence("waiting", form));
   } catch {
     return () => {};
   }
