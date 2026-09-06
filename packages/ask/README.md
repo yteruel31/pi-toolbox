@@ -21,7 +21,7 @@ Long questions stay inside a terminal-height viewport. Use `Shift+↑` and `Shif
 
 When Pi runs inside Herdr with its Pi integration installed, an open clarification flow marks the pane as blocked until the flow closes. The package emits Herdr's standard `herdr:blocked` events and remains a no-op when that integration is absent.
 
-Inside an Orca-owned terminal, the package automatically emits Orca's OSC 9999 waiting status while the clarification UI is open, then restores working status on submit, cancel, or abort. Orca ownership is detected from its `ORCA_PANE_KEY` PTY contract; no hook or setting changes are required. The status payload contains only fixed state metadata, never question text. To avoid duplicate alerts, configured bell, OSC 9/777, and command channels are bypassed in Orca. The notification toggle still disables the Orca signal.
+Inside an Orca-owned terminal, the package automatically emits Orca's OSC 9999 waiting status while the clarification UI is open, then restores working status on submit, cancel, or abort. Orca ownership is detected from its `ORCA_PANE_KEY` PTY contract; no hook or setting changes are required. The waiting payload includes a sanitized, Unicode-safe preview of the first question's prompt and the question count when there are several; this text may appear in native desktop notifications. The cleanup payload clears that preview. To avoid duplicate alerts, configured bell, OSC 9/777, and command channels are bypassed in Orca. The notification toggle still disables the Orca signal.
 
 Configuration is stored at `~/.pi/agent/extensions/yteruel31-pi-ask.json`. See [configuration](./docs/configuration.md), the [tool contract](./docs/contract.md), and [remote events](./docs/remote-events.md).
 
