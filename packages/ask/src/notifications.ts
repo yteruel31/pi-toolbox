@@ -30,7 +30,7 @@ export function terminalSequence(channel: NotificationChannel, payload: Notifica
   return undefined;
 }
 
-export type OrcaStatus = "waiting" | "working";
+export type OrcaStatus = "waiting" | "working" | "done";
 
 // Orca currently accepts at most 160 UTF-16 code units for toolInput. Keep the
 // complete preview within that bound so its own normalizer never has to split it.
@@ -63,7 +63,7 @@ export function isOrcaEnvironment(env: NodeJS.ProcessEnv = process.env): boolean
 }
 
 export function orcaStatusSequence(state: OrcaStatus, form?: AskForm): string {
-  // A working payload intentionally omits tool fields: Orca replaces them on
+  // Non-waiting payloads intentionally omit tool fields: Orca replaces them on
   // every status event, so this also removes the completed ask's preview.
   const payload = state === "waiting"
     ? { state, agentType: "pi", toolName: "ask_user", ...(form ? { toolInput: orcaQuestionPreview(form) } : {}) }
@@ -130,33 +130,65 @@ export async function notifyWaiting(
   }
 }
 
-export function beginWaitingNotification(
-  form: AskForm,
-  config: Pick<AskConfig, "notifications">,
-  dependencies: NotificationDependencies = defaults,
-  env: NodeJS.ProcessEnv = process.env,
-): () => void {
-  if (!config.notifications.enabled) return () => {};
+export class WaitingNotifications {
+  private readonly waiting = new Map<symbol, AskForm>();
+  private engaged = false;
+  private disposed = false;
+  private state?: OrcaStatus;
 
-  if (!isOrcaEnvironment(env)) {
-    void notifyWaiting(form, config, dependencies);
-    return () => {};
+  private readonly dependencies: NotificationDependencies;
+  private readonly env: NodeJS.ProcessEnv;
+
+  constructor(dependencies: NotificationDependencies = defaults, env: NodeJS.ProcessEnv = process.env) {
+    this.dependencies = dependencies;
+    this.env = env;
   }
 
-  try {
-    dependencies.write(orcaStatusSequence("waiting", form));
-  } catch {
-    return () => {};
-  }
-
-  let cleared = false;
-  return () => {
-    if (cleared) return;
-    cleared = true;
+  private report(state: OrcaStatus, form?: AskForm): boolean {
     try {
-      dependencies.write(orcaStatusSequence("working"));
+      this.dependencies.write(orcaStatusSequence(state, form));
+      this.state = state;
+      return true;
     } catch {
       // Status reporting must not affect the ask result.
+      return false;
     }
-  };
+  }
+
+  begin(form: AskForm, config: Pick<AskConfig, "notifications">): () => void {
+    if (this.disposed || !config.notifications.enabled) return () => {};
+    if (!isOrcaEnvironment(this.env)) {
+      void notifyWaiting(form, config, this.dependencies);
+      return () => {};
+    }
+    // Match Orca's native hook: inherited child processes do not own the pane.
+    if (this.env.ORCA_PI_STATUS_OWNED && this.env.ORCA_PI_STATUS_OWNED !== String(process.pid)) return () => {};
+    if (!this.report("waiting", form)) return () => {};
+    this.engaged = true;
+    const id = Symbol();
+    this.waiting.set(id, form);
+    return () => {
+      if (this.disposed || !this.waiting.delete(id)) return;
+      const remaining = [...this.waiting.values()].at(-1);
+      this.report(remaining ? "waiting" : "working", remaining);
+    };
+  }
+
+  agentStart(): void {
+    // Orca retains OSC rows independently of its native HTTP hook. Once used,
+    // keep later runs in sync too, rather than leaving a retained `done` row.
+    if (this.engaged && !this.disposed && !this.waiting.size) this.report("working");
+  }
+
+  settle(ctx: { isIdle(): boolean }): void {
+    // agent_end is not a completion boundary (retry/compaction/follow-ups).
+    if (this.engaged && !this.disposed && !this.waiting.size && ctx.isIdle() && this.state !== "done") this.report("done");
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    if (this.engaged && this.state !== "done") this.report("done");
+    this.disposed = true;
+    this.waiting.clear();
+  }
 }

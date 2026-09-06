@@ -17,6 +17,7 @@ import {
 import { cancelledResult, formatAgentResultContent } from "./domain.ts";
 import { extractAskForm, latestCompletedAssistant } from "./extraction.ts";
 import { HerdrAttention } from "./herdr.ts";
+import { WaitingNotifications } from "./notifications.ts";
 import { DISMISSED_ENTRY, findPendingAsk, latestPayload, makePayload, PAYLOAD_ENTRY } from "./persistence.ts";
 import { formatCallTranscript, formatResultTranscript } from "./render.ts";
 import { RemoteAskRegistry } from "./remote.ts";
@@ -59,6 +60,22 @@ export default function askExtension(pi: ExtensionAPI): void {
   const store = new ConfigStore();
   const remote = new RemoteAskRegistry(pi.events);
   const attention = new HerdrAttention(pi.events);
+  const notifications = new WaitingNotifications();
+
+  function deliverCommandResult(ctx: ExtensionContext, result: AskResult | undefined): void {
+    if (result && !result.details.cancelled) {
+      try {
+        pi.sendUserMessage(agentMessage(result));
+        // The injected prompt owns completion now, even before agent_start.
+        return;
+      } catch (error) {
+        notifications.settle(ctx);
+        throw error;
+      }
+    }
+    // Cancelled replay/recovery has no agent_settled event of its own.
+    notifications.settle(ctx);
+  }
 
   async function openCommandForm(
     ctx: ExtensionCommandContext | ExtensionContext,
@@ -74,7 +91,12 @@ export default function askExtension(pi: ExtensionAPI): void {
       return undefined;
     }
     pi.appendEntry(PAYLOAD_ENTRY, makePayload(source, formInput));
-    return showAskFlow(ctx, normalized.form, store, { source, remote, attention });
+    try {
+      return await showAskFlow(ctx, normalized.form, store, { source, remote, attention, notifications });
+    } catch (error) {
+      notifications.settle(ctx);
+      throw error;
+    }
   }
 
   async function replay(ctx: ExtensionCommandContext, sources: AskSource[], source: AskSource): Promise<void> {
@@ -88,7 +110,7 @@ export default function askExtension(pi: ExtensionAPI): void {
       return;
     }
     const result = await openCommandForm(ctx, payload.params, source);
-    if (result && !result.details.cancelled) pi.sendUserMessage(agentMessage(result));
+    deliverCommandResult(ctx, result);
   }
 
   pi.registerTool({
@@ -107,7 +129,7 @@ export default function askExtension(pi: ExtensionAPI): void {
       if (!normalized.form) return invalidAskResult(params, normalized.issues);
       pi.appendEntry(PAYLOAD_ENTRY, makePayload("tool", params, toolCallId));
       if (ctx.mode !== "tui") return nonTuiResult(normalized.form);
-      return showAskFlow(ctx, normalized.form, store, { source: "tool", toolCallId, signal, remote, attention });
+      return showAskFlow(ctx, normalized.form, store, { source: "tool", toolCallId, signal, remote, attention, notifications });
     },
     renderCall(args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold(formatCallTranscript(args))), 0, 0);
@@ -162,7 +184,7 @@ export default function askExtension(pi: ExtensionAPI): void {
         return;
       }
       const result = await openCommandForm(ctx, extraction.form, "answer");
-      if (result && !result.details.cancelled) pi.sendUserMessage(agentMessage(result));
+      deliverCommandResult(ctx, result);
     },
   });
 
@@ -196,16 +218,21 @@ export default function askExtension(pi: ExtensionAPI): void {
           toolCallId: pending.toolCallId,
           remote,
           attention,
+          notifications,
         });
       } catch {
         result = cancelledResult(recovered.form, "Interrupted ask_user recovery closed.");
       }
       pi.appendEntry(DISMISSED_ENTRY, { version: 1, toolCallId: pending.toolCallId, dismissedAt: Date.now() });
-      if (!result.details.cancelled) pi.sendUserMessage(agentMessage(result));
+      deliverCommandResult(ctx, result);
     })());
   });
 
+  pi.on("agent_start", () => notifications.agentStart());
+  pi.on("agent_settled", (_event, ctx) => notifications.settle(ctx));
+
   pi.on("session_shutdown", () => {
+    notifications.dispose();
     attention.clear();
     remote.dispose();
   });
