@@ -12,7 +12,7 @@ export type PrerequisiteStatus = {
 const REQUIRED_PACKAGES = [
 	{
 		name: "pi-ask-user",
-		toolName: "ask_user",
+		toolName: "ask_user_question",
 		installCommand: "pi install npm:pi-ask-user",
 		description: "Required for consent prompts, trust decisions, and Claude ask-style permission decisions.",
 	},

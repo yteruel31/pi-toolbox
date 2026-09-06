@@ -1,4 +1,4 @@
-# `ask_user` contract
+# `ask_user_question` contract
 
 ## Tool input
 
@@ -108,7 +108,7 @@ Semantic normalization failures return:
 - `cancelled: true`
 - `error.kind: "invalid_input"`
 - issue paths/messages
-- text beginning `Invalid ask_user payload:`
+- text beginning `Invalid ask_user_question payload:`
 
 Pi handles structural schema failures before `execute`. Invalid input is not persisted as a valid form.
 
@@ -119,12 +119,12 @@ Pi handles structural schema failures before `execute`. Invalid input is not per
 - `/ask:replay` replays the latest real tool payload on the active branch.
 - Replay never resolves an interrupted original tool call; a successful replay is sent as a new canonical user message.
 
-Automatic interrupted-tool recovery runs only for Pi session-start reasons `startup`, `resume`, and `fork`. Reload recovery is intentionally out of scope. Recovery considers only the active branch and unresolved `ask_user` tool calls. It validates a matching persisted payload first, falls back to the original tool-call arguments when persisted params are invalid, and writes a dismissal marker after closing. If neither payload is recoverable, it writes an `invalid_payload` dismissal marker before notifying, so subsequent starts do not repeatedly reopen the form.
+Automatic interrupted-tool recovery runs only for Pi session-start reasons `startup`, `resume`, and `fork`. Reload recovery is intentionally out of scope. Recovery considers only the active branch and unresolved `ask_user_question` tool calls. Historical `ask_user` calls and their results remain readable for replay and interrupted-call recovery; no persisted ids are migrated. It validates a matching persisted payload first, falls back to the original tool-call arguments when persisted params are invalid, and writes a dismissal marker after closing. If neither payload is recoverable, it writes an `invalid_payload` dismissal marker before notifying, so subsequent starts do not repeatedly reopen the form.
 
 ## Non-TUI modes
 
 The rich flow is available only when `ctx.mode === "tui"`. Print, JSON, and RPC tool execution does not invoke `ui.custom`. It returns `cancelled: true`, empty prototype-safe answers, normalized question metadata, and text beginning:
 
-`Needs user input: ask_user requires interactive TUI mode.`
+`Needs user input: ask_user_question requires interactive TUI mode.`
 
 The text then lists each pending question and each declared `1-based index. label (stable-value)` choice. No answer or cancellation is inferred from the absence of a TUI.

@@ -123,7 +123,7 @@ export class RemoteAskRegistry {
     }
     const response = object(request.response);
     if (response?.kind === "cancel") {
-      this.accept(requestId, flow, cancelledResult(flow.form, "User cancelled ask_user remotely."));
+      this.accept(requestId, flow, cancelledResult(flow.form, "User cancelled ask_user_question remotely."));
       return;
     }
     if (response?.kind !== "answer") {

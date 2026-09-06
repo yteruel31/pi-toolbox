@@ -32,7 +32,7 @@ import {
   type AskState,
 } from "./domain.ts";
 import { HerdrAttention, herdrWaitingLabel } from "./herdr.ts";
-import type { WaitingNotifications } from "./notifications.ts";
+import { notifyWaiting } from "./notifications.ts";
 import { editorBindingHint, inlineEditorWidth, SETTINGS_ROWS, renderAsk, type AskRenderView } from "./render.ts";
 import type { RemoteAskRegistry } from "./remote.ts";
 
@@ -453,7 +453,6 @@ export interface ShowAskOptions {
   signal?: AbortSignal;
   remote: RemoteAskRegistry;
   attention: HerdrAttention;
-  notifications: WaitingNotifications;
 }
 
 export async function showAskFlow(
@@ -467,7 +466,6 @@ export async function showAskFlow(
   let abortListener: (() => void) | undefined;
   let component: AskComponent | undefined;
   let result: AskResult | undefined;
-  let clearWaitingNotification = () => {};
   let closed = false;
   const unblockHerdr = options.attention.block(herdrWaitingLabel(form.title));
   try {
@@ -476,7 +474,7 @@ export async function showAskFlow(
       const remote = options.remote.open(form, options.source, (value) => component?.settle(value), options.toolCallId);
       remoteFlowId = remote.flowId;
       if (!component.settled && options.signal) {
-        const abort = () => component?.settle(cancelledResult(form, "ask_user was aborted."));
+        const abort = () => component?.settle(cancelledResult(form, "ask_user_question was aborted."));
         if (options.signal.aborted) queueMicrotask(abort);
         else {
           options.signal.addEventListener("abort", abort, { once: true });
@@ -485,7 +483,7 @@ export async function showAskFlow(
       }
       if (!component.settled && !options.signal?.aborted) {
         queueMicrotask(() => {
-          if (!closed && !component?.settled) clearWaitingNotification = options.notifications.begin(form, store.get());
+          if (!closed && !component?.settled) void notifyWaiting(form, store.get());
         });
       }
       return component;
@@ -493,11 +491,10 @@ export async function showAskFlow(
     return result;
   } finally {
     closed = true;
-    clearWaitingNotification();
     unblockHerdr();
     abortListener?.();
     component?.dispose();
-    if (remoteFlowId) options.remote.complete(remoteFlowId, result ?? cancelledResult(form, "ask_user UI closed unexpectedly."));
+    if (remoteFlowId) options.remote.complete(remoteFlowId, result ?? cancelledResult(form, "ask_user_question UI closed unexpectedly."));
   }
 }
 

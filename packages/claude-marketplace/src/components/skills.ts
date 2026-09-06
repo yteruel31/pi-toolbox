@@ -88,7 +88,7 @@ function rewriteSkillBody(body: string, plugin: InstalledPlugin): string {
 	return body
 		.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, plugin.cachePath)
 		.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, pluginDataPath(plugin.marketplace, plugin.name))
-		.replace(/\bAskUserQuestion\b/g, "ask_user")
+		.replace(/\bAskUserQuestion\b/g, "ask_user_question")
 		.replace(/Skill\("([^":]+):([^"]+)",\s*"([^"]*)"\)/g, (_match, pluginName: string, skillName: string, args: string) => {
 			return `${piSkillCommandFor(pluginName, skillName)} ${args}`.trim();
 		})

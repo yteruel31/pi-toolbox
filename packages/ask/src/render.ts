@@ -302,7 +302,7 @@ export function renderAsk(state: AskState, config: AskConfig, theme: Theme, widt
   const lines: string[] = [];
   if (view.mode === "settings") lines.push(...renderSettings(config, theme, safeWidth, view));
   else {
-    const header = state.form.title ? `${state.form.title} (ask_user)` : "ask_user";
+    const header = state.form.title ? `${state.form.title} (ask_user_question)` : "ask_user_question";
     lines.push(theme.fg("accent", theme.bold(header)));
     lines.push(divider(theme, safeWidth));
     lines.push(...renderTabs(state, theme, safeWidth));
@@ -326,7 +326,7 @@ export function renderAsk(state: AskState, config: AskConfig, theme: Theme, widt
 export function formatCallTranscript(args: unknown): string {
   const root = args && typeof args === "object" ? args as { title?: unknown; questions?: unknown[] } : {};
   const count = Array.isArray(root.questions) ? root.questions.length : 0;
-  return `ask_user ${count} question${count === 1 ? "" : "s"}${typeof root.title === "string" && root.title.trim() ? ` · ${root.title.trim()}` : ""}`;
+  return `ask_user_question ${count} question${count === 1 ? "" : "s"}${typeof root.title === "string" && root.title.trim() ? ` · ${root.title.trim()}` : ""}`;
 }
 
 export function formatResultTranscript(details: {

@@ -12,7 +12,7 @@ Capture reusable knowledge in the Markdown roots configured in `~/.pi/agent/cont
 ## Authorization gate
 
 - A direct request such as “add this to knowledge” authorizes the write described by that request.
-- For proactive capture, explain in one sentence what is worth preserving and ask for explicit confirmation with `ask_user` before writing.
+- For proactive capture, explain in one sentence what is worth preserving and ask for explicit confirmation with `ask_user_question` before writing.
 - Never write after a declined, cancelled, or ambiguous confirmation.
 - Keep the bar high. Do not propose capturing transient progress, routine command output, speculative ideas, or facts already represented well as a short durable memory.
 

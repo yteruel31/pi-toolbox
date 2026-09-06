@@ -17,7 +17,6 @@ import {
 import { cancelledResult, formatAgentResultContent } from "./domain.ts";
 import { extractAskForm, latestCompletedAssistant } from "./extraction.ts";
 import { HerdrAttention } from "./herdr.ts";
-import { WaitingNotifications } from "./notifications.ts";
 import { DISMISSED_ENTRY, findPendingAsk, latestPayload, makePayload, PAYLOAD_ENTRY } from "./persistence.ts";
 import { formatCallTranscript, formatResultTranscript } from "./render.ts";
 import { RemoteAskRegistry } from "./remote.ts";
@@ -29,7 +28,7 @@ function nonTuiResult(form: AskForm): AskResult {
     ...question.options.map((option, index) => `  ${index + 1}. ${option.label} (${option.value})`),
   ]);
   return {
-    content: [{ type: "text", text: ["Needs user input: ask_user requires interactive TUI mode.", ...pending].join("\n") }],
+    content: [{ type: "text", text: ["Needs user input: ask_user_question requires interactive TUI mode.", ...pending].join("\n") }],
     details: {
       ...(form.title ? { title: form.title } : {}),
       cancelled: true,
@@ -60,21 +59,11 @@ export default function askExtension(pi: ExtensionAPI): void {
   const store = new ConfigStore();
   const remote = new RemoteAskRegistry(pi.events);
   const attention = new HerdrAttention(pi.events);
-  const notifications = new WaitingNotifications();
 
   function deliverCommandResult(ctx: ExtensionContext, result: AskResult | undefined): void {
     if (result && !result.details.cancelled) {
-      try {
-        pi.sendUserMessage(agentMessage(result));
-        // The injected prompt owns completion now, even before agent_start.
-        return;
-      } catch (error) {
-        notifications.settle(ctx);
-        throw error;
-      }
+      pi.sendUserMessage(agentMessage(result));
     }
-    // Cancelled replay/recovery has no agent_settled event of its own.
-    notifications.settle(ctx);
   }
 
   async function openCommandForm(
@@ -91,12 +80,7 @@ export default function askExtension(pi: ExtensionAPI): void {
       return undefined;
     }
     pi.appendEntry(PAYLOAD_ENTRY, makePayload(source, formInput));
-    try {
-      return await showAskFlow(ctx, normalized.form, store, { source, remote, attention, notifications });
-    } catch (error) {
-      notifications.settle(ctx);
-      throw error;
-    }
+    return showAskFlow(ctx, normalized.form, store, { source, remote, attention });
   }
 
   async function replay(ctx: ExtensionCommandContext, sources: AskSource[], source: AskSource): Promise<void> {
@@ -114,13 +98,13 @@ export default function askExtension(pi: ExtensionAPI): void {
   }
 
   pi.registerTool({
-    name: "ask_user",
+    name: "ask_user_question",
     label: "Ask User",
     description: "Ask one or more structured clarification questions. Supports single-select, multi-select, previews, free-form answers, and notes. Use when user input materially changes the next step.",
     promptSnippet: "Ask structured clarification or decision questions instead of guessing",
     promptGuidelines: [
-      "Use ask_user when requirements, preferences, research scope, or a consequential decision remain unresolved; do not guess.",
-      "Keep ask_user options distinct and outcome-oriented, and use recommended only as presentation metadata.",
+      "Use ask_user_question when requirements, preferences, research scope, or a consequential decision remain unresolved; do not guess.",
+      "Keep ask_user_question options distinct and outcome-oriented, and use recommended only as presentation metadata.",
     ],
     parameters: askParamsSchema,
     prepareArguments: (input) => prepareAskArguments(input) as PublicAskParams,
@@ -129,7 +113,7 @@ export default function askExtension(pi: ExtensionAPI): void {
       if (!normalized.form) return invalidAskResult(params, normalized.issues);
       pi.appendEntry(PAYLOAD_ENTRY, makePayload("tool", params, toolCallId));
       if (ctx.mode !== "tui") return nonTuiResult(normalized.form);
-      return showAskFlow(ctx, normalized.form, store, { source: "tool", toolCallId, signal, remote, attention, notifications });
+      return showAskFlow(ctx, normalized.form, store, { source: "tool", toolCallId, signal, remote, attention });
     },
     renderCall(args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold(formatCallTranscript(args))), 0, 0);
@@ -194,7 +178,7 @@ export default function askExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("ask:replay", {
-    description: "Replay the latest ask_user form on this branch",
+    description: "Replay the latest ask_user_question form on this branch",
     handler: async (_args, ctx) => replay(ctx, ["tool"], "ask:replay"),
   });
 
@@ -208,7 +192,7 @@ export default function askExtension(pi: ExtensionAPI): void {
       const recovered = recoverAskForm(pending.payload?.params, pending.arguments, store.get().behaviour.presentSingleAsMulti);
       if (!recovered.form) {
         pi.appendEntry(DISMISSED_ENTRY, { version: 1, toolCallId: pending.toolCallId, reason: "invalid_payload", dismissedAt: Date.now() });
-        ctx.ui.notify("An interrupted ask_user form could not be recovered because both persisted and original payloads are invalid.", "error");
+        ctx.ui.notify("An interrupted ask_user_question form could not be recovered because both persisted and original payloads are invalid.", "error");
         return;
       }
       let result: AskResult;
@@ -218,21 +202,16 @@ export default function askExtension(pi: ExtensionAPI): void {
           toolCallId: pending.toolCallId,
           remote,
           attention,
-          notifications,
         });
       } catch {
-        result = cancelledResult(recovered.form, "Interrupted ask_user recovery closed.");
+        result = cancelledResult(recovered.form, "Interrupted ask_user_question recovery closed.");
       }
       pi.appendEntry(DISMISSED_ENTRY, { version: 1, toolCallId: pending.toolCallId, dismissedAt: Date.now() });
       deliverCommandResult(ctx, result);
     })());
   });
 
-  pi.on("agent_start", () => notifications.agentStart());
-  pi.on("agent_settled", (_event, ctx) => notifications.settle(ctx));
-
   pi.on("session_shutdown", () => {
-    notifications.dispose();
     attention.clear();
     remote.dispose();
   });

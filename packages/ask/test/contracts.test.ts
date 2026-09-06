@@ -64,5 +64,5 @@ test("invalid result is structured and transcript-friendly", () => {
   const result = invalidAskResult({}, [{ path: "questions", message: "missing" }]);
   assert.equal(result.details.cancelled, true);
   assert.equal(result.details.error?.kind, "invalid_input");
-  assert.match(result.content[0].text, /^Invalid ask_user payload:/);
+  assert.match(result.content[0].text, /^Invalid ask_user_question payload:/);
 });

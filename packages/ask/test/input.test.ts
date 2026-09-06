@@ -1,5 +1,4 @@
 import test from "node:test";
-import { WaitingNotifications } from "../src/notifications.ts";
 import assert from "node:assert/strict";
 import { ConfigStore, DEFAULT_CONFIG, parseConfig } from "../src/config.ts";
 import { normalizeAsk } from "../src/contracts.ts";
@@ -150,7 +149,7 @@ test("first-use config creation failure notifies immediately with its path", asy
       },
     },
   };
-  await showAskFlow(ctx, form, store, { source: "tool", signal: controller.signal, remote, attention, notifications: new WaitingNotifications() });
+  await showAskFlow(ctx, form, store, { source: "tool", signal: controller.signal, remote, attention });
   assert.ok(notifications.some((message) => message.includes(path)));
   remote.dispose();
 });
@@ -182,7 +181,7 @@ test("throwing host UI disposes the component and completes the remote flow once
       },
     },
   };
-  await assert.rejects(showAskFlow(ctx, form, store, { source: "tool", remote, attention, notifications: new WaitingNotifications() }), /host failed/);
+  await assert.rejects(showAskFlow(ctx, form, store, { source: "tool", remote, attention }), /host failed/);
   assert.equal((store as any).listeners.size, 0);
   assert.equal(emitted.filter(([name]) => name.endsWith(":completed")).length, 1);
   remote.dispose();

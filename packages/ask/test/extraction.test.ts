@@ -5,8 +5,8 @@ import { DEFAULT_CONFIG } from "../src/config.ts";
 
 const args = { questions: [{ id: "q", prompt: "Q?", options: [{ value: "a", label: "A" }] }] };
 
-test("parses ask_user tool calls and tolerant fenced JSON", () => {
-  const tool = parseExtractedAsk({ content: [{ type: "toolCall", id: "1", name: "ask_user", arguments: args }] } as any);
+test("parses ask_user_question tool calls and tolerant fenced JSON", () => {
+  const tool = parseExtractedAsk({ content: [{ type: "toolCall", id: "1", name: "ask_user_question", arguments: args }] } as any);
   assert.equal(tool.form?.questions[0]?.id, "q");
   const fenced = parseExtractedAsk(`words\n\`\`\`json\n${JSON.stringify(args)}\n\`\`\``);
   assert.equal(fenced.form?.questions[0]?.label, "Q1");
@@ -37,7 +37,7 @@ test("model selection respects scope and auth then falls back to current", async
   assert.equal(await selectExtractionModel(ctx, DEFAULT_CONFIG), current);
 });
 
-test("model extraction requests one synthetic ask_user tool", async () => {
+test("model extraction requests one synthetic ask_user_question tool", async () => {
   const model = { provider: "p", id: "m" } as any;
   let context: any;
   const ctx: any = {
@@ -48,13 +48,13 @@ test("model extraction requests one synthetic ask_user tool", async () => {
       getApiKeyAndHeaders: async () => ({ ok: true }),
       complete: async (_model: any, nextContext: any) => {
         context = nextContext;
-        return { content: [{ type: "toolCall", id: "call", name: "ask_user", arguments: args }] };
+        return { content: [{ type: "toolCall", id: "call", name: "ask_user_question", arguments: args }] };
       },
     },
   };
   const result = await extractAskForm(ctx, DEFAULT_CONFIG, { assistantText: "Q?" });
   assert.equal(result.form?.questions[0]?.id, "q");
-  assert.equal(context.tools[0].name, "ask_user");
+  assert.equal(context.tools[0].name, "ask_user_question");
   assert.ok(context.tools[0].parameters.properties.questions);
 });
 
@@ -85,7 +85,7 @@ test("retry prompt includes bounded malformed response and validation error", as
     complete: async (_model, messages) => {
       prompts.push((messages[0]!.content[0] as any).text);
       if (prompts.length === 1) return { content: [{ type: "text", text: `not-json-${"x".repeat(10_000)}` }] } as any;
-      return { content: [{ type: "toolCall", id: "ok", name: "ask_user", arguments: args }] } as any;
+      return { content: [{ type: "toolCall", id: "ok", name: "ask_user_question", arguments: args }] } as any;
     },
   });
   assert.equal(result.form?.questions[0]?.id, "q");

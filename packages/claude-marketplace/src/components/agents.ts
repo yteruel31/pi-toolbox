@@ -102,7 +102,7 @@ function mapClaudeTool(tool: string): string | undefined {
 		MultiEdit: "edit",
 		WebFetch: "fetch_content",
 		WebSearch: "web_search",
-		AskUserQuestion: "ask_user",
+		AskUserQuestion: "ask_user_question",
 		TodoWrite: undefined,
 		Task: undefined,
 	};
@@ -119,7 +119,7 @@ function rewriteAgentBody(body: string, plugin: InstalledPlugin): string {
 	return body
 		.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, plugin.cachePath)
 		.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, pluginDataPath(plugin.marketplace, plugin.name))
-		.replace(/\bAskUserQuestion\b/g, "ask_user")
+		.replace(/\bAskUserQuestion\b/g, "ask_user_question")
 		.replace(/Skill\("([^":]+):([^"]+)",\s*"([^"]*)"\)/g, (_match, pluginName: string, skillName: string, args: string) => {
 			return `/skill:${safeSlug(`claude-${pluginName}-${skillName}`, "skill")} ${args}`.trim();
 		})
