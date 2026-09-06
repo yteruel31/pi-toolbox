@@ -17,11 +17,31 @@ export function waitingNotification(form: AskForm): NotificationPayload {
   };
 }
 
+function terminalSafeText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+}
+
 export function terminalSequence(channel: NotificationChannel, payload: NotificationPayload): string | undefined {
   if (channel === "bell") return "\u0007";
-  if (channel === "osc9") return `\u001b]9;${payload.message}\u0007`;
-  if (channel === "osc777") return `\u001b]777;notify;${payload.title};${payload.message}\u0007`;
+  const title = terminalSafeText(payload.title);
+  const message = terminalSafeText(payload.message);
+  if (channel === "osc9") return `\u001b]9;${message}\u0007`;
+  if (channel === "osc777") return `\u001b]777;notify;${title};${message}\u0007`;
   return undefined;
+}
+
+export type OrcaStatus = "waiting" | "working";
+
+export function isOrcaEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
+  // Orca stamps ORCA_PANE_KEY on every PTY it owns; its managed Pi hook uses
+  // the same field as the required pane-attribution guard.
+  return Boolean(env.ORCA_PANE_KEY?.trim());
+}
+
+export function orcaStatusSequence(state: OrcaStatus): string {
+  // Keep this payload deliberately static: question text is neither needed by
+  // Orca's status parser nor safe to place in an in-band terminal protocol.
+  return `\u001b]9999;${JSON.stringify({ state, agentType: "pi", toolName: "ask_user" })}\u0007`;
 }
 
 export interface NotificationDependencies {
@@ -81,4 +101,35 @@ export async function notifyWaiting(
       // Notifications are deliberately best effort.
     }
   }
+}
+
+export function beginWaitingNotification(
+  form: AskForm,
+  config: Pick<AskConfig, "notifications">,
+  dependencies: NotificationDependencies = defaults,
+  env: NodeJS.ProcessEnv = process.env,
+): () => void {
+  if (!config.notifications.enabled) return () => {};
+
+  if (!isOrcaEnvironment(env)) {
+    void notifyWaiting(form, config, dependencies);
+    return () => {};
+  }
+
+  try {
+    dependencies.write(orcaStatusSequence("waiting"));
+  } catch {
+    return () => {};
+  }
+
+  let cleared = false;
+  return () => {
+    if (cleared) return;
+    cleared = true;
+    try {
+      dependencies.write(orcaStatusSequence("working"));
+    } catch {
+      // Status reporting must not affect the ask result.
+    }
+  };
 }
