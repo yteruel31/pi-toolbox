@@ -109,7 +109,9 @@ Footer and inline-editor hints are generated from the live bindings, including c
 - `presentSingleAsMulti`: present future single-select questions as multi-select while retaining requested `type` metadata.
 - `showFooterHints`: show concise context-sensitive key hints.
 
-Notification channels run in order and are best effort: `bell`, `osc9`, `osc777`, or `{ "type": "command", "command": "..." }`. Commands receive `ASK_NOTIFY_EVENT`, `ASK_NOTIFY_TITLE`, and `ASK_NOTIFY_MESSAGE`, time out after five seconds, and are terminated on timeout.
+Notification channels run in order and are best effort: `bell`, `osc9`, `osc777`, or `{ "type": "command", "command": "..." }`. Commands receive `ASK_NOTIFY_EVENT`, `ASK_NOTIFY_TITLE`, and `ASK_NOTIFY_MESSAGE`, time out after five seconds, and are terminated on timeout. Control characters are removed from OSC 9/777 title and message fields before they are written.
+
+In an Orca-owned terminal (`ORCA_PANE_KEY` is present), configured channels are replaced by one native OSC 9999 waiting-state signal and its working-state cleanup when the flow submits, cancels, or aborts. This lets Orca own notification policy and prevents duplicate alerts. The payload contains fixed state metadata only, not the question. Setting `notifications.enabled` to `false` disables this signal as well. No additional configuration or Orca hook installation is required.
 
 ## Save, reset, and live semantics
 
