@@ -230,21 +230,23 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     name: "subagent_spawn",
     label: "Spawn subagent",
     description:
-      "Start one autonomous background run and return immediately. Child harnesses have normal host permissions.",
+      "Start one autonomous background run and return its run id immediately. Use agent to select a named profile and its saved routing; name is only a display title. Child harnesses have normal host permissions; Claude bypasses permission prompts.",
     promptSnippet: "Spawn an autonomous background subagent on Pi or Claude Code.",
     promptGuidelines: [
       "Use subagent_spawn for self-contained work that can continue in the background.",
       "After subagent_spawn, keep working; use subagent_wait only when the result blocks progress.",
-      "Children cannot spawn more agents or ask the user, so make the prompt complete and self-contained.",
+      "For subagent_spawn, use agent when a named role is requested; discover exact profile names and routing with subagent_agents. name only sets a display title, not a profile.",
+      "For subagent_spawn, omit harness, model, and reasoning_effort unless explicitly requested; preserve the configured profile routing.",
+      "Children of subagent_spawn cannot spawn more agents or ask the user, so make the prompt complete and self-contained.",
     ],
     parameters: Type.Object({
-      prompt: Type.String({ minLength: 1, maxLength: 100_000 }),
-      agent: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
-      name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-      harness: Type.Optional(StringEnum(["pi", "claude"] as const)),
-      working_dir: Type.Optional(Type.String({ minLength: 1, maxLength: 4_096 })),
-      model: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-      reasoning_effort: Type.Optional(StringEnum(THINKING_LEVELS)),
+      prompt: Type.String({ minLength: 1, maxLength: 100_000, description: "Self-contained task with context, scope, constraints, and expected output. Children cannot ask the user or delegate further." }),
+      agent: Type.Optional(Type.String({ minLength: 1, maxLength: 100, description: "Exact profile name from subagent_agents. Loads its system prompt, tools, skills, and configured routing. Use this for a named role." })),
+      name: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Optional display title only; never selects a profile or routing. An exact profile name without agent is rejected; use agent for profile selection." })),
+      harness: Type.Optional(StringEnum(["pi", "claude"] as const, { description: "Explicit execution backend override. Omit unless requested to preserve configured routing; generic runs default to Pi." })),
+      working_dir: Type.Optional(Type.String({ minLength: 1, maxLength: 4_096, description: "Existing directory inside the trusted current project, relative to the parent cwd or absolute. Defaults to the parent cwd." })),
+      model: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Explicit model override: Pi provider/model-id or Claude model/alias. Omit unless requested to preserve configured routing." })),
+      reasoning_effort: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Explicit thinking/effort override. Omit unless requested to preserve configured routing and backend defaults." })),
     }),
     renderCall(params, theme) {
       return new Text(
@@ -260,6 +262,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       const resolution = await resolveSpawn(
         ctx,
         params.agent,
+        params.name,
         {
           harness: params.harness,
           model: params.model,
@@ -309,7 +312,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   pi.registerTool({
     name: "subagent_agents",
     label: "List subagent profiles",
-    description: "Discover named subagent profiles and show their effective saved routing.",
+    description: "Discover available named profiles with descriptions, tools, skills, and effective routing. Pass a returned profile name as subagent_spawn.agent, not name. Does not start a run. Output is capped at 49,000 characters.",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       sessionContext = ctx;
@@ -335,7 +338,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   pi.registerTool({
     name: "subagent_wait",
     label: "Wait for subagents",
-    description: "Wait for listed runs to settle and consume their final results in request order.",
+    description: "Wait for all listed run ids to settle and consume their final results in request order. Use only when results block further work; otherwise keep working and receive automatic delivery when idle. Output is capped at 49,000 characters.",
     promptGuidelines: [
       "Use subagent_wait only when one or more background results are required before continuing.",
     ],
@@ -343,6 +346,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       ids: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {
         minItems: 1,
         maxItems: MAX_IDS,
+        description: "Run ids returned by subagent_spawn or subagent_list, in the desired result order; not profile names or display titles.",
       }),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -361,11 +365,12 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   pi.registerTool({
     name: "subagent_cancel",
     label: "Cancel subagents",
-    description: "Request cancellation of active runs without deleting their records.",
+    description: "Request cancellation of queued or running work that is no longer needed. Preserves run records; does not undo child side effects. Output is capped at 49,000 characters.",
     parameters: Type.Object({
       ids: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {
         minItems: 1,
         maxItems: MAX_IDS,
+        description: "Run ids to cancel, as returned by subagent_spawn or subagent_list; not profile names or display titles.",
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -379,9 +384,9 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   pi.registerTool({
     name: "subagent_check",
     label: "Check subagent",
-    description: "Inspect one run's status and bounded recent activity without consuming it.",
+    description: "Inspect one run's status, bounded recent activity, and result preview without waiting or consuming its result. Use for a progress question or diagnosis, not repeated polling. Output is capped at 49,000 characters.",
     parameters: Type.Object({
-      id: Type.String({ minLength: 1, maxLength: 100 }),
+      id: Type.String({ minLength: 1, maxLength: 100, description: "Run id returned by subagent_spawn or subagent_list; not a profile name or display title." }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       sessionContext = ctx;
@@ -393,7 +398,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   pi.registerTool({
     name: "subagent_list",
     label: "List subagents",
-    description: "List every tracked background run in creation order.",
+    description: "List tracked runs in the current session in creation order to recover run ids and see statuses. Does not wait or consume results; use subagent_agents to discover profiles instead. Output is capped at 49,000 characters.",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       sessionContext = ctx;
@@ -655,23 +660,34 @@ function preloadUntilAbort(
 async function resolveSpawn(
   ctx: ExtensionContext,
   requestedAgent: string | undefined,
+  requestedName: string | undefined,
   explicit: RoutingEntry,
   dependencies: ExtensionDependencies,
 ): Promise<{ agent: AgentDefinition | undefined; route: ReturnType<DefaultRouteResolver["resolve"]> }> {
   let agent: AgentDefinition | undefined;
   let userRouting: RoutingEntry | undefined;
   let projectRouting: RoutingEntry | undefined;
-  if (requestedAgent) {
+  if (requestedAgent || requestedName) {
     const discovery = dependencies.createDiscovery
       ? await dependencies.createDiscovery(ctx)
       : await createOfficialDiscovery(ctx);
     const catalog = await discovery.discover({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-    agent = catalog.agents.find((candidate) => candidate.name === requestedAgent);
-    if (!agent) throw new Error(`Unknown subagent profile ${JSON.stringify(truncateText(requestedAgent, 100))}.`);
-    const store = dependencies.createRoutingStore?.(ctx) ?? createOfficialRoutingStore(ctx);
-    const [user, project] = await Promise.all([store.read("user"), store.read("project")]);
-    userRouting = user.routing?.agents[agent.name];
-    projectRouting = project.routing?.agents[agent.name];
+    if (!requestedAgent && catalog.agents.some((candidate) => candidate.name === requestedName)) {
+      const profile = JSON.stringify(requestedName);
+      throw new Error(
+        `name ${profile} matches an existing subagent profile, but name is only a display title. ` +
+        `No run was started. Provide agent: ${profile} to load the profile and its configured routing, ` +
+        "or choose a different name for a generic run. Use subagent_agents to inspect available profiles.",
+      );
+    }
+    if (requestedAgent) {
+      agent = catalog.agents.find((candidate) => candidate.name === requestedAgent);
+      if (!agent) throw new Error(`Unknown subagent profile ${JSON.stringify(truncateText(requestedAgent, 100))}.`);
+      const store = dependencies.createRoutingStore?.(ctx) ?? createOfficialRoutingStore(ctx);
+      const [user, project] = await Promise.all([store.read("user"), store.read("project")]);
+      userRouting = user.routing?.agents[agent.name];
+      projectRouting = project.routing?.agents[agent.name];
+    }
   }
   const route = new DefaultRouteResolver().resolve({
     explicit,

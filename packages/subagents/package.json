@@ -24,6 +24,7 @@
   "files": [
     "dist",
     "src",
+    "skills",
     "LICENSE",
     "README.md",
     "ARCHITECTURE.md",
@@ -39,6 +40,7 @@
     "pi",
     "pi-coding-agent",
     "pi-extension",
+    "pi-package",
     "subagents",
     "claude-agent-sdk",
     "background-agents"
@@ -46,6 +48,9 @@
   "pi": {
     "extensions": [
       "./src/extension.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "scripts": {
