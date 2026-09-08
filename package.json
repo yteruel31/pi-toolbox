@@ -47,7 +47,8 @@
     ],
     "skills": [
       "./packages/ask/skills",
-      "./packages/context/skills"
+      "./packages/context/skills",
+      "./packages/subagents/skills"
     ],
     "themes": [
       "./themes/*.json"

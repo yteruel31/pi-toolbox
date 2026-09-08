@@ -27,17 +27,22 @@ The full `pi-toolbox` repository remains Git-installable. This scoped package is
 
 At most four runs are active at once across both harnesses and `/btw`. Results not collected with `subagent_wait` are delivered once when the parent becomes idle.
 
-Example:
+The bundled [subagents skill](./skills/subagents/SKILL.md) explains profile selection, autonomous prompts, and result collection. Pi discovers it through both the standalone package and the full toolbox; load it with `/skill:subagents`.
+
+Discover profiles first, then use an exact returned name as `agent`. For example, if `reviewer` is available:
 
 ```text
+subagent_agents({})
 subagent_spawn({
-  prompt: "Review this repository for unsafe path handling and report findings.",
+  agent: "reviewer",
   name: "path-security-review",
-  harness: "pi",
-  working_dir: "/path/to/trusted/project",
-  reasoning_effort: "high"
+  prompt: "Review this repository for unsafe path handling. Don't edit files. Report concrete findings with file and line references, or state that you found none."
 })
 ```
+
+`agent` selects the profile's system prompt, tools, skills, and configured routing. `name` is only a display title. If `name` exactly matches an existing profile without `agent`, spawn throws an actionable error before creating a run, even with explicit routing arguments. Supply `agent` to select that profile, or choose a different title for an intentionally generic run. Calls with both `agent` and `name` remain valid.
+
+Omit `harness`, `model`, and `reasoning_effort` unless an override is explicitly requested. For generic work, omit `agent` and use a free-form title; generic runs default to Pi. Keep working after spawn and call `subagent_wait` with the returned run id only when its result blocks progress.
 
 Children cannot call subagent/workflow orchestration tools or interactive user-question tools. Give each child a complete, self-contained prompt.
 

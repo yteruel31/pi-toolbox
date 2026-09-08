@@ -8,6 +8,7 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
+import type { TObject } from "typebox";
 
 import type {
   HarnessRunOutcome,
@@ -169,6 +170,157 @@ function persistedState(agentProfile?: string) {
 const temporary: string[] = [];
 afterEach(async () => {
   await Promise.all(temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+async function routedFixture(profile = "gig-plan-reviewer") {
+  const root = await mkdtemp(path.join(tmpdir(), "pi-subagents-routing-guidance-"));
+  temporary.push(root);
+  const cwd = path.join(root, "project");
+  const agentDir = path.join(root, "agent-home");
+  await mkdir(cwd);
+  await mkdir(path.join(agentDir, "agents"), { recursive: true });
+  await writeFile(path.join(agentDir, "agents", "reviewer.md"), [
+    "---",
+    `name: ${profile}`,
+    "description: Review a plan.",
+    "harness: pi",
+    "tools: Read, Grep",
+    "skills: [review-checklist]",
+    "---",
+    "Review only. Cite evidence.",
+  ].join("\n"));
+  const routing = new FileRoutingStore({ agentDir, cwd, projectTrusted: true });
+  await routing.write("user", {
+    version: 1,
+    agents: { [profile]: { harness: "claude", model: "sonnet", thinking: "high" } },
+  });
+  const runtime = fakePi();
+  const piHarness = new ControlledHarness("pi");
+  const claudeHarness = new ControlledHarness("claude");
+  const preloads: string[][] = [];
+  createPiSubagentsExtension({
+    createPiHarness: () => piHarness,
+    createClaudeHarness: () => claudeHarness,
+    createDiscovery: async () => new FileAgentDiscovery({ agentDir }),
+    createRoutingStore: () => routing,
+    preloadSkills: async ({ names }) => {
+      preloads.push([...names]);
+      return { content: "Use the review checklist.", loaded: [...names], warnings: [] };
+    },
+  })(runtime.pi);
+  const ctx = fakeContext(cwd, runtime.entries);
+  await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
+  return { runtime, ctx, piHarness, claudeHarness, preloads, profile };
+}
+
+describe("spawn profile selection", () => {
+  it.each([undefined, "Plan review", "gig-plan-reviewer"])(
+    "loads the Claude saved route and profile with agent and title %s",
+    async (name) => {
+      const { runtime, ctx, piHarness, claudeHarness, preloads, profile } = await routedFixture();
+      const catalog = await execute(runtime, "subagent_agents", {}, ctx);
+      expect(JSON.parse((catalog.content[0] as { text: string }).text).agents[0])
+        .toMatchObject({ name: profile, harness: "claude", model: "sonnet", thinking: "high" });
+      const spawned = await execute(runtime, "subagent_spawn", { agent: profile, name, prompt: "Review the plan" }, ctx);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(spawned.details).toMatchObject({
+        snapshot: { id: "run-1", harness: "claude", agentProfile: profile, ...(name ? { title: name } : {}) },
+        route: { harness: "claude", model: "sonnet", thinking: "high", provenance: { harness: "saved-user" } },
+      });
+      expect(piHarness.requests).toHaveLength(0);
+      expect(claudeHarness.requests).toHaveLength(1);
+      expect(claudeHarness.requests[0]).toMatchObject({
+        model: "sonnet", thinkingLevel: "high", tools: ["Read", "Grep"],
+        systemPrompt: "Review only. Cite evidence.\n\nUse the review checklist.",
+      });
+      expect(preloads).toEqual([["review-checklist"]]);
+      await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+    },
+  );
+
+  it.each(["gig-plan-reviewer", "gig-repo-researcher"])(
+    "rejects name-only profile %s before spawning, including explicit routing",
+    async (profile) => {
+      const { runtime, ctx, piHarness, claudeHarness, preloads } = await routedFixture(profile);
+      const entriesBefore = runtime.entries.length;
+      for (const overrides of [{}, { harness: "pi", model: "fake/override" }, { harness: "claude" }]) {
+        await expect(execute(runtime, "subagent_spawn", {
+          name: profile, prompt: "Review", ...overrides,
+        }, ctx)).rejects.toThrow(`Provide agent: "${profile}"`);
+      }
+      expect(piHarness.requests).toHaveLength(0);
+      expect(claudeHarness.requests).toHaveLength(0);
+      expect(preloads).toHaveLength(0);
+      expect(runtime.entries).toHaveLength(entriesBefore);
+      expect(runtime.messages).toHaveLength(0);
+      expect((await execute(runtime, "subagent_list", {}, ctx)).details).toEqual({ runs: [] });
+      const valid = await execute(runtime, "subagent_spawn", { prompt: "Generic task" }, ctx);
+      expect(valid.details).toMatchObject({ snapshot: { id: "run-1" } });
+      await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+    },
+  );
+
+  it.each([undefined, "Independent review", "gig-plan-reviewer notes", "GIG-PLAN-REVIEWER"])(
+    "preserves generic runs with non-colliding title %s",
+    async (name) => {
+      const { runtime, ctx, piHarness, claudeHarness, preloads } = await routedFixture();
+      const spawned = await execute(runtime, "subagent_spawn", { name, prompt: "Generic task" }, ctx);
+      expect(spawned.details).toMatchObject({ snapshot: { harness: "pi", agentProfile: undefined } });
+      expect(piHarness.requests[0]).toMatchObject({
+        model: "fake/parent", thinkingLevel: "medium", systemPrompt: undefined, tools: undefined,
+      });
+      expect(claudeHarness.requests).toHaveLength(0);
+      expect(preloads).toHaveLength(0);
+      await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+    },
+  );
+
+  it("preserves explicit routing overrides with a profile and a generic title", async () => {
+    const { runtime, ctx, piHarness, claudeHarness, profile } = await routedFixture();
+    const named = await execute(runtime, "subagent_spawn", {
+      agent: profile, name: "Explicit Pi review", prompt: "Review", harness: "pi",
+      model: "fake/override", reasoning_effort: "low",
+    }, ctx);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(named.details).toMatchObject({ route: {
+      harness: "pi", model: "fake/override", thinking: "low",
+      provenance: { harness: "explicit", model: "explicit", thinking: "explicit" },
+    } });
+    expect(piHarness.requests[0]).toMatchObject({ model: "fake/override", thinkingLevel: "low" });
+    const generic = await execute(runtime, "subagent_spawn", {
+      name: "Explicit Claude task", prompt: "Inspect", harness: "claude",
+      model: "haiku", reasoning_effort: "medium",
+    }, ctx);
+    expect(generic.details).toMatchObject({ route: { harness: "claude", model: "haiku", thinking: "medium" } });
+    expect(claudeHarness.requests[0]).toMatchObject({ model: "haiku", thinkingLevel: "medium", systemPrompt: undefined });
+    await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+  });
+
+  it("does not reinterpret an unknown agent using a colliding title", async () => {
+    const { runtime, ctx, piHarness, claudeHarness, profile } = await routedFixture();
+    await expect(execute(runtime, "subagent_spawn", {
+      agent: "missing-profile", name: profile, prompt: "Review",
+    }, ctx)).rejects.toThrow("Unknown subagent profile");
+    expect(piHarness.requests).toHaveLength(0);
+    expect(claudeHarness.requests).toHaveLength(0);
+    await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+  });
+
+  it("describes every parameter and teaches profile selection in active tool guidelines", () => {
+    const runtime = fakePi();
+    createPiSubagentsExtension()(runtime.pi);
+    for (const tool of runtime.tools.values()) {
+      for (const schema of Object.values((tool.parameters as TObject).properties) as Array<{ description?: string }>) {
+        expect(schema.description?.length).toBeGreaterThan(20);
+      }
+    }
+    const spawn = runtime.tools.get("subagent_spawn")!;
+    const properties = (spawn.parameters as TObject).properties;
+    expect(properties.agent).toMatchObject({ description: expect.stringContaining("configured routing") });
+    expect(properties.name).toMatchObject({ description: expect.stringContaining("display title only") });
+    expect(spawn.promptGuidelines?.join(" ")).toContain("use agent when a named role is requested");
+    expect(spawn.promptGuidelines?.join(" ")).toContain("omit harness, model, and reasoning_effort unless explicitly requested");
+  });
 });
 
 describe("Pi extension composition", () => {

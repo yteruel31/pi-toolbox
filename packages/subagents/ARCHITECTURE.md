@@ -72,7 +72,7 @@ Headless execution uses `bypassPermissions` and `allowDangerouslySkipPermissions
 
 ## Agent discovery and routing
 
-Discovery happens only for `subagent_agents`, spawn resolution, or routing UI refresh. Sources merge package → user → trusted project. An optional comma-separated `tools` frontmatter scalar is validated as a bounded exact allowlist and passed through the run manager to both harnesses. Pi intersects it with active tools and keeps a runtime denial backstop; Claude passes it as the SDK's base `tools` set.
+Discovery happens only for `subagent_agents`, spawn resolution, or routing UI refresh. Spawn resolution discovers profiles when either `agent` or `name` is supplied. Without `agent`, an exact `name` collision throws before run creation, skill preloading, or backend execution; no profile is inferred from a title. Untitled generic runs skip profile discovery. Sources merge package → user → trusted project. An optional comma-separated `tools` frontmatter scalar is validated as a bounded exact allowlist and passed through the run manager to both harnesses. Pi intersects it with active tools and keeps a runtime denial backstop; Claude passes it as the SDK's base `tools` set.
 
 Claude-compatible `skills` block and flow sequences are parsed into bounded skill-name lists without changing the legacy flat-scalar handling of other agent fields. After `subagent_spawn` returns, the managed run uses Pi's trust-gated `DefaultPackageManager` to resolve enabled skill resource paths for the child cwd, then builds a bounded metadata catalog without loading extensions. The scan caps paths, directories, entries per directory, depth, files, per-file bytes, and aggregate bytes, canonicalizes symlinks with cycle deduplication, preserves resource order, and honors Pi's first-name-wins behavior. Full selected skill bodies are wrapped in Pi's native `<skill>` envelope, with the source path and relative-reference base directory, then appended after the named-agent prompt for either harness. Missing, disabled, unreadable, and oversized skills are skipped with bounded run-transcript warnings; `disable-model-invocation: true` is honored. Per-file and aggregate preload limits prevent frontmatter from expanding an unbounded child prompt.
 
@@ -112,6 +112,6 @@ The extension status slot is derived only through `tui/status.ts`: running is qu
 
 ## Packaging
 
-The npm package is MIT-licensed ESM for Node 22.19+. Pi is a required peer. `pi-ai`, `pi-tui`, and TypeBox are runtime dependencies. The Claude Agent SDK is optional. Pi loads `src/extension.ts` through the package's `pi.extensions` manifest.
+The npm package is MIT-licensed ESM for Node 22.19+. Pi is a required peer. `pi-ai`, `pi-tui`, and TypeBox are runtime dependencies. The Claude Agent SDK is optional. Pi loads `src/extension.ts` through the package's `pi.extensions` manifest. The `skills/subagents/SKILL.md` usage guide is included in the npm file list and declared in both the package and toolbox `pi.skills` manifests. Offline tests resolve both manifests through Pi's package manager and skill loader.
 
 Release gates are typecheck, offline tests, build, dry-run pack, unpack/install smoke test, and the clean-room source audit in `CLEANROOM.md`.
