@@ -45,6 +45,7 @@ const THINKING_LEVELS = new Set([
   "xhigh",
   "max",
 ]);
+const CLAUDE_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 export interface FileAgentDiscoveryOptions {
   agentDir?: string;
@@ -382,6 +383,9 @@ export class FileAgentDiscovery implements AgentDiscovery {
       warnings.add(`Skipped invalid agent file ${filePath}: ${validation.reason}`);
       return;
     }
+    for (const diagnostic of validation.diagnostics) {
+      warnings.add(`Agent file ${filePath}: ${diagnostic}`);
+    }
 
     const realPath = await this.realpathIfSafe(filePath, warnings, "agent file");
     if (!realPath) return;
@@ -482,7 +486,7 @@ export class FileAgentDiscovery implements AgentDiscovery {
 }
 
 type AgentValidation =
-  | { ok: true; agent: Omit<AgentDefinition, "source"> }
+  | { ok: true; agent: Omit<AgentDefinition, "source">; diagnostics: string[] }
   | { ok: false; reason: string };
 
 function validateAgent(
@@ -553,6 +557,7 @@ function validateAgent(
   }
 
   const defaults: AgentDefinition["defaults"] = {};
+  const diagnostics: string[] = [];
   const harness = scalarValue(frontmatter.harness)?.trim();
   if (harness) {
     if (!HARNESSES.has(harness)) return { ok: false, reason: "invalid harness default" };
@@ -568,9 +573,18 @@ function validateAgent(
     if (!THINKING_LEVELS.has(thinking)) return { ok: false, reason: "invalid thinking default" };
     defaults.thinking = thinking as AgentDefinition["defaults"]["thinking"];
   }
+  if (Object.prototype.hasOwnProperty.call(frontmatter, "effort")) {
+    const effort = scalarValue(frontmatter.effort)?.trim();
+    if (effort && CLAUDE_EFFORT_LEVELS.has(effort)) {
+      defaults.effort = effort as AgentDefinition["defaults"]["effort"];
+    } else {
+      diagnostics.push("ignored invalid Claude effort default");
+    }
+  }
 
   return {
     ok: true,
+    diagnostics,
     agent: {
       name,
       description,

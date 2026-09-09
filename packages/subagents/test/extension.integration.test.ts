@@ -17,7 +17,9 @@ import type {
 } from "../src/core/harness.js";
 import { FileAgentDiscovery } from "../src/agents/discovery.js";
 import { FileRoutingStore } from "../src/agents/routing-store.js";
+import type { RoutingEntry } from "../src/agents/types.js";
 import { createPiSubagentsExtension } from "../src/extension.js";
+import { buildClaudeOptions } from "../src/harnesses/claude.js";
 import { loadRoutingModelCatalog } from "../src/tui/model-catalog.js";
 
 class ControlledHarness implements SubagentHarness {
@@ -212,6 +214,196 @@ async function routedFixture(profile = "gig-plan-reviewer") {
   await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
   return { runtime, ctx, piHarness, claudeHarness, preloads, profile };
 }
+
+interface ClaudeDefaultsFixtureOptions {
+  frontmatter: string[];
+  userRouting?: RoutingEntry;
+  projectRouting?: RoutingEntry;
+  projectTrusted?: boolean;
+}
+
+async function claudeDefaultsFixture(options: ClaudeDefaultsFixtureOptions) {
+  const root = await mkdtemp(path.join(tmpdir(), "pi-subagents-claude-defaults-"));
+  temporary.push(root);
+  const cwd = path.join(root, "project");
+  const agentDir = path.join(root, "agent-home");
+  await mkdir(cwd);
+  await mkdir(path.join(agentDir, "agents"), { recursive: true });
+  await writeFile(path.join(agentDir, "agents", "claude-defaults.md"), [
+    "---",
+    "name: claude-defaults",
+    "description: Exercise Claude profile defaults.",
+    ...options.frontmatter,
+    "---",
+    "Use the configured Claude defaults.",
+  ].join("\n"));
+
+  const trustedRouting = new FileRoutingStore({ agentDir, cwd, projectTrusted: true });
+  if (options.userRouting) {
+    await trustedRouting.write("user", {
+      version: 1,
+      agents: { "claude-defaults": options.userRouting },
+    });
+  }
+  if (options.projectRouting) {
+    await trustedRouting.write("project", {
+      version: 1,
+      agents: { "claude-defaults": options.projectRouting },
+    });
+  }
+
+  const projectTrusted = options.projectTrusted ?? true;
+  const routing = new FileRoutingStore({ agentDir, cwd, projectTrusted });
+  const runtime = fakePi();
+  const piHarness = new ControlledHarness("pi");
+  const claudeHarness = new ControlledHarness("claude");
+  createPiSubagentsExtension({
+    createPiHarness: () => piHarness,
+    createClaudeHarness: () => claudeHarness,
+    createDiscovery: async () => new FileAgentDiscovery({ agentDir }),
+    createRoutingStore: () => routing,
+  })(runtime.pi);
+  const baseContext = fakeContext(cwd, runtime.entries);
+  const ctx = {
+    ...baseContext,
+    isProjectTrusted: () => projectTrusted,
+  } as ExtensionContext;
+  await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
+  return { runtime, ctx, piHarness, claudeHarness, routing };
+}
+
+function catalogPayload(result: Awaited<ReturnType<typeof execute>>) {
+  return JSON.parse((result.content[0] as { text: string }).text) as {
+    agents: Array<Record<string, unknown>>;
+    warnings: string[];
+  };
+}
+
+describe("Claude profile defaults integration", () => {
+  it("uses harness, model, and effort defaults without saved configuration", async () => {
+    const fixture = await claudeDefaultsFixture({
+      frontmatter: ["harness: claude", "model: sonnet", "thinking: low", "effort: high"],
+    });
+
+    const catalog = catalogPayload(await execute(fixture.runtime, "subagent_agents", {}, fixture.ctx));
+    expect(catalog.agents[0]).toMatchObject({
+      name: "claude-defaults", harness: "claude", model: "sonnet", thinking: "high",
+    });
+    const spawned = await execute(fixture.runtime, "subagent_spawn", {
+      agent: "claude-defaults", prompt: "Run with defaults",
+    }, fixture.ctx);
+    expect(spawned.details).toMatchObject({ route: {
+      harness: "claude", model: "sonnet", thinking: "high",
+      provenance: { harness: "agent-default", model: "agent-default", thinking: "agent-default" },
+    } });
+    expect(fixture.piHarness.requests).toHaveLength(0);
+    expect(fixture.claudeHarness.requests[0]).toMatchObject({ model: "sonnet", thinkingLevel: "high" });
+    expect(buildClaudeOptions(fixture.claudeHarness.requests[0]!, new AbortController()).effort).toBe("high");
+  });
+
+  it("combines a harness-only route with profile defaults without duplicating saved fields", async () => {
+    const fixture = await claudeDefaultsFixture({
+      frontmatter: ["model: sonnet", "effort: xhigh"],
+      userRouting: { harness: "claude" },
+    });
+
+    expect((await fixture.routing.read("user")).routing?.agents["claude-defaults"]).toEqual({ harness: "claude" });
+    const catalog = catalogPayload(await execute(fixture.runtime, "subagent_agents", {}, fixture.ctx));
+    expect(catalog.agents[0]).toMatchObject({
+      harness: "claude", model: "sonnet", thinking: "xhigh",
+    });
+    const spawned = await execute(fixture.runtime, "subagent_spawn", {
+      agent: "claude-defaults", prompt: "Use the composed route",
+    }, fixture.ctx);
+    expect(spawned.details).toMatchObject({ route: {
+      harness: "claude", model: "sonnet", thinking: "xhigh",
+      provenance: { harness: "saved-user", model: "agent-default", thinking: "agent-default" },
+    } });
+    expect(fixture.claudeHarness.requests[0]).toMatchObject({ model: "sonnet", thinkingLevel: "xhigh" });
+  });
+
+  it("keeps catalogue and spawn resolution aligned while applying overrides per field", async () => {
+    const fixture = await claudeDefaultsFixture({
+      frontmatter: ["harness: pi", "model: profile-model", "effort: max", "thinking: high"],
+      userRouting: { harness: "pi", model: "user-model", thinking: "medium" },
+      projectRouting: { harness: "claude", model: "project-model" },
+    });
+
+    const catalog = catalogPayload(await execute(fixture.runtime, "subagent_agents", {}, fixture.ctx));
+    expect(catalog.agents[0]).toMatchObject({
+      harness: "claude", model: "project-model", thinking: "medium",
+    });
+    const saved = await execute(fixture.runtime, "subagent_spawn", {
+      agent: "claude-defaults", prompt: "Use saved values",
+    }, fixture.ctx);
+    expect(saved.details).toMatchObject({ route: {
+      harness: "claude", model: "project-model", thinking: "medium",
+      provenance: { harness: "saved-project", model: "saved-project", thinking: "saved-user" },
+    } });
+    expect(buildClaudeOptions(fixture.claudeHarness.requests[0]!, new AbortController()).effort).toBe("medium");
+
+    const explicit = await execute(fixture.runtime, "subagent_spawn", {
+      agent: "claude-defaults", prompt: "Use explicit values",
+      harness: "claude", model: "explicit-model", reasoning_effort: "minimal",
+    }, fixture.ctx);
+    expect(explicit.details).toMatchObject({ route: {
+      harness: "claude", model: "explicit-model", thinking: "minimal",
+      provenance: { harness: "explicit", model: "explicit", thinking: "explicit" },
+    } });
+    expect(buildClaudeOptions(fixture.claudeHarness.requests[1]!, new AbortController()).effort).toBe("low");
+  });
+
+  it("ignores untrusted project routing while retaining user and profile defaults", async () => {
+    const fixture = await claudeDefaultsFixture({
+      frontmatter: ["harness: claude", "model: profile-model", "effort: high"],
+      userRouting: { model: "user-model", thinking: "low" },
+      projectRouting: { harness: "pi", model: "project-model", thinking: "max" },
+      projectTrusted: false,
+    });
+
+    const catalog = catalogPayload(await execute(fixture.runtime, "subagent_agents", {}, fixture.ctx));
+    expect(catalog.agents[0]).toMatchObject({
+      harness: "claude", model: "user-model", thinking: "low",
+    });
+  });
+
+  it("surfaces invalid effort warnings in the catalogue and falls back to profile thinking", async () => {
+    const fixture = await claudeDefaultsFixture({
+      frontmatter: ["harness: claude", "thinking: xhigh", "effort: turbo"],
+    });
+
+    const catalog = catalogPayload(await execute(fixture.runtime, "subagent_agents", {}, fixture.ctx));
+    expect(catalog.agents[0]).toMatchObject({ harness: "claude", thinking: "xhigh" });
+    expect(catalog.warnings).toEqual([
+      expect.stringContaining("ignored invalid Claude effort default"),
+    ]);
+    const spawned = await execute(fixture.runtime, "subagent_spawn", {
+      agent: "claude-defaults", prompt: "Use fallback thinking",
+    }, fixture.ctx);
+    expect(spawned.details).toMatchObject({ route: { harness: "claude", thinking: "xhigh" } });
+    expect(fixture.claudeHarness.requests[0]?.thinkingLevel).toBe("xhigh");
+  });
+
+  it("adapts a Claude profile model inherit without inheriting the Pi parent model", async () => {
+    const fixture = await claudeDefaultsFixture({
+      frontmatter: ["harness: claude", "model: inherit"],
+    });
+
+    const catalogResult = await execute(fixture.runtime, "subagent_agents", {}, fixture.ctx);
+    const catalog = catalogPayload(catalogResult);
+    expect(catalog.agents[0]).not.toHaveProperty("model");
+    expect((catalogResult.content[0] as { text: string }).text).not.toContain('"model"');
+    const spawned = await execute(fixture.runtime, "subagent_spawn", {
+      agent: "claude-defaults", prompt: "Use SDK model selection",
+    }, fixture.ctx);
+    expect(spawned.details).toMatchObject({ route: {
+      harness: "claude", model: undefined,
+      provenance: { model: "agent-default" },
+    } });
+    expect(fixture.claudeHarness.requests[0]?.model).toBeUndefined();
+    expect(fixture.ctx.model).toMatchObject({ provider: "fake", id: "parent" });
+  });
+});
 
 describe("spawn profile selection", () => {
   it.each([undefined, "Plan review", "gig-plan-reviewer"])(

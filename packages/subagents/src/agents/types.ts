@@ -18,6 +18,9 @@ export interface AgentSource {
   packageName?: string;
 }
 
+/** Claude effort levels accepted in agent defaults, independent of harness routing types. */
+export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
 /** Parsed agent definition (Markdown body + YAML frontmatter). */
 export interface AgentDefinition {
   name: string;
@@ -33,6 +36,7 @@ export interface AgentDefinition {
     harness?: HarnessKind;
     model?: string;
     thinking?: ThinkingLevel;
+    effort?: ClaudeEffort;
   };
   source: AgentSource;
 }
