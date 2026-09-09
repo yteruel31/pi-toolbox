@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RoutingEntry } from "../src/agents/types.js";
 import { assertBoundedRender } from "../src/tui/binding.js";
+import { ROUTING_EDITOR_FIELDS } from "../src/tui/routing-editor.js";
 import {
   formatRouteSummary,
   initialRoutingViewState,
@@ -239,6 +240,36 @@ describe("routing reducer", () => {
 });
 
 describe("routing entry and rendering contracts", () => {
+  it("formats resolved Claude effort and inherit with agent provenance", () => {
+    expect(formatRouteSummary({
+      harness: "claude",
+      model: "sonnet",
+      thinking: "high",
+      provenance: {
+        harness: "agent-default",
+        model: "agent-default",
+        thinking: "agent-default",
+      },
+    })).toBe("claude (agent) · sonnet (agent) · high (agent)");
+    expect(formatRouteSummary({
+      harness: "claude",
+      model: undefined,
+      thinking: undefined,
+      provenance: {
+        harness: "agent-default",
+        model: "agent-default",
+        thinking: "parent",
+      },
+    })).toBe("claude (agent) · inherit (agent) · inherit (parent)");
+  });
+
+  it("keeps thinking as the sole UI and saved-config effort field", () => {
+    expect(ROUTING_EDITOR_FIELDS).toEqual(["harness", "model", "thinking"]);
+    expect(normalizeRoutingEntry({
+      harness: "claude", model: "sonnet", thinking: "high", effort: "max",
+    })).toEqual({ harness: "claude", model: "sonnet", thinking: "high" });
+  });
+
   it("normalizes adapter-owned editor values before persistence", () => {
     expect(normalizeRoutingEntry({ model: "   " })).toEqual({});
     expect(

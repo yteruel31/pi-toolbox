@@ -56,6 +56,8 @@ Creates an isolated in-process Pi session with in-memory history. It inherits th
 
 Uses `@anthropic-ai/claude-agent-sdk` in headless streaming-input mode. It applies the requested cwd, model/alias, effort, and named-agent system prompt. The `fable` alias resolves to Claude Fable 5.1; use `claude-fable-5-1` to pin that release explicitly. While active, continuation messages are written to the same query's `AsyncIterable<SDKUserMessage>` input. Claude settings sources are disabled for isolation; `CLAUDE.md`, hooks, MCP configuration, and user/project Claude settings are therefore not loaded into the child. Authentication comes from the local Claude CLI or `ANTHROPIC_API_KEY`.
 
+Claude's effective effort is resolved through the existing `thinking` route field: `off` disables thinking, `minimal` maps to SDK effort `low`, and `low`, `medium`, `high`, `xhigh`, and `max` map one-to-one. A model exposed by SDK discovery does not guarantee that every effort level is accepted for that model. Toolbox passes the selected value through without availability inference, clamping, or retrying; an SDK rejection is reported as a run failure.
+
 ## Named agents
 
 Definitions are Markdown files under:
@@ -68,10 +70,11 @@ Definitions are Markdown files under:
 ---
 name: reviewer
 description: Review changes for correctness and regressions.
-harness: pi
-model: anthropic/claude-sonnet-4-5
-thinking: high
-tools: read, grep, find, ls
+harness: claude
+model: sonnet
+thinking: medium
+effort: high
+tools: Read, Grep, Glob
 skills:
   - code-review
   - security
@@ -79,6 +82,8 @@ skills:
 
 You are a strict reviewer. Return concrete findings with file references.
 ```
+
+Agent defaults are resolved per field. `harness`, `model`, and `thinking` apply to either backend. A Claude profile may additionally declare `effort` as one of `low`, `medium`, `high`, `xhigh`, or `max`; for a resolved Claude route it takes priority over that profile's legacy `thinking` value. It does not select the Claude harness by itself. Invalid effort is ignored non-fatally: the profile remains in `subagent_agents`, its catalogue warning is visible there, and resolution falls back to profile `thinking` when present. These frontmatter fields remain flat YAML scalars; the parser does not promise general YAML support beyond the documented `skills` sequences.
 
 The optional `tools` field is a comma-separated exact allowlist. Pi profiles use Pi tool names such as `read`, `grep`, `find`, and `ls`; Claude profiles use Claude Code names such as `Read`, `Grep`, and `Glob`. The selected harness exposes only the listed tools, while the Pi harness still applies its stricter built-in exclusions for orchestration and interactive-question tools. Invalid, empty, duplicate, or oversized tool lists invalidate that agent definition rather than silently broadening access.
 
@@ -112,15 +117,15 @@ Use `/subagents agents` to edit routes, or write:
   "version": 1,
   "agents": {
     "reviewer": {
-      "harness": "claude",
-      "model": "sonnet",
-      "thinking": "high"
+      "harness": "claude"
     }
   }
 }
 ```
 
-Precedence is explicit spawn arguments, project route, user route, agent defaults, then parent Pi defaults. Writes are atomic with private file/directory permissions. Invalid routing files must be explicitly backed up and reset from the routing UI before they can be replaced.
+Precedence is evaluated independently for harness, model, and thinking: explicit spawn argument > trusted project route > user route > agent default > parent Pi default. A saved `thinking` value therefore overrides profile `effort`; the spawn argument for the same field is `reasoning_effort`. `thinking` is the single routing UI/config field for both Pi thinking and Claude effort—there is no saved `effort` field. A harness-only route can select Claude while retaining model/effort defaults from the profile, without copying them into `subagents.json`.
+
+Parent defaults apply only to Pi. For Claude, unresolved model/thinking values are omitted so the SDK chooses its defaults. In particular, a Claude profile's `model: inherit` deliberately becomes an omitted model with `agent` provenance; it does not pass through or adapt the parent Pi model. Writes are atomic with private file/directory permissions. Untrusted project routes are ignored. Invalid routing files must be explicitly backed up and reset from the routing UI before they can be replaced.
 
 ## Commands
 
@@ -131,7 +136,7 @@ Precedence is explicit spawn arguments, project route, user route, agent default
 
 Both TUI panels use the full terminal and the active Pi theme. When a spawn supplies both a custom `name` and a named-agent profile, the parent transcript call heading, run lists, and details preserve the custom title and show its origin as `custom title (profile-name)`. With only a profile, the call heading shows `(profile-name)` without exposing the spawn prompt. Run list and detail metadata show the selected thinking level in parentheses after the model when available. In the run list, Enter opens the detailed structured transcript directly. Active Pi and Claude runs show a Pi `Editor`: Enter submits to that existing child, normal multiline/navigation editing stays available, PageUp/PageDown scroll the transcript, `r` refreshes with visible feedback, and `x` opens an in-panel cancellation confirmation (`y`/Enter confirms; `n`/Escape keeps the run active). Outside that confirmation, Escape returns to the list. Settled runs remain inspectable but become read-only. The transcript distinguishes lifecycle, user, assistant, and tool events and retains bounded tool input/output with omission accounting.
 
-A persistent status below Pi's main editor summarizes running, completed, and errored runs and advertises `/subagents`; it remains after settlement until the session has no run records. The same totals are broadcast on the `pi.events` channel `pi-toolbox:subagents:status` as `{ v: 1, counts: RunCounts }` (`running`, `completed`, `error`) whenever the status updates, including in headless sessions with no UI, with `{ v: 1, counts: null }` on shutdown so consumers discard stale counts. The routing panel supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape. Route editing stays inside the same panel: use arrows or Tab to select a field, left/right to change harness, model, or thinking, Enter to save, and Escape to return to the mapping list. The model selector uses Pi's scoped models (or all currently available Pi models when no scope is configured) and Claude Agent SDK `supportedModels()`. Selecting a Pi scoped model with a pinned thinking level applies that level to the thinking selector. An existing saved value missing from the current catalogue stays selectable and is marked as saved instead of being silently replaced.
+A persistent status below Pi's main editor summarizes running, completed, and errored runs and advertises `/subagents`; it remains after settlement until the session has no run records. The same totals are broadcast on the `pi.events` channel `pi-toolbox:subagents:status` as `{ v: 1, counts: RunCounts }` (`running`, `completed`, `error`) whenever the status updates, including in headless sessions with no UI, with `{ v: 1, counts: null }` on shutdown so consumers discard stale counts. The routing panel supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape. Route editing stays inside the same panel: use arrows or Tab to select a field, left/right to change harness, model, or thinking, Enter to save, and Escape to return to the mapping list. Thinking is the only effort control in the UI and saved configuration; it maps to Claude SDK effort as described above. The model selector uses Pi's scoped models (or all currently available Pi models when no scope is configured) and Claude Agent SDK `supportedModels()`. Selecting a Pi scoped model with a pinned thinking level applies that level to the thinking selector. An existing saved value missing from the current catalogue stays selectable and is marked as saved instead of being silently replaced.
 
 ## Development
 
