@@ -22,7 +22,7 @@ export class DefaultRouteResolver implements RouteResolver {
       };
 
     const thinking = resolveSavedField(input, "thinking")
-      ?? fromAgent(input, "thinking")
+      ?? fromAgentThinking(input, harnessValue)
       ?? {
         value: harnessValue === "pi" ? input.parent.thinking : undefined,
         provenance: "parent" as const,
@@ -30,7 +30,12 @@ export class DefaultRouteResolver implements RouteResolver {
 
     return {
       harness: harnessValue,
-      model: model.value,
+      model:
+        harnessValue === "claude" &&
+        model.provenance === "agent-default" &&
+        model.value === "inherit"
+          ? undefined
+          : model.value,
       thinking: thinking.value,
       provenance: {
         harness: harness.provenance,
@@ -72,6 +77,19 @@ function fromAgent<K extends RouteField>(
   field: K,
 ): FieldResolution<K> | undefined {
   return fromEntry(input.agent?.defaults, field, "agent-default");
+}
+
+function fromAgentThinking(
+  input: RouteResolutionInput,
+  harness: "pi" | "claude",
+): FieldResolution<"thinking"> | undefined {
+  if (harness === "claude" && input.agent?.defaults.effort !== undefined) {
+    return {
+      value: input.agent.defaults.effort,
+      provenance: "agent-default",
+    };
+  }
+  return fromAgent(input, "thinking");
 }
 
 function fromEntry<K extends RouteField>(

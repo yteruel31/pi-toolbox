@@ -15,6 +15,8 @@ import {
   normalizeClaudeModel,
   type ClaudeQueryFactory,
 } from "../src/harnesses/claude.js";
+import { DefaultRouteResolver } from "../src/agents/route-resolver.js";
+import type { AgentDefinition, ClaudeEffort } from "../src/agents/types.js";
 import { SubagentError } from "../src/shared/errors.js";
 import {
   assistantText,
@@ -33,6 +35,16 @@ const SDK_INSTALLED = await import("@anthropic-ai/claude-agent-sdk").then(
   () => true,
   () => false,
 );
+
+function claudeAgent(defaults: AgentDefinition["defaults"]): AgentDefinition {
+  return {
+    name: "claude-worker",
+    description: "Test Claude routing.",
+    systemPrompt: "Test carefully.",
+    defaults,
+    source: { scope: "package", path: "/package/agents/claude-worker.md" },
+  };
+}
 
 describe("claude model catalogue", () => {
   it("returns every valid SDK model and closes the temporary query", async () => {
@@ -232,27 +244,68 @@ describe("claude harness option wiring", () => {
     expect(fake.calls[0]!.options!.thinking).toEqual({ type: "disabled" });
   });
 
-  it("builds options assignable to the installed SDK public Options type", () => {
-    const { request } = makeRequest({
-      systemPrompt: "Review carefully.",
-      workingDir: "/tmp/project",
-      model: "fable",
-      thinkingLevel: "xhigh",
-    });
-    const options: SdkOptions = buildClaudeOptions(
-      request,
-      new AbortController(),
-    );
+  it.each(["low", "medium", "high", "xhigh", "max"] as const)(
+    "wires the resolved Claude agent effort %s exactly into SDK Options",
+    (effort: ClaudeEffort) => {
+      const route = new DefaultRouteResolver().resolve({
+        explicit: {},
+        agent: claudeAgent({ harness: "claude", effort }),
+        parent: { model: "parent-model", thinking: "off" },
+      });
+      const { request } = makeRequest({
+        systemPrompt: "Review carefully.",
+        workingDir: "/tmp/project",
+        model: route.model,
+        thinkingLevel: route.thinking,
+      });
+      const options: SdkOptions = buildClaudeOptions(request, new AbortController());
 
-    expect(options).toMatchObject({
-      cwd: "/tmp/project",
-      model: "fable",
-      effort: "xhigh",
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      settingSources: [],
-      persistSession: false,
+      expect(options).toMatchObject({
+        cwd: "/tmp/project",
+        effort,
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        settingSources: [],
+        persistSession: false,
+      });
+      expect(Object.prototype.hasOwnProperty.call(options, "model")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(options, "thinking")).toBe(false);
+    },
+  );
+
+  it("omits model, effort, and thinking properties for Claude inherit defaults", () => {
+    const route = new DefaultRouteResolver().resolve({
+      explicit: {},
+      agent: claudeAgent({ harness: "claude", model: "inherit" }),
+      parent: { model: "parent-model", thinking: "high" },
     });
+    const { request } = makeRequest({
+      model: route.model,
+      thinkingLevel: route.thinking,
+    });
+    const options: SdkOptions = buildClaudeOptions(request, new AbortController());
+
+    expect(route).toMatchObject({ model: undefined, thinking: undefined });
+    expect(Object.prototype.hasOwnProperty.call(options, "model")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(options, "effort")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(options, "thinking")).toBe(false);
+  });
+
+  it.each([
+    ["off", undefined, { type: "disabled" }],
+    ["minimal", "low", undefined],
+  ] as const)("preserves the configured %s override", (level, effort, thinking) => {
+    const route = new DefaultRouteResolver().resolve({
+      explicit: { harness: "claude", thinking: level },
+      agent: claudeAgent({ effort: "max" }),
+      parent: { model: "parent-model", thinking: "high" },
+    });
+    const { request } = makeRequest({ model: route.model, thinkingLevel: route.thinking });
+    const options = buildClaudeOptions(request, new AbortController());
+
+    expect(options.effort).toBe(effort);
+    expect(options.thinking).toEqual(thinking);
+    expect(Object.prototype.hasOwnProperty.call(options, "model")).toBe(false);
   });
 });
 
@@ -713,6 +766,31 @@ describe("claude harness failure mapping", () => {
     expect(error.message).toContain("second line");
     expect(error.message).toContain("third");
     expect(error.message).not.toContain("must not be included");
+  });
+
+  it("surfaces a bounded SDK rejection without retrying or changing effort", async () => {
+    const fake = makeFakeQuery([
+      { failWith: new Error(`unsupported effort max ${"x".repeat(2_000)}`) },
+    ]);
+    const harness = new ClaudeHarness({ queryFactory: fake.factory });
+    const route = new DefaultRouteResolver().resolve({
+      explicit: {},
+      agent: claudeAgent({ harness: "claude", effort: "max" }),
+      parent: { model: "parent-model", thinking: "high" },
+    });
+    const { request } = makeRequest({ model: route.model, thinkingLevel: route.thinking });
+
+    const error = await harness.run(request).then(
+      () => {
+        throw new Error("expected rejection");
+      },
+      (err: unknown) => err as SubagentError,
+    );
+
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]!.options!.effort).toBe("max");
+    expect(error.code).toBe("claude_harness_failed");
+    expect(error.message.length).toBeLessThanOrEqual(500);
   });
 
   it("maps executable and authentication failures thrown by the iterator", async () => {
