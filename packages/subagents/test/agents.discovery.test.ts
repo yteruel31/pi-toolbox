@@ -99,7 +99,7 @@ describe("FileAgentDiscovery", () => {
       "reviewer",
       "project",
       "Project prompt.",
-      "harness: claude\nmodel: opus\nthinking: high\ntools: Read, Grep, Glob\nskills:\n  - code-review\n  - security:review\n",
+      "harness: claude\nmodel: opus\nthinking: high\neffort: xhigh\ntools: Read, Grep, Glob\nskills:\n  - code-review\n  - security:review\n",
     );
 
     const discovery = new FileAgentDiscovery({
@@ -125,7 +125,7 @@ describe("FileAgentDiscovery", () => {
       systemPrompt: "Project prompt.",
       tools: ["Read", "Grep", "Glob"],
       skills: ["code-review", "security:review"],
-      defaults: { harness: "claude", model: "opus", thinking: "high" },
+      defaults: { harness: "claude", model: "opus", thinking: "high", effort: "xhigh" },
       source: { scope: "project" },
     });
     expect(trusted.warnings.some((warning) =>
@@ -269,6 +269,139 @@ describe("FileAgentDiscovery", () => {
       "code-review",
       "apps/web:deploy",
     ]);
+  });
+
+  it("reads each quoted Claude effort default and leaves absent or nested defaults unchanged", async () => {
+    const root = await workspace();
+    const agentDir = join(root, "agent-home");
+    const base = join(agentDir, "agents");
+    const efforts = ["low", "medium", "high", "xhigh", "max"] as const;
+
+    for (const effort of efforts) {
+      await agentFile(
+        join(base, `${effort}.md`),
+        effort,
+        `${effort} effort`,
+        "body",
+        `effort: '${effort}'\n`,
+      );
+    }
+    await agentFile(join(base, "absent.md"), "absent", "no effort");
+    await agentFile(
+      join(base, "nested-defaults.md"),
+      "nested-defaults",
+      "legacy nested defaults",
+      "body",
+      "defaults:\n  effort: high\n",
+    );
+
+    const result = await new FileAgentDiscovery({ agentDir }).discover({
+      cwd: join(root, "project"),
+      projectTrusted: false,
+    });
+
+    expect(result.warnings).toEqual([]);
+    for (const effort of efforts) {
+      expect(result.agents.find((agent) => agent.name === effort)?.defaults.effort).toBe(effort);
+    }
+    expect(result.agents.find((agent) => agent.name === "absent")?.defaults).toEqual({});
+    expect(result.agents.find((agent) => agent.name === "nested-defaults")?.defaults).toEqual({});
+  });
+
+  it("warns non-fatally for invalid effort forms while preserving profiles and other defaults", async () => {
+    const root = await workspace();
+    const agentDir = join(root, "agent-home");
+    const base = join(agentDir, "agents");
+    const invalid = [
+      ["flow-list", "effort: [low, high]\n"],
+      ["block-list", "effort:\n  - high\n"],
+      ["nested", "effort:\n  level: high\n"],
+      ["numeric", "effort: 7\n"],
+      ["off", "effort: off\n"],
+      ["minimal", "effort: minimal\n"],
+      ["empty", "effort:   \n"],
+      ["turbo", "effort: turbo\n"],
+    ] as const;
+
+    for (const [name, effortFrontmatter] of invalid) {
+      await agentFile(
+        join(base, `${name}.md`),
+        name,
+        "profile remains usable",
+        "body",
+        `thinking: high\n${effortFrontmatter}`,
+      );
+    }
+
+    const result = await new FileAgentDiscovery({ agentDir }).discover({
+      cwd: join(root, "project"),
+      projectTrusted: false,
+    });
+
+    expect(result.agents.map((agent) => agent.name)).toHaveLength(invalid.length);
+    for (const [name] of invalid) {
+      expect(result.agents.find((agent) => agent.name === name)?.defaults).toEqual({ thinking: "high" });
+      expect(result.warnings.some((warning) =>
+        warning.includes(`${name}.md`) && warning.includes("invalid Claude effort default")
+      )).toBe(true);
+    }
+    expect(result.warnings.join("\n")).not.toContain("turbo\n");
+  });
+
+  it("uses only the last duplicate effort declaration for value and diagnostics", async () => {
+    const root = await workspace();
+    const agentDir = join(root, "agent-home");
+    const base = join(agentDir, "agents");
+    await agentFile(
+      join(base, "valid-last.md"),
+      "valid-last",
+      "valid last",
+      "body",
+      "effort: turbo\neffort: max\n",
+    );
+    await agentFile(
+      join(base, "invalid-last.md"),
+      "invalid-last",
+      "invalid last",
+      "body",
+      "effort: low\neffort: off\n",
+    );
+
+    const result = await new FileAgentDiscovery({ agentDir }).discover({
+      cwd: join(root, "project"),
+      projectTrusted: false,
+    });
+
+    expect(result.agents.find((agent) => agent.name === "valid-last")?.defaults.effort).toBe("max");
+    expect(result.agents.find((agent) => agent.name === "invalid-last")?.defaults.effort).toBeUndefined();
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("invalid-last.md");
+  });
+
+  it("bounds invalid effort diagnostics without dropping profiles", async () => {
+    const root = await workspace();
+    const agentDir = join(root, "agent-home");
+    const base = join(agentDir, "agents");
+    const count = MAX_WARNINGS + 2;
+    for (let index = 0; index < count; index++) {
+      await agentFile(
+        join(base, `invalid-effort-${index}.md`),
+        `invalid-effort-${index}`,
+        "retained",
+        "body",
+        "effort: turbo\n",
+      );
+    }
+
+    const result = await new FileAgentDiscovery({ agentDir }).discover({
+      cwd: join(root, "project"),
+      projectTrusted: false,
+    });
+
+    expect(result.agents).toHaveLength(count);
+    expect(result.warnings).toHaveLength(MAX_WARNINGS + 1);
+    expect(result.warnings.at(-1)).toMatch(/additional warnings suppressed/);
+    expect(result.warnings.join("\n")).not.toContain("turbo");
   });
 
   it("accepts tool allowlists exactly at the count and name-length limits", async () => {
