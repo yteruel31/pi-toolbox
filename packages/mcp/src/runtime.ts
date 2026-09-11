@@ -157,7 +157,7 @@ export class McpRuntime {
 		if (manager) {
 			this.manager = manager;
 			this.coordinator = coordinator;
-			this.gatewayConfigured = !!coordinator;
+			this.gatewayConfigured = config.settings.gateway !== undefined;
 			this.apps = apps ?? new McpAppController(manager);
 			this.publisher = options.publisher;
 			return;
@@ -194,7 +194,7 @@ export class McpRuntime {
 			onChange: (current) => { void activePublisher?.reconcile(current); },
 		});
 		if (!publication) {
-			this.coordinator = undefined;
+			this.coordinator = new OAuthCoordinator(this.manager, parsed.servers, baseSettings, undefined, undefined, store);
 			this.publisher = options.publisher;
 			activePublisher = this.publisher;
 			return;
@@ -271,11 +271,11 @@ export class McpRuntime {
 				const result = await this.manager.getPrompt(input.server, input.args.name, values as Record<string, string>, signal);
 				return this.renderBlocks(result.messages.map((message) => message.content), { server: input.server, action: input.action, prompt: utf8Prefix(input.args.name, 500) }, "MCP prompt returned no messages.");
 			}
-			if (!this.coordinator) throw new Error(this.gatewayConfigured ? "MCP OAuth is unavailable" : "MCP gateway is not configured");
+			if (!this.coordinator) throw new Error("MCP OAuth is unavailable");
 			if (input.action === "auth-start") {
 				if (input.args !== undefined) throw new Error("auth-start does not accept args");
 				const result = await this.coordinator.begin(input.server);
-				return this.text(`Open this authorization URL (it is not opened automatically):\n${result.authorizationUrl}`, { state: "authorization-required", server: input.server, authorizationUrl: result.authorizationUrl });
+				return this.text(`Open this authorization URL (it is not opened automatically):\n${result.authorizationUrl}\nIf the browser callback cannot reach Pi, copy the complete redirect URL from the address bar, even if the page fails to load. Paste it in /mcp > Servers with c (keeps the code out of chat), or provide it here for mcp auth-complete with args.redirectUrl. No gateway is required.`, { state: "authorization-required", server: input.server, authorizationUrl: result.authorizationUrl });
 			}
 			if (!input.args || Object.keys(input.args).length !== 1 || typeof input.args.redirectUrl !== "string") throw new Error("auth-complete requires only args.redirectUrl");
 			await this.coordinator.complete(input.server, input.args.redirectUrl);
@@ -421,7 +421,7 @@ export function registerMcpTool(pi: ExtensionAPI, getRuntime: () => McpRuntime |
 	pi.registerTool({
 		name: "mcp",
 		label: "MCP",
-		description: "Inspect, search, connect to, and call MCP servers. Gateway actions: gateway-status (safe configuration state, no network), gateway-validate (external HTTPS challenge), gateway-configure (args: {mode: 'tailscale'} or {mode: 'custom', externalUrl: HTTPS base URL, listenAddress: IP}), gateway-deactivate (no args). Gateway mutations require interactive user confirmation, reuse lifecycle/rollback/locked persistence, and never configure a custom proxy. Agree on proxy, domain and public/private access before infrastructure changes. Never write gateway JSON directly. Diagnostics omit secrets and raw errors.",
+		description: "Inspect, search, connect to, and call MCP servers. Server configuration and OAuth do not require a gateway. Use auth-start with server, then auth-complete with server and args.redirectUrl if the user supplies the complete browser redirect URL; /mcp also offers private callback entry with c. Gateway actions: gateway-status (safe configuration state, no network), gateway-validate (external HTTPS challenge), gateway-configure (args: {mode: 'tailscale'} or {mode: 'custom', externalUrl: HTTPS base URL, listenAddress: IP}), gateway-deactivate (no args). Gateway mutations require interactive user confirmation, reuse lifecycle/rollback/locked persistence, and never configure a custom proxy. Agree on proxy, domain and public/private access before infrastructure changes. Never write gateway JSON directly. Diagnostics omit secrets and raw errors.",
 		parameters: Params,
 		async execute(_id, input, signal, _onUpdate, context) {
 			if (input.action?.startsWith("gateway-")) {

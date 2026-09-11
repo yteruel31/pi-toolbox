@@ -100,7 +100,7 @@ test("invalid-server feedback strips terminal control sequences from configured 
 	assert.doesNotMatch(output, /\u001b\]52|\u0007|\u202e/);
 });
 
-test("unconfigured OAuth offers a non-nested gateway panel handoff", () => {
+test("OAuth works without a gateway and still offers optional gateway setup", async () => {
 	let result: McpPanelResult | null | undefined;
 	let authCalls = 0;
 	const subject = new McpPanel({
@@ -109,10 +109,22 @@ test("unconfigured OAuth offers a non-nested gateway panel handoff", () => {
 		onAuthenticate: async () => { authCalls++; return "copied"; },
 	});
 	subject.handleInput("a");
-	assert.equal(authCalls, 0);
-	assert.match(subject.render(100).join("\n"), /Gateway not configured; press g/);
+	assert.equal(authCalls, 1);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.match(subject.render(100).join("\n"), /copied/);
 	subject.handleInput("g");
 	assert.deepEqual(result, { openGateway: true });
+});
+
+test("callback entry closes the panel and refuses to discard staged controls", () => {
+	const clean = panel();
+	clean.subject.handleInput("c");
+	assert.deepEqual(clean.result(), { action: "auth-complete", server: "linear" });
+	const dirty = panel();
+	dirty.subject.handleInput(" ");
+	dirty.subject.handleInput("c");
+	assert.equal(dirty.result(), undefined);
+	assert.match(dirty.subject.render(150).join("\n"), /Save server changes/);
 });
 
 test("panel strips terminal control sequences from remote metadata", () => {

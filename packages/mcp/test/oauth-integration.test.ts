@@ -254,6 +254,62 @@ test("OAuth DCR/PKCE completes through the real gateway and stored tokens reconn
 	}
 });
 
+for (const completion of ["manual", "loopback"] as const) {
+	test(`OAuth DCR/PKCE works without a gateway through ${completion} completion`, async () => {
+		const fixture = await oauthMcpFixture();
+		const store = new OAuthStore(await temporaryDirectory("pi-oauth-local-"));
+		const config: HttpServerConfig = { name: "protected", url: new URL(`${fixture.origin}/mcp`), headers: {} };
+		const servers = new Map([[config.name, config]]);
+		const manager = new McpServerManager(servers.values(), () => StoredOAuthProvider.passive(config.url.href, store));
+		const coordinator = new OAuthCoordinator(manager, servers, DEFAULT_UI_SETTINGS, undefined, undefined, store);
+		const runtime = new McpRuntime({ mcpServers: {}, settings: { ui: DEFAULT_UI_SETTINGS }, diagnostics: [] }, manager, coordinator);
+		try {
+			assert.equal(runtime.gatewayConfigured, false);
+			const started = await runtime.execute({ action: "auth-start", server: "protected" });
+			assert.match(JSON.stringify(started.content), /No gateway is required/);
+			const authorization = new URL(String(started.details.authorizationUrl));
+			const redirect = new URL(authorization.searchParams.get("redirect_uri")!);
+			assert.equal(redirect.hostname, "127.0.0.1");
+			assert.equal(redirect.protocol, "http:");
+			assert.equal(redirect.href, fixture.registeredRedirect());
+			fixture.setChallenge(authorization.searchParams.get("code_challenge")!);
+			const state = authorization.searchParams.get("state")!;
+			const callback = `${redirect.href}?code=valid-code&state=${state}`;
+			// Random local requests must neither exchange a token nor consume the attempt.
+			assert.equal((await get(Number(redirect.port), "/oauth/callback?code=valid-code&state=wrong")).status, 400);
+			assert.equal((await get(Number(redirect.port), "/unrelated")).status, 404);
+			assert.equal(fixture.authorizationExchanges(), 0);
+			if (completion === "manual") {
+				const result = await runtime.execute({ action: "auth-complete", server: "protected", args: { redirectUrl: callback } });
+				assert.equal(result.details.state, "connected");
+				assert.doesNotMatch(JSON.stringify(result), /valid-code/);
+			} else {
+				const result = await get(Number(redirect.port), new URL(callback).pathname + new URL(callback).search);
+				assert.equal(result.status, 200);
+				assert.equal(result.headers["cache-control"], "no-store");
+			}
+			assert.equal(fixture.authorizationExchanges(), 1);
+			await waitUntil(async () => (await store.read(config.url.href))?.verifier === undefined);
+			assert.equal((await store.read(config.url.href))?.state, undefined);
+			assert.match(JSON.stringify(await runtime.execute({ server: "protected", tool: "protected_echo" })), /authorized/);
+			await coordinator.close();
+			await assert.rejects(get(Number(redirect.port), "/oauth/callback"));
+			await manager.close();
+			const fresh = new McpServerManager(servers.values(), () => StoredOAuthProvider.passive(config.url.href, store));
+			try {
+				await fresh.connect("protected");
+				assert.equal(fixture.registrations(), 1);
+				fixture.rejectFirstAccess();
+				await fresh.connect("protected", true);
+				assert.equal(fixture.refreshes(), 1);
+			} finally { await fresh.close(); }
+		} finally {
+			await runtime.close();
+			await fixture.close();
+		}
+	});
+}
+
 interface FakeAuthHarness {
 	coordinator: OAuthCoordinator;
 	redirect: string;
@@ -263,7 +319,7 @@ interface FakeAuthHarness {
 }
 
 async function fakeAuthHarness(
-	routeState: "matching" | "absent" | "conflicting" = "matching",
+	routeState: "matching" | "absent" | "conflicting" | "local" = "matching",
 	options: { heartbeatMs?: number; timeoutMs?: number; finishError?: Error; cancelError?: Error } = {},
 ): Promise<FakeAuthHarness> {
 	const settings = { ...DEFAULT_UI_SETTINGS };
@@ -293,8 +349,8 @@ async function fakeAuthHarness(
 	};
 	const exposure = { async verify() { if (routeState !== "matching") throw new Error("MCP gateway is not configured"); } };
 	const store = new OAuthStore(await temporaryDirectory("pi-oauth-validation-"));
-	const coordinator = new OAuthCoordinator(manager, servers, settings, gateway, exposure, store, { timeoutMs: 5_000, ...options });
-	const started = routeState === "matching" ? await coordinator.begin("server") : undefined;
+	const coordinator = new OAuthCoordinator(manager, servers, settings, routeState === "local" ? undefined : gateway, routeState === "local" ? undefined : exposure, store, { timeoutMs: 5_000, ...options });
+	const started = routeState === "matching" || routeState === "local" ? await coordinator.begin("server") : undefined;
 	return {
 		coordinator,
 		redirect: started ? new URL(started.authorizationUrl).searchParams.get("redirect_uri")! : "",
@@ -361,6 +417,25 @@ test("OAuth attempt timeout unregisters its callback lease", async () => {
 	await waitUntil(() => harness.unregistered === 1);
 	await assert.rejects(harness.coordinator.complete("server", `${harness.redirect}?code=ok&state=${harness.state}`), /No active/);
 	await harness.coordinator.close();
+});
+
+test("local OAuth validates pasted callbacks and releases its listener on timeout and shutdown", async () => {
+	for (const mode of ["invalid-state", "wrong-origin", "duplicate-code", "timeout", "shutdown"] as const) {
+		const harness = await fakeAuthHarness("local", { timeoutMs: mode === "timeout" ? 30 : 5_000 });
+		try {
+			if (mode === "timeout") {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				await assert.rejects(harness.coordinator.complete("server", `${harness.redirect}?code=ok&state=${harness.state}`), /No active/);
+			} else if (mode === "shutdown") await harness.coordinator.close();
+			else {
+				const callback = mode === "wrong-origin" ? harness.redirect.replace("127.0.0.1", "localhost") : harness.redirect;
+				await assert.rejects(harness.coordinator.complete("server", `${callback}?code=ok&state=${mode === "invalid-state" ? "wrong" : harness.state}${mode === "duplicate-code" ? "&code=extra" : ""}`), /Invalid|validation/);
+			}
+			assert.deepEqual(harness.finished, []);
+			assert.equal(harness.unregistered, 0);
+			await assert.rejects(get(Number(new URL(harness.redirect).port), "/oauth/callback"));
+		} finally { await harness.coordinator.close(); }
+	}
 });
 
 test("OAuth start refuses unverified gateway exposure without gateway registration", async () => {

@@ -7,7 +7,7 @@ interface ServerRow { kind: "server"; server: McpStatusServer; }
 interface ToolRow { kind: "tool"; server: McpStatusServer; tool: McpStatusTool; }
 type Row = ServerRow | ToolRow;
 
-export type McpPanelResult = { updates: Record<string, McpServerControls> } | { openGateway: true };
+export type McpPanelResult = { updates: Record<string, McpServerControls> } | { openGateway: true } | { action: "auth-complete"; server: string };
 export interface McpPanelOptions {
 	theme: Theme;
 	servers: McpStatusServer[];
@@ -161,11 +161,6 @@ export class McpPanel implements Component {
 			this.redraw();
 			return;
 		}
-		if (kind === "auth" && this.options.gatewayConfigured === false) {
-			this.message = { text: "Gateway not configured; press g to configure it.", error: true };
-			this.redraw();
-			return;
-		}
 		if (kind === "auth" && server.transport === "stdio") {
 			this.message = { text: "OAuth is unavailable for stdio servers.", error: true };
 			this.redraw();
@@ -188,6 +183,16 @@ export class McpPanel implements Component {
 			this.busy = undefined;
 			this.redraw();
 		}
+	}
+	private completeAuth(): void {
+		const server = this.selectedServer();
+		if (!server || this.busy || this.disabled.get(server.name) || server.state === "invalid" || server.transport === "stdio") return;
+		if (this.hasChanges()) {
+			this.message = { text: "Save server changes with ctrl+s, or esc to discard, before pasting an OAuth callback.", error: true };
+			this.redraw();
+			return;
+		}
+		this.finish({ action: "auth-complete", server: server.name });
 	}
 	save(): void {
 		if (this.closed) return;
@@ -222,6 +227,7 @@ export class McpPanel implements Component {
 		else if (data === "d") this.toggleDisabled();
 		else if (data === "r") { void this.action("reconnect"); return; }
 		else if (data === "a") { void this.action("auth"); return; }
+		else if (data === "c") { this.completeAuth(); return; }
 		else if (data === "g") {
 			if (this.options.onOpenGateway) this.options.onOpenGateway();
 			else this.finish({ openGateway: true });
@@ -270,7 +276,7 @@ export class McpPanel implements Component {
 		if (this.message) output.push(line(theme.fg(this.message.error ? "error" : "accent", terminalText(this.message.text))));
 		if (!embedded) {
 			output.push(line(theme.fg("borderMuted", "─".repeat(usable))));
-			output.push(line(theme.fg("dim", "↑↓ navigate  enter expand  space tools  d toggle  r reconnect  a auth  g gateway  / search  ctrl+s save  esc cancel")));
+			output.push(line(theme.fg("dim", "↑↓ navigate  enter expand  space tools  d toggle  r reconnect  a auth  c callback  g gateway  / search  ctrl+s save  esc cancel")));
 		}
 		return output.slice(0, maxRows);
 	}
