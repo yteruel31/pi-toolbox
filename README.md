@@ -76,6 +76,10 @@ pi install npm:@yteruel31/pi-diagram
 
 Create, edit, and deterministically review structured box-and-arrow diagrams from Pi, inspect inline or annotated PNG previews, and share a capability-scoped live viewer through localhost, Tailscale Serve, or a user-owned HTTPS reverse proxy.
 
+### [`@yteruel31/pi-web-access`](./packages/web-access)
+
+Five tools for web search, content fetching, bounded retrieval, source checking, and native background deep research. Search uses Gemini, Brave or OpenAI; extraction supports local PDF text, isolated Chromium, public GitHub clones and video frames. Research reports stay in local Markdown files. See the [configuration, system dependencies and explicit migration instructions](./packages/web-access/README.md) before replacing an existing web extension. The package is not yet published to npm.
+
 ### [`@yteruel31/pi-learning`](./packages/pi-learning)
 
 ```bash
