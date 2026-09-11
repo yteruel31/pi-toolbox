@@ -8,7 +8,7 @@ This document compares this Phase-2 package with the current local `pi-mcp-adapt
 |---|---|---|
 | Configuration sources | Merges `~/.config/mcp/mcp.json`, then `~/.pi/agent/mcp.json`, by server name; Pi control-only entries overlay `disabled`/`directTools` without copying credentials | **Supported, design difference:** deliberately limited, validated two-layer contract |
 | Transports | Streamable HTTP, explicit/automatic-fallback legacy SSE, and directly spawned stdio | **Supported** for the approved servers |
-| OAuth | Authorization code, DCR, PKCE, remote/manual callback, refresh, private-file persistence | **Supported, design difference:** explicit flow and gateway setup; no browser auto-open |
+| OAuth | Authorization code, DCR, PKCE, remote/manual callback, refresh, private-file persistence | **Supported, design difference:** explicit flow with loopback/private manual completion by default, optional gateway for remote callbacks; no browser auto-open |
 | Tools / direct tools | Lazy multiplexed `mcp` tool plus global/per-server bounded direct-tool selection | **Supported, design difference:** aliases and opt-in exposure are intentionally conservative |
 | Resources / prompts | Paginated list/read and list/get; resource templates discovered | **Supported** through qualified `mcp` actions |
 | Sampling / elicitation | Consent-gated text sampling and bounded form elicitation | **Supported subset:** URL elicitation is intentionally not advertised; advanced/non-text modes are deferred |

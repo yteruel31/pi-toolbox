@@ -21,13 +21,13 @@ interface LegacyOAuthTailscale {
 
 interface Attempt {
 	provider: StoredOAuthProvider;
-	session: Session;
+	session?: Session;
 	secret: string;
 	state: string;
 	redirect: string;
 	authorization: string;
 	server: ReturnType<typeof createServer>;
-	heartbeat: NodeJS.Timeout;
+	heartbeat?: NodeJS.Timeout;
 	timeout: NodeJS.Timeout;
 	completing?: Promise<void>;
 }
@@ -74,8 +74,8 @@ export class OAuthCoordinator {
 		private readonly manager: McpServerManager,
 		private readonly servers: Map<string, ServerConfig>,
 		private readonly settings: McpUiSettings,
-		private readonly gateway: OAuthGateway,
-		private readonly exposure: GatewayExposure | LegacyOAuthTailscale,
+		private readonly gateway?: OAuthGateway,
+		private readonly exposure?: GatewayExposure | LegacyOAuthTailscale,
 		private readonly store = new OAuthStore(),
 		options: OAuthCoordinatorOptions = {},
 	) {
@@ -107,8 +107,11 @@ export class OAuthCoordinator {
 		const config = this.servers.get(name);
 		if (!config) throw new Error(`Unknown MCP server: ${name}`);
 		if (config.transport === "stdio") throw new Error(`OAuth is unavailable for MCP server ${name}`);
-		if ("verify" in this.exposure) await this.exposure.verify();
-		else if ((await this.exposure.status(this.settings)).state !== "matching") throw new Error("MCP gateway is not configured");
+		if (this.gateway) {
+			if (!this.exposure) throw new Error("MCP gateway exposure is unavailable");
+			if ("verify" in this.exposure) await this.exposure.verify();
+			else if ((await this.exposure.status(this.settings)).state !== "matching") throw new Error("MCP gateway is not configured");
+		}
 		if (this.closed) throw new Error("OAuth coordinator is closed");
 
 		const secret = randomBytes(32).toString("base64url");
@@ -122,7 +125,7 @@ export class OAuthCoordinator {
 				return;
 			}
 			const suppliedSecret = request.headers[INTERNAL_SECRET_HEADER];
-			if (typeof suppliedSecret !== "string" || !equal(suppliedSecret, secret)) {
+			if (this.gateway && (typeof suppliedSecret !== "string" || !equal(suppliedSecret, secret))) {
 				this.page(response, 404, false);
 				return;
 			}
@@ -138,6 +141,9 @@ export class OAuthCoordinator {
 				return;
 			}
 			const externalCallback = `${attempt.redirect}${callback.search}`;
+			// Unauthenticated loopback traffic must not consume an active attempt.
+			try { this.callbackCode(attempt, externalCallback); }
+			catch { this.page(response, 400, false); return; }
 			void this.finish(name, externalCallback).then(
 				() => this.pageThenCleanup(name, response, 200, true),
 				() => this.pageThenCleanup(name, response, 400, false),
@@ -147,12 +153,12 @@ export class OAuthCoordinator {
 
 		try {
 			const port = (backend.address() as { port: number }).port;
-			const session = await this.gateway.register({
+			const session = await this.gateway?.register({
 				label: `OAuth: ${name}`,
 				backendOrigin: `http://127.0.0.1:${port}`,
 				backendSecret: secret,
 			});
-			const redirect = `${session.externalUrl}proxy/oauth/callback`;
+			const redirect = session ? `${session.externalUrl}proxy/oauth/callback` : `http://127.0.0.1:${port}/oauth/callback`;
 			const provider = new StoredOAuthProvider(config.url.href, this.store, redirect, state);
 			attempt = {
 				provider,
@@ -162,9 +168,9 @@ export class OAuthCoordinator {
 				redirect,
 				authorization: "",
 				server: backend,
-				heartbeat: setInterval(() => {
-					void this.gateway.heartbeat(session).catch(() => this.cleanup(name).catch(() => undefined));
-				}, this.heartbeatMs).unref(),
+				heartbeat: session ? setInterval(() => {
+					void this.gateway!.heartbeat(session).catch(() => this.cleanup(name).catch(() => undefined));
+				}, this.heartbeatMs).unref() : undefined,
 				timeout: setTimeout(() => {
 					void this.cleanup(name).catch(() => undefined);
 				}, this.timeoutMs).unref(),
@@ -190,31 +196,36 @@ export class OAuthCoordinator {
 		}
 	}
 
+	private callbackCode(attempt: Attempt, redirectUrl: string): string {
+		let callback: URL;
+		try {
+			callback = new URL(redirectUrl);
+		} catch {
+			throw new Error("Invalid OAuth callback URL");
+		}
+		if (redirectUrl.length > 4_096 || callback.username || callback.password || callback.hash ||
+			`${callback.origin}${callback.pathname}` !== attempt.redirect) {
+			throw new Error("Invalid OAuth callback URL");
+		}
+		for (const key of callback.searchParams.keys()) {
+			if (key !== "code" && key !== "state") throw new Error("Invalid OAuth callback parameters");
+		}
+		for (const key of ["code", "state"]) {
+			if (callback.searchParams.getAll(key).length !== 1) throw new Error("Invalid OAuth callback parameters");
+		}
+		const code = callback.searchParams.get("code");
+		if (!code || !equal(callback.searchParams.get("state") ?? "", attempt.state)) {
+			throw new Error("OAuth callback validation failed");
+		}
+		return code;
+	}
+
 	private async finish(name: string, redirectUrl: string): Promise<void> {
 		const attempt = this.attempts.get(name);
 		if (!attempt) throw new Error("No active OAuth attempt");
+		const code = this.callbackCode(attempt, redirectUrl);
 		if (attempt.completing) return attempt.completing;
 		attempt.completing = (async () => {
-			let callback: URL;
-			try {
-				callback = new URL(redirectUrl);
-			} catch {
-				throw new Error("Invalid OAuth callback URL");
-			}
-			if (redirectUrl.length > 4_096 || callback.username || callback.password || callback.hash ||
-				`${callback.origin}${callback.pathname}` !== attempt.redirect) {
-				throw new Error("Invalid OAuth callback URL");
-			}
-			for (const key of callback.searchParams.keys()) {
-				if (key !== "code" && key !== "state") throw new Error("Invalid OAuth callback parameters");
-			}
-			for (const key of ["code", "state"]) {
-				if (callback.searchParams.getAll(key).length !== 1) throw new Error("Invalid OAuth callback parameters");
-			}
-			const code = callback.searchParams.get("code");
-			if (!code || !equal(callback.searchParams.get("state") ?? "", attempt.state)) {
-				throw new Error("OAuth callback validation failed");
-			}
 			try {
 				await this.manager.finishAuth(name, code);
 			} catch {
@@ -258,7 +269,7 @@ export class OAuthCoordinator {
 		attempt.secret = "";
 		const cleanup = await Promise.allSettled([
 			this.manager.cancelAuth(name),
-			this.gateway.unregister(attempt.session),
+			attempt.session ? this.gateway!.unregister(attempt.session) : Promise.resolve(),
 			this.closeServer(attempt.server),
 			attempt.provider.clearFlowMaterial(),
 		]);

@@ -29,8 +29,46 @@ test("runtime enables publication only for explicit Tailscale and custom modes",
 		);
 		try {
 			assert.equal(runtime.gatewayConfigured, gateway !== undefined);
-			assert.equal(runtime.coordinator !== undefined, gateway !== undefined);
+			assert.ok(runtime.coordinator, "OAuth must be available independently of publication");
 			assert.equal(runtime.publisher, undefined);
+		} finally { await runtime.close(); }
+	}
+});
+
+test("/mcp accepts a private callback after closing the overlay without model messages", async () => {
+	for (const outcome of ["success", "error", "cancel"] as const) {
+		const runtime = new McpRuntime({ mcpServers: { example: { url: "https://example.test/mcp" } }, settings: { ui: { ...DEFAULT_UI_SETTINGS } }, diagnostics: [] });
+		let handler: any;
+		let overlays = 0;
+		let active = false;
+		let completions = 0;
+		const notices: string[] = [];
+		const secretUrl = "http://127.0.0.1:12345/oauth/callback?code=SECRET&state=STATE";
+		runtime.coordinator!.complete = async (server, url) => {
+			assert.equal(server, "example");
+			assert.equal(url, secretUrl);
+			completions++;
+			if (outcome === "error") throw new Error(secretUrl);
+		};
+		registerMcpCommand({
+			registerCommand(_name: string, definition: any) { handler = definition.handler; },
+			sendUserMessage() { assert.fail("Callback must not reach the model"); },
+		} as never, () => runtime, new GatewayConfiguration({ configLoader: () => runtime.config }));
+		try {
+			await handler("", { mode: "tui", ui: {
+				custom(factory: any) {
+					active = true;
+					return new Promise((resolve) => {
+						const panel = factory({ requestRender() {}, terminal: { rows: 30 } }, theme, {}, (result: unknown) => { active = false; resolve(result); });
+						panel.handleInput(overlays++ === 0 ? "c" : "\x1b");
+					});
+				},
+				async input() { assert.equal(active, false); return outcome === "cancel" ? undefined : ` ${secretUrl} `; },
+				notify(message: string) { notices.push(message); },
+			} });
+			assert.equal(completions, outcome === "cancel" ? 0 : 1);
+			assert.doesNotMatch(notices.join("\n"), /SECRET|STATE/);
+			if (outcome !== "cancel") assert.match(notices.join("\n"), outcome === "success" ? /Authentication complete/ : /could not complete/);
 		} finally { await runtime.close(); }
 	}
 });

@@ -23,11 +23,6 @@ Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/
   },
   "settings": {
     "directTools": false,
-    "gateway": {
-      "mode": "custom",
-      "externalUrl": "https://mcp.example.com/mcp-ui",
-      "listenAddress": "127.0.0.1"
-    },
     "ui": {
       "hostname": "auto",
       "httpsPort": 8443,
@@ -43,7 +38,7 @@ Configuration is read in order from `~/.config/mcp/mcp.json`, then `~/.pi/agent/
 }
 ```
 
-`settings.gateway` is a Pi-owned global setting accepted only from `~/.pi/agent/mcp.json`; this ensures panel deactivation cannot be overridden by a lower layer. It is optional and has no implicit default: until `/mcp` or the validated `mcp` gateway action saves a configuration, OAuth callbacks and remote App publication remain disabled. The JSON above documents the stored format, not a setup procedure; don't write gateway settings directly. A custom `externalUrl` must be HTTPS without credentials, query, or fragment; its optional path is preserved. `listenAddress` must be an explicit IP literal agreed during setup; prefer `127.0.0.1` when the proxy can reach loopback.
+`settings.gateway` is a Pi-owned global setting accepted only from `~/.pi/agent/mcp.json`; this ensures panel deactivation cannot be overridden by a lower layer. It is optional and has no implicit default: server configuration, tools, and OAuth work without it. Without a gateway, OAuth uses a loopback callback with manual URL completion for remote browsers. Only remote callbacks and App publication require gateway setup. The JSON above documents the stored format, not a setup procedure; don't write gateway settings directly. A custom `externalUrl` must be HTTPS without credentials, query, or fragment; its optional path is preserved. `listenAddress` must be an explicit IP literal agreed during setup; prefer `127.0.0.1` when the proxy can reach loopback.
 
 URL definitions may explicitly select `streamable-http` or legacy `sse`; when omitted, Pi tries Streamable HTTP and falls back to SSE only when the modern endpoint is unsupported. Adapter-compatible `auth: "oauth"` and `lifecycle: "lazy"` markers are accepted because they match this runtime's OAuth discovery and lazy lifecycle. Bearer authentication helpers and non-lazy lifecycle modes remain unsupported and fail closed rather than being silently ignored. Stdio definitions use `{ "command": "executable", "args": [], "env": {}, "cwd": "..." }`; they may also include the compatible `lifecycle: "lazy"` marker. Add `disabled: true` to keep a server configured while preventing connection, discovery, and direct-tool registration. Commands are spawned directly without a shell. Configured stdio commands execute trusted local code with the user's privileges; only configure commands you trust. Configuration values and child stderr are never exposed in model-visible errors. `idleTimeoutMs` must be between 15 seconds and 24 hours so capability heartbeats and bounded gateway operations can complete before lease expiry.
 
@@ -68,7 +63,7 @@ The footer uses the separate `mcp-status` slot to show a compact connected/enabl
 
 Alongside that slot, every status recomputation broadcasts the same aggregate on the `pi.events` channel `pi-toolbox:mcp:status` as `{ v: 1, counts: McpStatusCounts }` (`total`, `enabled`, `connected`, `authRequired`, `errors`, `disabled`). `{ v: 1, counts: null }` is emitted on session start before a new runtime exists and on shutdown, so consumers discard stale counts. This package keeps owning the `mcp-status` slot; the channel is advisory.
 
-Server keys: `↑/↓` select, `Enter` expand, `Space` toggle a direct tool, `d` enable/disable, `r` reconnect, `a` authenticate, `/` search, `Ctrl+S` save, and `Esc` cancel. `g` switches to Gateway. When publication is unconfigured, `a` explains the requirement. Save staged server edits or cancel them before leaving the modal for gateway configuration or agent assistance.
+Server keys: `↑/↓` select, `Enter` expand, `Space` toggle a direct tool, `d` enable/disable, `r` reconnect, `a` authenticate, `c` paste an OAuth callback URL, `/` search, `Ctrl+S` save, and `Esc` cancel. `g` switches to Gateway. Authentication works without gateway publication. `c` closes the modal before opening a private input field; its value isn't sent to the model. Save staged server edits or cancel them before leaving the modal for callback entry, gateway configuration, or agent assistance.
 
 ## Gateway setup (U2)
 
@@ -119,9 +114,13 @@ Form elicitation supports bounded strings, choices, numbers, integers, booleans,
 
 ## OAuth (U3b)
 
-Configure and externally validate a publication mode with `/mcp` > Gateway first. Start an interactive flow with `mcp({ action: "auth-start", server: "example" })`, then open or copy the returned authorization URL; Pi never opens a browser automatically. The remote callback normally completes the flow. If it cannot, copy the complete browser redirect URL into `mcp({ action: "auth-complete", server: "example", args: { redirectUrl: "…" } })`.
+No gateway is required. Select a server in `/mcp` and press `a` to copy its authorization URL, or start with `mcp({ action: "auth-start", server: "example" })`. Open the URL in your browser; Pi never opens it automatically.
 
-OAuth credentials, PKCE material, and dynamic client registration are sensitive. They are stored as mode `0600` JSON below the private mode `0700` directory `~/.pi/agent/pi-mcp/oauth/`. Delete that directory to revoke Pi's local saved credentials (and revoke the provider-side grant separately when needed). Each authorization attempt receives a dedicated short-lived callback-only gateway capability; it does not grant MCP tool access.
+Without gateway configuration, each attempt listens only on `127.0.0.1` at an ephemeral port. A browser on the Pi host can complete the callback automatically. When Pi runs over SSH or on another machine, the browser's loopback address points to your computer, not the Pi host. Copy the complete redirect URL from the browser address bar, including `code` and `state`, even if the page fails to load. In `/mcp`, select the same server and press `c` to paste it privately. You can also paste it in chat for the agent to call `mcp({ action: "auth-complete", server: "example", args: { redirectUrl: "…" } })`; unlike the private field, chat exposes the one-time code to the model and session history.
+
+Completion checks the exact redirect origin/path and state, then exchanges the code using PKCE. Attempts expire after ten minutes and release their listener on completion or shutdown. If a provider refuses loopback redirect URIs, use an explicitly configured gateway. Configured gateways retain externally verified remote callbacks, with manual URL completion available too; a broken configured gateway isn't silently bypassed.
+
+OAuth credentials, PKCE material, and dynamic client registration are sensitive. They are stored as mode `0600` JSON below the private mode `0700` directory `~/.pi/agent/pi-mcp/oauth/`. Delete that directory to revoke Pi's local saved credentials (and revoke the provider-side grant separately when needed). When a gateway is configured, each authorization attempt receives a dedicated short-lived callback-only gateway capability; it does not grant MCP tool access. Without a gateway, OAuth starts no gateway daemon, Tailscale process, or proxy.
 
 ## Local MCP App host (U4a)
 

@@ -7,7 +7,7 @@ import { GatewayPanel, type GatewayPanelResult } from "./gateway-panel.js";
 import { McpPanel, type McpPanelOptions } from "./mcp-panel.js";
 import { panelFrame } from "./panel-frame.js";
 
-export type ConfigurationPanelResult = { updates: Record<string, McpServerControls> } | GatewayPanelResult;
+export type ConfigurationPanelResult = { updates: Record<string, McpServerControls> } | GatewayPanelResult | { action: "auth-complete"; server: string };
 export type ConfigurationSection = "Servers" | "Gateway" | "Diagnostics";
 interface Options extends Omit<McpPanelOptions, "onDone"> {
 	theme: Theme;
@@ -111,7 +111,7 @@ export class ConfigurationPanel implements Component {
 		const footer = [theme.fg("dim", this.busy ? "Validating external HTTPS…" : "tab section · shift+tab back · esc close")];
 		if (this.section === "Servers") {
 			footer.push(theme.fg("dim", "↑↓ select · enter expand · space tools"));
-			footer.push(theme.fg("dim", "d toggle · r reconnect · a auth · / search"));
+			footer.push(theme.fg("dim", "d toggle · r reconnect · a auth · c callback · / search"));
 			footer.push(theme.fg("dim", "ctrl+s save servers · g gateway"));
 		} else if (this.section === "Gateway") {
 			footer.push(theme.fg("dim", "↑↓ select · enter choose · ctrl+s save servers"));

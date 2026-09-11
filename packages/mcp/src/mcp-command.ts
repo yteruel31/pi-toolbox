@@ -45,7 +45,7 @@ export function registerMcpCommand(
 							const result = await runtime.coordinator.begin(server);
 							const authorizationUrl = safeAuthorizationUrl(result.authorizationUrl);
 							await copyToClipboard(authorizationUrl);
-							return `Authorization URL copied for ${server}; open it in your browser.`;
+							return `Authorization URL copied for ${server}; open it, then press c to paste the redirect URL if needed.`;
 						},
 					});
 					unsubscribe = runtime.manager.onChange(() => panel.updateServers(mcpStatusSnapshot(runtime)));
@@ -54,6 +54,20 @@ export function registerMcpCommand(
 
 				if (!result) return;
 				if ("action" in result) {
+					if (result.action === "auth-complete") {
+						const redirectUrl = await ctx.ui.input("Paste the complete OAuth redirect URL (not sent to the model)", "http://127.0.0.1:…/oauth/callback?code=…&state=…");
+						if (redirectUrl?.trim()) {
+							try {
+								if (!runtime.coordinator) throw new Error("OAuth unavailable");
+								await runtime.coordinator.complete(result.server, redirectUrl.trim());
+								ctx.ui.notify(`Authentication complete for ${result.server}.`, "info");
+							} catch {
+								ctx.ui.notify("OAuth could not complete. Start authentication again with a and paste the full redirect URL before it expires.", "error");
+							}
+						}
+						section = "Servers";
+						continue;
+					}
 					if (result.action === "custom" || result.action === "repair") {
 						// Await custom() disposal before starting/queuing the current agent's conversation.
 						pi.sendUserMessage(gatewayAgentPrompt(result.action, gateway.latest()), { deliverAs: "followUp" });
