@@ -128,9 +128,13 @@ test("conflicts, malformed status, and binary failures never mutate", async () =
 		calls.push([...args]);
 		return { stdout: JSON.stringify(serveStatus("http://127.0.0.1:9")) };
 	});
-	await assert.rejects(conflict.setup(settings), /setup failed/);
-	await assert.rejects(conflict.remove(settings), /remove failed/);
+	await assert.rejects(conflict.setup(settings), { code: "route-conflict" });
+	await assert.rejects(conflict.remove(settings), { code: "route-conflict" });
 	assert.ok(calls.every((call) => call.join(" ") === "serve status --json"));
-	await assert.rejects(new TailscaleAdapter(async () => ({ stdout: "{" })).status(settings), /Malformed/);
-	await assert.rejects(new TailscaleAdapter(async () => { throw new Error("secret command output"); }).status(settings), /unavailable/);
+	await assert.rejects(new TailscaleAdapter(async () => ({ stdout: "{" })).status(settings), { code: "tailscale-status-invalid" });
+	await assert.rejects(new TailscaleAdapter(async () => { throw new Error("secret command output"); }).status(settings), { code: "tailscale-unavailable" });
+	for (const [code, expected] of [["ENOENT", "tailscale-missing"], ["EPERM", "permission-denied"], ["EACCES", "permission-denied"]]) {
+		const adapter = new TailscaleAdapter(async () => { throw Object.assign(new Error("SECRET"), { code, stderr: "SECRET" }); });
+		await assert.rejects(adapter.status(settings), { code: expected });
+	}
 });

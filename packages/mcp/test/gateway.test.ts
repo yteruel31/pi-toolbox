@@ -501,9 +501,9 @@ test("lease authentication protects updates and unregister revokes the capabilit
 	const gateway = await startGatewayServer({ settings, hostname: "tail.test", socketPath: client.socket });
 	try {
 		const session = await client.register({ label: "original", backendOrigin: "http://127.0.0.1:12345" });
-		await assert.rejects(client.heartbeat(wrongLease(session)), /not found/);
-		await assert.rejects(client.update(wrongLease(session), "attacker"), /not found/);
-		await assert.rejects(client.unregister(wrongLease(session)), /not found/);
+		await assert.rejects(client.heartbeat(wrongLease(session)), { code: "session-unavailable" });
+		await assert.rejects(client.update(wrongLease(session), "attacker"), { code: "session-unavailable" });
+		await assert.rejects(client.unregister(wrongLease(session)), { code: "session-unavailable" });
 		await client.heartbeat(session);
 		await client.update(session, "updated");
 		assert.equal((await http(settings.gatewayPort, `/s/${session.capability}/`)).status, 502);
@@ -634,11 +634,25 @@ test("client external challenge uses the capability proxy and always cleans its 
 		await client.verify();
 		assert.equal(gateway.sessions.size, 0);
 		globalThis.fetch = (async () => new Response("x".repeat(2_000), { status: 200 })) as typeof fetch;
-		await assert.rejects(client.verify(), /validation failed/);
+		await assert.rejects(client.verify(), { code: "challenge-mismatch" });
 		assert.equal(gateway.sessions.size, 0);
 		globalThis.fetch = (async () => Response.redirect("https://elsewhere.invalid", 302)) as typeof fetch;
-		await assert.rejects(client.verify(), /validation failed/);
+		await assert.rejects(client.verify(), { code: "challenge-mismatch" });
 		assert.equal(gateway.sessions.size, 0);
+		for (const [status, code] of [[401, "https-denied"], [403, "https-denied"], [404, "https-route-missing"], [502, "https-upstream-failed"]] as const) {
+			globalThis.fetch = (async () => new Response("SECRET", { status })) as typeof fetch;
+			await assert.rejects(client.verify(), { code });
+			assert.equal(gateway.sessions.size, 0);
+		}
+		for (const [networkCode, code] of [["ENOTFOUND", "dns-failed"], ["CERT_HAS_EXPIRED", "tls-failed"], ["ECONNREFUSED", "connection-refused"], ["UND_ERR_CONNECT_TIMEOUT", "request-timeout"]] as const) {
+			globalThis.fetch = (async () => { throw new Error("SECRET https://host/s/CAPABILITY/", { cause: { code: networkCode, stderr: "SECRET" } }); }) as typeof fetch;
+			await assert.rejects(client.verify(), (error: any) => {
+				assert.equal(error.code, code);
+				assert.doesNotMatch(JSON.stringify(error) + error.message, /SECRET|CAPABILITY/);
+				return true;
+			});
+			assert.equal(gateway.sessions.size, 0);
+		}
 	} finally {
 		globalThis.fetch = originalFetch;
 		await gateway.close();
@@ -653,7 +667,7 @@ test("same-protocol shutdown waits for active leases, ignores signature mismatch
 	const gateway = await startGatewayServer({ settings: first, hostname: "one.ts.net", socketPath: owner.socket });
 	const replacement = new GatewayClient({ settings: { ...first, basePath: "/different" }, hostnameResolver: async () => "two.ts.net", homeDir: home });
 	const active = await owner.register({ label: "other process", backendOrigin: "http://127.0.0.1:1" });
-	await assert.rejects(replacement.shutdown(), /active sessions/);
+	await assert.rejects(replacement.shutdown(), { code: "active-sessions" });
 	assert.equal(gateway.sessions.size, 1);
 	await owner.unregister(active);
 	await replacement.shutdown();
@@ -818,7 +832,7 @@ test("dead launch owners are recovered while a live recorded owner is never dist
 	await writeFile(liveClient.pid, String(process.pid));
 	if (isFilesystemControlEndpoint(liveClient.socket)) await writeFile(liveClient.socket, "owned by live process");
 	try {
-		await assert.rejects(liveClient.ensure(), /still alive/);
+		await assert.rejects(liveClient.ensure(), { code: "daemon-owner-live" });
 		assert.equal(spawned, false);
 		if (isFilesystemControlEndpoint(liveClient.socket)) assert.equal(await readFile(liveClient.socket, "utf8"), "owned by live process");
 		assert.equal(await readFile(liveClient.pid, "utf8"), String(process.pid));

@@ -16,6 +16,7 @@ export interface McpPanelOptions {
 	onReconnect: (server: string) => Promise<void>;
 	onAuthenticate: (server: string) => Promise<string>;
 	gatewayConfigured?: boolean;
+	onOpenGateway?: () => void;
 }
 
 function terminalText(value: string, maximum = 2_000): string {
@@ -106,7 +107,9 @@ export class McpPanel implements Component {
 	}
 	private selectedRow(): Row | undefined { return this.rows()[this.selected]; }
 	private selectedServer(): McpStatusServer | undefined { return this.selectedRow()?.server; }
-	private changed(): boolean {
+	isBusy(): boolean { return this.busy !== undefined; }
+	dispose(): void { this.closed = true; }
+	hasChanges(): boolean {
 		return this.servers.some((server) =>
 			this.disabled.get(server.name) !== this.initialDisabled.get(server.name) ||
 			!settingEqual(this.directTools.get(server.name) ?? false, this.initialDirectTools.get(server.name) ?? false));
@@ -180,13 +183,14 @@ export class McpPanel implements Component {
 				this.message = { text: `${server.name} connected.` };
 			}
 		} catch {
-			this.message = { text: kind === "auth" ? `OAuth could not start for ${server.name}; check /mcp-gateway.` : `${server.name} could not connect.`, error: true };
+			this.message = { text: kind === "auth" ? `OAuth could not start for ${server.name}; check /mcp > Diagnostics.` : `${server.name} could not connect.`, error: true };
 		} finally {
 			this.busy = undefined;
 			this.redraw();
 		}
 	}
-	private save(): void {
+	save(): void {
+		if (this.closed) return;
 		const updates: Record<string, McpServerControls> = {};
 		for (const server of this.servers) {
 			const controls: McpServerControls = {};
@@ -200,13 +204,14 @@ export class McpPanel implements Component {
 	}
 
 	handleInput(data: string): void {
+		if (this.closed) return;
 		if (this.searching) {
 			if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter)) this.searching = false;
 			else if (matchesKey(data, Key.backspace)) this.query = this.query.slice(0, -1);
 			else if (data.length === 1 && data >= " " && data !== "\x7f") this.query += data;
 			this.selected = 0; this.offset = 0; this.redraw(); return;
 		}
-		if (matchesKey(data, Key.escape)) { this.finish(null); return; }
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) { this.finish(null); return; }
 		if (matchesKey(data, Key.up)) this.selected--;
 		else if (matchesKey(data, Key.down)) this.selected++;
 		else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) this.toggleExpanded();
@@ -217,24 +222,29 @@ export class McpPanel implements Component {
 		else if (data === "d") this.toggleDisabled();
 		else if (data === "r") { void this.action("reconnect"); return; }
 		else if (data === "a") { void this.action("auth"); return; }
-		else if (data === "g" && this.options.gatewayConfigured === false) { this.finish({ openGateway: true }); return; }
+		else if (data === "g") {
+			if (this.options.onOpenGateway) this.options.onOpenGateway();
+			else this.finish({ openGateway: true });
+			return;
+		}
 		this.redraw();
 	}
 
-	render(width: number): string[] {
+	render(width: number, maxRows = 24, embedded = false): string[] {
 		const theme = this.options.theme;
 		const usable = Math.max(1, width);
 		const rows = this.rows();
-		const pageSize = 16;
+		const pageSize = Math.max(1, maxRows - (embedded ? 3 : 7));
 		if (this.selected < this.offset) this.offset = this.selected;
 		if (this.selected >= this.offset + pageSize) this.offset = this.selected - pageSize + 1;
 		const visible = rows.slice(this.offset, this.offset + pageSize);
 		const line = (value: string) => truncateToWidth(value, usable);
 		const output = [
-			line(theme.fg("accent", theme.bold("MCP Servers")) + theme.fg("dim", this.changed() ? "  • unsaved" : "")),
+			line(theme.fg("accent", theme.bold("MCP Servers")) + theme.fg("dim", this.hasChanges() ? "  • unsaved" : "")),
 			line(theme.fg(this.searching ? "accent" : "dim", `Search: ${this.query}${this.searching ? "▌" : "(press /)"}`)),
 			line(theme.fg("borderMuted", "─".repeat(usable))),
 		];
+		if (embedded) output.splice(0, output.length, output[1]!);
 		if (!visible.length) output.push(line(theme.fg("muted", "No matching MCP servers.")));
 		for (let index = 0; index < visible.length; index++) {
 			const row = visible[index]!;
@@ -257,10 +267,12 @@ export class McpPanel implements Component {
 			output.push(absolute === this.selected ? theme.bg("selectedBg", clipped + " ".repeat(Math.max(0, usable - visibleWidth(clipped)))) : clipped);
 		}
 		if (rows.length > pageSize) output.push(line(theme.fg("dim", `${this.offset + 1}-${Math.min(this.offset + pageSize, rows.length)} of ${rows.length}`)));
-		if (this.message) output.push(line(theme.fg(this.message.error ? "error" : "accent", this.message.text)));
-		output.push(line(theme.fg("borderMuted", "─".repeat(usable))));
-		output.push(line(theme.fg("dim", `↑↓ navigate  enter expand  space tools  d toggle  r reconnect  a auth${this.options.gatewayConfigured === false ? "  g gateway" : ""}  / search  ctrl+s save  esc cancel`)));
-		return output;
+		if (this.message) output.push(line(theme.fg(this.message.error ? "error" : "accent", terminalText(this.message.text))));
+		if (!embedded) {
+			output.push(line(theme.fg("borderMuted", "─".repeat(usable))));
+			output.push(line(theme.fg("dim", "↑↓ navigate  enter expand  space tools  d toggle  r reconnect  a auth  g gateway  / search  ctrl+s save  esc cancel")));
+		}
+		return output.slice(0, maxRows);
 	}
 
 	invalidate(): void { /* rendering is derived from the injected live theme */ }

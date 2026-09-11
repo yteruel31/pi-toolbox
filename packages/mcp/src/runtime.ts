@@ -1,5 +1,7 @@
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
+import type { GatewayConfiguration } from "./commands.js";
 import { DEFAULT_UI_SETTINGS, type McpConfig } from "./config.js";
 import { parseServerConfigs } from "./mcp/config.js";
 import { McpServerManager } from "./mcp/manager.js";
@@ -20,11 +22,11 @@ const Params = Type.Object({
 	connect: Type.Optional(Type.String({ maxLength: 64 })),
 	tool: Type.Optional(Type.String({ maxLength: 500 })),
 	args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-	action: Type.Optional(Type.Union([
-		Type.Literal("auth-start"), Type.Literal("auth-complete"),
-		Type.Literal("resources-list"), Type.Literal("resources-read"),
-		Type.Literal("prompts-list"), Type.Literal("prompts-get"), Type.Literal("diagnostics"),
-	])),
+	action: Type.Optional(StringEnum([
+		"auth-start", "auth-complete", "resources-list", "resources-read",
+		"prompts-list", "prompts-get", "diagnostics",
+		"gateway-status", "gateway-validate", "gateway-configure", "gateway-deactivate",
+	] as const)),
 }, { additionalProperties: false });
 type Input = Static<typeof Params>;
 type Details = Record<string, unknown>;
@@ -224,6 +226,7 @@ export class McpRuntime {
 
 	async execute(input: Input, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
 		if (input.action) {
+			if (input.action.startsWith("gateway-")) throw new Error("Gateway actions require the registered mcp tool's configuration service");
 			if (input.search !== undefined || input.connect !== undefined || input.tool !== undefined) throw new Error("MCP actions cannot be combined with another MCP operation");
 			if (input.action === "diagnostics") {
 				if (input.args !== undefined) throw new Error("diagnostics does not accept args");
@@ -414,13 +417,23 @@ export class McpRuntime {
 	}
 }
 
-export function registerMcpTool(pi: ExtensionAPI, getRuntime: () => McpRuntime | undefined): void {
+export function registerMcpTool(pi: ExtensionAPI, getRuntime: () => McpRuntime | undefined, gateway?: GatewayConfiguration): void {
 	pi.registerTool({
 		name: "mcp",
 		label: "MCP",
-		description: "Inspect, search, connect to, and call configured remote MCP servers",
+		description: "Inspect, search, connect to, and call MCP servers. Gateway actions: gateway-status (safe configuration state, no network), gateway-validate (external HTTPS challenge), gateway-configure (args: {mode: 'tailscale'} or {mode: 'custom', externalUrl: HTTPS base URL, listenAddress: IP}), gateway-deactivate (no args). Gateway mutations require interactive user confirmation, reuse lifecycle/rollback/locked persistence, and never configure a custom proxy. Agree on proxy, domain and public/private access before infrastructure changes. Never write gateway JSON directly. Diagnostics omit secrets and raw errors.",
 		parameters: Params,
-		async execute(_id, input, signal) {
+		async execute(_id, input, signal, _onUpdate, context) {
+			if (input.action?.startsWith("gateway-")) {
+				if (input.server !== undefined || input.search !== undefined || input.connect !== undefined || input.tool !== undefined) throw new Error("Gateway actions cannot be combined with server operations");
+				if (input.action !== "gateway-configure" && input.args !== undefined) throw new Error("Only gateway-configure accepts gateway args");
+				if (!gateway || !getRuntime()) throw new Error("MCP gateway is unavailable before session start");
+				const report = input.action === "gateway-status" ? gateway.status()
+					: input.action === "gateway-validate" ? await gateway.validate(signal)
+					: input.action === "gateway-configure" ? await gateway.configure(input.args, context, signal)
+					: await gateway.deactivate(context, signal);
+				return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }], details: { gateway: report } };
+			}
 			const runtime = getRuntime();
 			if (!runtime) return {
 				content: [{ type: "text", text: "MCP is unavailable before session start." }],

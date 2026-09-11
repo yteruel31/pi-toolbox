@@ -7,6 +7,7 @@ import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { McpUiSettings } from "../config.js";
+import { GatewayDiagnosticError, networkErrorCode } from "./diagnostics.js";
 import { gatewayControlEndpoint, isFilesystemControlEndpoint } from "./control-endpoint.js";
 import { INTERNAL_SECRET_HEADER, PROTOCOL_VERSION, settingsSignature, type GatewayDaemonSettings, type Registration, type Session } from "./protocol.js";
 
@@ -19,8 +20,12 @@ export interface GatewayClientOptions {
 	spawnDaemon?: (config: string) => void;
 }
 
-export class GatewayUnavailableError extends Error {}
-export class GatewayIncompatibleError extends Error {}
+export class GatewayUnavailableError extends GatewayDiagnosticError {
+	constructor(_message?: string) { super("daemon-unavailable"); }
+}
+export class GatewayIncompatibleError extends GatewayDiagnosticError {
+	constructor(_message?: string) { super("daemon-incompatible"); }
+}
 
 export class GatewayClient {
 	readonly dir: string;
@@ -128,9 +133,13 @@ export class GatewayClient {
 			const port = (backend.address() as { port: number }).port;
 			session = await this.register({ label: "Gateway validation", backendOrigin: `http://127.0.0.1:${port}`, backendSecret: secret });
 			const response = await fetch(`${session.externalUrl}proxy/probe`, { redirect: "error", signal: AbortSignal.timeout(5_000), headers: { accept: "text/plain" } });
-			if (response.status !== 200 || await readBounded(response, 1_024) !== nonce) throw new Error("Gateway external validation failed");
-		} catch {
-			throw new Error("Gateway external validation failed");
+			if (response.status === 401 || response.status === 403) throw new GatewayDiagnosticError("https-denied");
+			if (response.status === 404) throw new GatewayDiagnosticError("https-route-missing");
+			if (response.status === 502 || response.status === 503 || response.status === 504) throw new GatewayDiagnosticError("https-upstream-failed");
+			if (response.status !== 200 || await readBounded(response, 1_024) !== nonce) throw new GatewayDiagnosticError("challenge-mismatch");
+		} catch (error) {
+			if (error instanceof GatewayDiagnosticError) throw error;
+			throw new GatewayDiagnosticError(networkErrorCode(error) ?? "external-validation-failed");
 		} finally {
 			if (session) await this.unregister(session).catch(() => undefined);
 			await new Promise<void>((resolve) => backend.close(() => resolve())).catch(() => undefined);
@@ -171,7 +180,7 @@ export class GatewayClient {
 		let recordedPid: number | undefined;
 		try { recordedPid = Number((await readFile(this.pid, "utf8")).trim()); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-		if (recordedPid && pidIsLive(recordedPid)) throw new GatewayUnavailableError("Recorded gateway owner is still alive; refusing recovery");
+		if (recordedPid && pidIsLive(recordedPid)) throw new GatewayDiagnosticError("daemon-owner-live");
 		try { await this.hello(); return; }
 		catch (error) { if (!(error instanceof GatewayUnavailableError)) throw error; }
 		if (isFilesystemControlEndpoint(this.socket)) await rm(this.socket, { force: true });
@@ -207,16 +216,18 @@ function call(socketPath: string, path: string, body: unknown): Promise<any> {
 				try { value = JSON.parse(Buffer.concat(chunks).toString() || "null"); }
 				catch { return finish(new Error("Invalid gateway response")); }
 				if ((response.statusCode ?? 500) < 300) finish(undefined, value);
-				else finish(new Error(typeof value?.error === "string" ? value.error : "Gateway request failed"));
+				else finish(path === "/shutdown" && response.statusCode === 409
+					? new GatewayDiagnosticError("active-sessions")
+					: new GatewayDiagnosticError(response.statusCode === 404 ? "session-unavailable" : "daemon-unavailable"));
 			});
 		});
 		const deadline = setTimeout(() => {
 			outgoing.destroy();
-			finish(new Error("Gateway request timed out"));
+			finish(new GatewayDiagnosticError("request-timeout"));
 		}, CONTROL_REQUEST_TIMEOUT_MS);
 		outgoing.setTimeout(CONTROL_REQUEST_TIMEOUT_MS, () => {
 			outgoing.destroy();
-			finish(new Error("Gateway request timed out"));
+			finish(new GatewayDiagnosticError("request-timeout"));
 		});
 		outgoing.on("error", (error) => finish(error));
 		outgoing.end(JSON.stringify(body));
@@ -248,7 +259,7 @@ async function readBounded(response: Response, limit: number): Promise<string> {
 			const { done, value } = await reader.read();
 			if (done) break;
 			size += value.byteLength;
-			if (size > limit) throw new Error("Gateway response is too large");
+			if (size > limit) throw new GatewayDiagnosticError("challenge-mismatch");
 			chunks.push(value);
 		}
 	} catch (error) {

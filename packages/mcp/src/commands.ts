@@ -1,9 +1,9 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadMcpConfig, parseGatewaySettings, type McpConfig, type McpGatewaySettings, type McpUiSettings } from "./config.js";
-import { writeMcpGatewaySettings } from "./config-writer.js";
-import { GatewayClient, GatewayIncompatibleError } from "./gateway/client.js";
+import { writeMcpGatewaySettings, type GatewayExpectedState } from "./config-writer.js";
+import { GatewayClient } from "./gateway/client.js";
+import { diagnosticFromError, gatewayDiagnostic, GatewayDiagnosticError, type GatewayDiagnostic, type GatewayStep } from "./gateway/diagnostics.js";
 import { TailscaleAdapter, TailscaleMutationError, type RouteMutationResult } from "./tailscale.js";
-import { GatewayPanel, type GatewayPanelResult } from "./tui/gateway-panel.js";
 
 export interface GatewayOperations {
 	ensure(): Promise<void>;
@@ -11,234 +11,283 @@ export interface GatewayOperations {
 	shutdown(): Promise<void>;
 	verify(): Promise<void>;
 }
-
 export interface GatewayTailscale {
 	status(settings: McpUiSettings): Promise<{ state: "absent" | "matching" | "conflicting"; target: string }>;
 	hostname(): Promise<string | undefined>;
 	setup(settings: McpUiSettings): Promise<RouteMutationResult>;
 	remove(settings: McpUiSettings): Promise<RouteMutationResult>;
 }
-
 export interface GatewayCommandDependencies {
 	tailscale?: GatewayTailscale;
 	clientFactory?: (gateway: McpGatewaySettings, settings: McpUiSettings) => GatewayOperations;
 	configLoader?: () => McpConfig;
-	writer?: (gateway: McpGatewaySettings | undefined) => Promise<unknown>;
+	writer?: (gateway: McpGatewaySettings | undefined, expected: GatewayExpectedState, beforeCommit: () => void) => Promise<unknown>;
 	quiesce?: () => Promise<void>;
+	resume?: () => Promise<void>;
 	maintenance?: <T>(operation: () => Promise<T>) => Promise<T>;
+	isCurrent?: () => boolean;
 }
+export interface GatewayReport {
+	mode: "unconfigured" | "tailscale" | "custom";
+	state: "unconfigured" | "configured" | "validated" | "deactivated" | "failed" | "cancelled";
+	gatewayPort?: number;
+	diagnostic?: GatewayDiagnostic;
+	rollback?: "completed" | "failed";
+	persisted?: boolean;
+	previousInfrastructurePreserved?: boolean;
+	restoreDiagnostic?: GatewayDiagnostic;
+}
+type ConfirmationContext = Pick<ExtensionContext, "hasUI" | "ui">;
 
 function effectiveSettings(config: McpConfig, gateway: McpGatewaySettings): McpUiSettings {
 	const settings = { ...config.settings.ui };
 	if (gateway.mode === "tailscale") return { ...settings, requireTailscaleIdentity: true };
-	const pathname = new URL(gateway.externalUrl).pathname;
-	return { ...settings, basePath: pathname || "/", requireTailscaleIdentity: false };
+	return { ...settings, basePath: new URL(gateway.externalUrl).pathname || "/", requireTailscaleIdentity: false };
 }
-
-function productionClient(gateway: McpGatewaySettings, settings: McpUiSettings, tailscale: GatewayTailscale): GatewayOperations {
-	if (gateway.mode === "custom") {
-		return new GatewayClient({ settings, externalUrlResolver: async () => gateway.externalUrl, listenAddress: gateway.listenAddress });
-	}
-	return new GatewayClient({ settings, hostnameResolver: async () => {
-		if (settings.hostname !== "auto") return settings.hostname;
-		const hostname = await tailscale.hostname();
-		if (!hostname) throw new Error("Tailscale hostname unavailable");
-		return hostname;
-	} });
+function sameGatewayState(left: McpGatewaySettings | undefined, right: McpGatewaySettings | undefined): boolean {
+	return JSON.stringify(left && parseGatewaySettings(left)) === JSON.stringify(right && parseGatewaySettings(right));
 }
-
-async function panel(context: ExtensionCommandContext, config: McpConfig): Promise<GatewayPanelResult | null> {
-	return context.ui.custom<GatewayPanelResult | null>((tui, theme, _keybindings, done) => new GatewayPanel({
-		theme,
-		gateway: config.settings.gateway,
-		onRender: () => tui.requestRender(),
-		onDone: done,
-	}), { overlay: true, overlayOptions: { width: "75%", minWidth: 58, maxHeight: "75%", anchor: "center", margin: 1 } });
+function settingsFingerprint(config: McpConfig): string {
+	return JSON.stringify({ gateway: config.settings.gateway, ui: config.settings.ui });
 }
-
-async function candidateFromAction(action: GatewayPanelResult, context: ExtensionCommandContext, gatewayPort: number, current?: McpGatewaySettings): Promise<McpGatewaySettings | undefined> {
-	if (action.action === "tailscale") return { mode: "tailscale" };
-	if (action.action !== "custom") return undefined;
-	const externalUrl = await context.ui.input("External gateway URL", current?.mode === "custom" ? current.externalUrl : "https://mcp.example.com");
-	if (externalUrl === undefined) return undefined;
-	const listenAddress = await context.ui.input("Gateway listen address", current?.mode === "custom" ? current.listenAddress : "127.0.0.1");
-	if (listenAddress === undefined) return undefined;
-	const candidate = parseGatewaySettings({ mode: "custom", externalUrl, listenAddress });
-	if (!candidate || candidate.mode !== "custom") {
-		context.ui.notify("Custom gateway settings are invalid. Use an HTTPS URL without credentials, query, or fragment and an IP listen address.", "error");
-		return undefined;
-	}
-	const address = candidate.listenAddress.includes(":") ? `[${candidate.listenAddress}]` : candidate.listenAddress;
-	const ready = await context.ui.confirm(
-		"Validate custom MCP gateway?",
-		`Configure your reverse proxy to preserve the external URL path when forwarding to http://${address}:${gatewayPort}. Non-loopback listeners expose cleartext capability endpoints on that interface.`,
-	);
-	return ready ? candidate : undefined;
+function invalidConfiguration(config: McpConfig): boolean {
+	return config.diagnostics.some((item) => ["invalid-gateway", "invalid-ui", "invalid-json", "read-error", "invalid-top-level"].includes(item.code));
 }
-
 function mutationChanged(error: unknown, operation: "setup" | "remove"): boolean {
 	return error instanceof TailscaleMutationError && error.operation === operation && error.changed;
 }
 
-function sameGatewayState(left: McpGatewaySettings | undefined, right: McpGatewaySettings | undefined): boolean {
-	if (left === undefined || right === undefined) return left === right;
-	const normalizedLeft = parseGatewaySettings(left);
-	const normalizedRight = parseGatewaySettings(right);
-	if (!normalizedLeft || !normalizedRight || normalizedLeft.mode !== normalizedRight.mode) return false;
-	return normalizedLeft.mode === "tailscale" || normalizedRight.mode === "custom" &&
-		normalizedLeft.externalUrl === normalizedRight.externalUrl && normalizedLeft.listenAddress === normalizedRight.listenAddress;
-}
+/** Shared UI/tool transaction path. Only this service combines lifecycle, validation and persistence. */
+export class GatewayConfiguration {
+	private readonly load: () => McpConfig;
+	private readonly tailscale: GatewayTailscale;
+	private readonly write: (gateway: McpGatewaySettings | undefined, expected: GatewayExpectedState, beforeCommit: () => void) => Promise<unknown>;
+	private queue: Promise<unknown> = Promise.resolve();
+	private lastReport?: GatewayReport;
+	private lastSettings?: string;
 
-function hasGatewayPostcondition(load: () => McpConfig, gateway: McpGatewaySettings | undefined): boolean {
-	try { return sameGatewayState(load().settings.gateway, gateway); }
-	catch { return false; }
-}
-
-async function maintenance<T>(dependencies: GatewayCommandDependencies, operation: () => Promise<T>): Promise<T> {
-	return dependencies.maintenance ? dependencies.maintenance(operation) : operation();
-}
-
-export async function openGatewayPanel(context: ExtensionCommandContext, dependencies: GatewayCommandDependencies = {}): Promise<void> {
-	if (context.mode !== "tui") {
-		context.ui.notify("/mcp-gateway requires the interactive Pi TUI.", "warning");
-		return;
+	constructor(private readonly dependencies: GatewayCommandDependencies = {}) {
+		this.load = dependencies.configLoader ?? loadMcpConfig;
+		this.tailscale = dependencies.tailscale ?? new TailscaleAdapter();
+		this.write = dependencies.writer ?? ((gateway, expected, beforeCommit) => writeMcpGatewaySettings(gateway, { expected, beforeCommit }));
 	}
-	const load = dependencies.configLoader ?? loadMcpConfig;
-	const tailscale = dependencies.tailscale ?? new TailscaleAdapter();
-	const write = dependencies.writer ?? ((gateway) => writeMcpGatewaySettings(gateway));
-	const initialConfig = load();
-	const action = await panel(context, initialConfig);
-	if (!action) return;
 
-	if (action.action === "diagnose") {
+	/** No daemon startup, Tailscale command, or network request. */
+	status(): GatewayReport {
 		try {
-			await maintenance(dependencies, async () => {
-				const config = load();
-				const gateway = config.settings.gateway;
-				if (!gateway) throw new Error("unconfigured");
-				const settings = effectiveSettings(config, gateway);
-				const client = dependencies.clientFactory?.(gateway, settings) ?? productionClient(gateway, settings, tailscale);
-				if (gateway.mode === "tailscale" && (await tailscale.status(settings)).state !== "matching") throw new Error("route unavailable");
-				await client.verify();
-				context.ui.notify(`MCP gateway ${gateway.mode} validation succeeded.`, "info");
-			});
-		} catch {
-			const mode = load().settings.gateway?.mode;
-			context.ui.notify(mode
-				? `MCP gateway ${mode} validation failed. Check the configured route, HTTPS certificate, and proxy target.`
-				: "MCP gateway is not configured.", mode ? "error" : "warning");
-		}
-		return;
+			const config = this.load();
+			const mode = config.settings.gateway?.mode ?? "unconfigured";
+			if (invalidConfiguration(config)) {
+				return { mode, state: "failed", diagnostic: gatewayDiagnostic("configuration", "invalid-config") };
+			}
+			return { mode, state: mode === "unconfigured" ? "unconfigured" : "configured", gatewayPort: config.settings.ui.gatewayPort,
+				...(mode === "unconfigured" ? { diagnostic: gatewayDiagnostic("configuration", "unconfigured") } : {}) };
+		} catch { return { mode: "unconfigured", state: "failed", diagnostic: gatewayDiagnostic("configuration", "invalid-config") }; }
 	}
-
-	if (action.action === "remove") {
-		const initialGateway = initialConfig.settings.gateway;
-		if (!initialGateway) {
-			context.ui.notify("MCP gateway is already unconfigured.", "info");
-			return;
-		}
-		if (!await context.ui.confirm("Deactivate MCP gateway?", initialGateway.mode === "custom"
-			? "Pi will revoke sessions and clear its configuration. The external reverse proxy will not be changed."
-			: "Pi will revoke sessions, remove only its exact Tailscale Serve route, and clear its configuration.")) return;
+	latest(): GatewayReport {
 		try {
-			await maintenance(dependencies, async () => {
-				const config = load();
-				const gateway = config.settings.gateway;
-				if (!gateway) {
-					context.ui.notify("MCP gateway is already unconfigured.", "info");
-					return;
+			const current = this.load();
+			if (this.lastSettings !== settingsFingerprint(current)) {
+				if (this.lastReport?.state === "failed" || this.lastReport?.state === "cancelled") {
+					return { ...this.lastReport, mode: current.settings.gateway?.mode ?? "unconfigured", gatewayPort: current.settings.ui.gatewayPort };
 				}
-				let quiesceStarted = false;
-				let removedTailscaleRoute = false;
-				let persistedRemoval = false;
-				let writeAttempted = false;
-				const notifyRemoved = (): void => context.ui.notify(gateway.mode === "custom" ? "MCP gateway deactivated. Remove the external proxy separately if it is no longer needed." : "MCP gateway deactivated.", "info");
-				try {
-					quiesceStarted = true;
-					await dependencies.quiesce?.();
-					const settings = effectiveSettings(config, gateway);
-					const client = dependencies.clientFactory?.(gateway, settings) ?? productionClient(gateway, settings, tailscale);
-					await client.shutdown();
-					if (gateway.mode === "tailscale") {
-						try { removedTailscaleRoute = (await tailscale.remove(settings)).changed; }
-						catch (error) { removedTailscaleRoute = mutationChanged(error, "remove"); throw error; }
-					}
-					writeAttempted = true;
-					await write(undefined);
-					persistedRemoval = true;
-					notifyRemoved();
-				} catch {
-					if (writeAttempted && hasGatewayPostcondition(load, undefined)) {
-						persistedRemoval = true;
-						notifyRemoved();
-					} else {
-						if (!persistedRemoval && removedTailscaleRoute && gateway.mode === "tailscale") await tailscale.setup(effectiveSettings(config, gateway)).catch(() => undefined);
-						context.ui.notify("MCP gateway could not be deactivated; existing configuration was preserved when possible.", "error");
-					}
-				} finally {
-					if (quiesceStarted) await context.reload();
-				}
-			});
-		} catch {
-			context.ui.notify("MCP gateway maintenance was cancelled because the Pi runtime changed.", "warning");
-		}
-		return;
+				this.lastReport = undefined;
+			}
+		} catch { this.lastReport = undefined; }
+		return this.lastReport ?? this.status();
 	}
 
-	const candidate = await candidateFromAction(action, context, initialConfig.settings.ui.gatewayPort, initialConfig.settings.gateway);
-	if (!candidate) return;
-	try {
-		await maintenance(dependencies, async () => {
-			const config = load();
-			const settings = effectiveSettings(config, candidate);
-			const client = dependencies.clientFactory?.(candidate, settings) ?? productionClient(candidate, settings, tailscale);
-			let quiesceStarted = false;
-			let candidateStarted = false;
-			let changedTailscaleRoute = false;
-			let persisted = false;
-			let writeAttempted = false;
-			const changedInfrastructure = config.settings.gateway !== undefined && !sameGatewayState(config.settings.gateway, candidate);
-			const notifyConfigured = (): void => context.ui.notify(`MCP gateway ${candidate.mode} configured and externally validated.${changedInfrastructure ? " Previous external infrastructure was left unchanged; deactivate it separately if needed." : ""}`, changedInfrastructure ? "warning" : "info");
+	private client(config: McpConfig, gateway: McpGatewaySettings): GatewayOperations {
+		const settings = effectiveSettings(config, gateway);
+		if (this.dependencies.clientFactory) return this.dependencies.clientFactory(gateway, settings);
+		if (gateway.mode === "custom") return new GatewayClient({ settings, externalUrlResolver: async () => gateway.externalUrl, listenAddress: gateway.listenAddress });
+		return new GatewayClient({ settings, hostnameResolver: async () => {
+			if (settings.hostname !== "auto") return settings.hostname;
+			const hostname = await this.tailscale.hostname();
+			if (!hostname) throw new GatewayDiagnosticError("hostname-unavailable");
+			return hostname;
+		} });
+	}
+	private checkCurrent(signal?: AbortSignal): void {
+		if (signal?.aborted) throw new GatewayDiagnosticError("cancelled");
+		if (this.dependencies.isCurrent?.() === false) throw new GatewayDiagnosticError("runtime-changed");
+	}
+	private run(operation: (observe: (config: McpConfig) => void) => Promise<GatewayReport>): Promise<GatewayReport> {
+		const next = this.queue.catch(() => undefined).then(async () => {
+			let settings: string | undefined;
+			const observe = (config: McpConfig): void => { settings = settingsFingerprint(config); };
+			let report: GatewayReport;
 			try {
-				quiesceStarted = true;
-				await dependencies.quiesce?.();
-				await client.shutdown();
-				await client.ensure();
-				candidateStarted = true;
-				if (candidate.mode === "tailscale") {
-					try { changedTailscaleRoute = (await tailscale.setup(settings)).changed; }
-					catch (error) { changedTailscaleRoute = mutationChanged(error, "setup"); throw error; }
+				observe(this.load());
+				report = this.dependencies.maintenance ? await this.dependencies.maintenance(() => operation(observe)) : await operation(observe);
+			} catch { report = { ...this.status(), state: "failed", diagnostic: gatewayDiagnostic("configuration", "runtime-changed") }; }
+			return { report, settings };
+		});
+		this.queue = next;
+		return next.then(({ report, settings }) => {
+			this.lastReport = report;
+			// Cache against the observed/committed settings, never a later unvalidated reload.
+			this.lastSettings = settings;
+			return report;
+		});
+	}
+
+	validate(signal?: AbortSignal): Promise<GatewayReport> {
+		return this.run(async (observe) => {
+			const status = this.status();
+			if (status.state === "failed" || status.mode === "unconfigured") return status;
+			let step: GatewayStep = "configuration";
+			try {
+				this.checkCurrent(signal);
+				const config = this.load();
+				observe(config);
+				const gateway = config.settings.gateway;
+				if (!gateway) throw new GatewayDiagnosticError("unconfigured");
+				if (gateway.mode === "tailscale") {
+					step = "tailscale-route";
+					const route = await this.tailscale.status(effectiveSettings(config, gateway));
+					if (route.state !== "matching") throw new GatewayDiagnosticError(route.state === "absent" ? "route-absent" : "route-conflict");
 				}
-				await client.verify();
+				this.checkCurrent(signal);
+				step = "external-https";
+				await this.client(config, gateway).verify();
+				this.checkCurrent(signal);
+				const current = this.load();
+				if (invalidConfiguration(current) || settingsFingerprint(current) !== settingsFingerprint(config)) throw new GatewayDiagnosticError("configuration-changed");
+				return { mode: gateway.mode, gatewayPort: config.settings.ui.gatewayPort, state: "validated" };
+			} catch (error) { return { ...status, state: "failed", diagnostic: diagnosticFromError(step, error) }; }
+		});
+	}
+
+	configure(candidate: unknown, context: ConfirmationContext, signal?: AbortSignal): Promise<GatewayReport> {
+		const parsed = parseGatewaySettings(candidate);
+		if (!parsed) return Promise.resolve({ ...this.status(), state: "failed", diagnostic: gatewayDiagnostic("configuration", "invalid-config") });
+		return this.mutate(parsed, context, signal);
+	}
+	deactivate(context: ConfirmationContext, signal?: AbortSignal): Promise<GatewayReport> { return this.mutate(undefined, context, signal); }
+
+	private mutate(candidate: McpGatewaySettings | undefined, context: ConfirmationContext, signal?: AbortSignal): Promise<GatewayReport> {
+		return this.run(async (observe) => {
+			const status = this.status();
+			if (status.state === "failed") return status;
+			let step: GatewayStep = "configuration";
+			let quiesced = false;
+			let candidateStarted = false;
+			let routeChanged = false;
+			let writeAttempted = false;
+			let persisted = false;
+			let client: GatewayOperations | undefined;
+			let config: McpConfig | undefined;
+			let report: GatewayReport = status;
+			try {
+				this.checkCurrent(signal);
+				config = this.load();
+				observe(config);
+				const previous = config.settings.gateway;
+				if (!candidate && !previous) return { ...status, state: "deactivated" };
+				step = "confirmation";
+				const summary = candidate?.mode === "custom"
+					? `Validate and save ${candidate.externalUrl}, listening on ${candidate.listenAddress}:${config.settings.ui.gatewayPort}? The proxy must preserve the URL path. Non-loopback listeners expose cleartext capability endpoints; restrict access to the agreed proxy. Pi won't modify the external proxy.`
+					: candidate ? "Configure only Pi's exact Tailscale Serve route with mandatory user identity, validate external HTTPS, then save?"
+					: previous?.mode === "custom" ? "Revoke this Pi runtime's sessions and clear its gateway settings? The external proxy won't be changed."
+					: "Revoke this Pi runtime's sessions, remove only Pi's exact Tailscale Serve route, and clear its gateway settings?";
+				if (!context.hasUI || !await context.ui.confirm(candidate ? "Configure MCP gateway?" : "Deactivate MCP gateway?", `${summary}\nOther active Pi sessions can prevent this operation. Previous external infrastructure is never silently removed.`, { signal })) {
+					return { ...status, state: "cancelled", diagnostic: gatewayDiagnostic("confirmation", "cancelled") };
+				}
+				this.checkCurrent(signal);
+				const current = this.load();
+				if (invalidConfiguration(current)) throw new GatewayDiagnosticError("invalid-config");
+				if (!sameGatewayState(previous, current.settings.gateway) || JSON.stringify(config.settings.ui) !== JSON.stringify(current.settings.ui)) throw new GatewayDiagnosticError("configuration-changed");
+				const active = candidate ?? previous!;
+				const settings = effectiveSettings(config, active);
+				client = this.client(config, active);
+				step = "quiesce";
+				quiesced = true;
+				await this.dependencies.quiesce?.();
+				this.checkCurrent(signal);
+				step = "daemon-stop";
+				await client.shutdown();
+				this.checkCurrent(signal);
+				if (candidate) {
+					step = "daemon-start";
+					await client.ensure();
+					candidateStarted = true;
+				}
+				this.checkCurrent(signal);
+				if (active.mode === "tailscale") {
+					step = "tailscale-route";
+					try { routeChanged = (await (candidate ? this.tailscale.setup(settings) : this.tailscale.remove(settings))).changed; }
+					catch (error) { routeChanged = mutationChanged(error, candidate ? "setup" : "remove"); throw error; }
+				}
+				this.checkCurrent(signal);
+				if (candidate) {
+					step = "external-https";
+					await client.verify();
+				}
+				this.checkCurrent(signal);
+				step = "persistence";
+				const beforeWrite = this.load();
+				if (invalidConfiguration(beforeWrite)) throw new GatewayDiagnosticError("invalid-config");
+				if (!sameGatewayState(previous, beforeWrite.settings.gateway) || JSON.stringify(config.settings.ui) !== JSON.stringify(beforeWrite.settings.ui)) throw new GatewayDiagnosticError("configuration-changed");
 				writeAttempted = true;
-				await write(candidate);
+				await this.write(candidate, { gateway: previous, ui: config.settings.ui }, () => this.checkCurrent(signal));
 				persisted = true;
-				notifyConfigured();
 			} catch (error) {
-				if (writeAttempted && hasGatewayPostcondition(load, candidate)) {
-					persisted = true;
-					notifyConfigured();
-				} else {
-					if (!persisted && candidateStarted) await client.shutdown().catch(() => undefined);
-					if (!persisted && candidate.mode === "tailscale" && changedTailscaleRoute) await tailscale.remove(settings).catch(() => undefined);
-					const incompatible = error instanceof GatewayIncompatibleError;
-					context.ui.notify(incompatible
-						? "MCP gateway uses an incompatible resident daemon; wait for it to stop or restart Pi before retrying."
-						: "MCP gateway validation failed; configuration was not saved. Check HTTPS, routing, active gateway sessions, and the local proxy target.", "error");
+				const diagnostic = diagnosticFromError(step, error);
+				// Writers can reject after rename (for example lock cleanup). Pre-commit guards aren't commits.
+				if (writeAttempted && !["cancelled", "runtime-changed", "configuration-changed"].includes(diagnostic.code)) {
+					try {
+						const committed = this.load();
+						persisted = !invalidConfiguration(committed) && sameGatewayState(committed.settings.gateway, candidate) && JSON.stringify(committed.settings.ui) === JSON.stringify(config?.settings.ui);
+					} catch { /* failed read is not proof of commit */ }
+				}
+				if (!persisted) {
+					let rollbackFailed = false;
+					if (candidateStarted) await client?.shutdown().catch(() => { rollbackFailed = true; });
+					if (routeChanged && config) {
+						const settings = effectiveSettings(config, candidate ?? config.settings.gateway!);
+						await (candidate ? this.tailscale.remove(settings) : this.tailscale.setup(settings)).catch(() => { rollbackFailed = true; });
+					}
+					report = { ...status, state: "failed", persisted: false, diagnostic,
+						...(candidateStarted || routeChanged ? { rollback: rollbackFailed ? "failed" as const : "completed" as const } : {}) };
 				}
 			} finally {
-				if (quiesceStarted) await context.reload();
+				if (persisted && config) {
+					observe({ ...config, settings: { ...config.settings, gateway: candidate } });
+					report = { mode: candidate?.mode ?? "unconfigured", state: candidate ? "validated" : "deactivated", persisted: true,
+						previousInfrastructurePreserved: !!config.settings.gateway && !sameGatewayState(config.settings.gateway, candidate) && (candidate !== undefined || config.settings.gateway.mode === "custom") };
+				}
+				if (quiesced) {
+					try { await this.dependencies.resume?.(); }
+					catch { report = { ...report, restoreDiagnostic: gatewayDiagnostic("runtime-restore", "runtime-restore-failed") }; }
+				}
 			}
+			return report;
 		});
-	} catch {
-		context.ui.notify("MCP gateway maintenance was cancelled because the Pi runtime changed.", "warning");
 	}
 }
 
-export function registerGatewayCommand(pi: ExtensionAPI, dependencies: GatewayCommandDependencies = {}): void {
-	pi.registerCommand("mcp-gateway", {
-		description: "Configure and diagnose MCP gateway publication",
-		getArgumentCompletions: () => null,
-		handler: async (_argumentsText, context) => openGatewayPanel(context, dependencies),
-	});
+export function gatewayAgentPrompt(kind: "custom" | "repair", report: GatewayReport): string {
+	// Reconstruct from codes, even if a caller supplied extra properties or unsafe message fields.
+	const diagnostic = report.diagnostic && gatewayDiagnostic(report.diagnostic.step, report.diagnostic.code);
+	const safe = {
+		mode: ["unconfigured", "tailscale", "custom"].includes(report.mode) ? report.mode : "unconfigured",
+		state: ["unconfigured", "configured", "validated", "deactivated", "failed", "cancelled"].includes(report.state) ? report.state : "failed",
+		diagnostic,
+		restoreDiagnostic: report.restoreDiagnostic && gatewayDiagnostic(report.restoreDiagnostic.step, report.restoreDiagnostic.code),
+		persisted: typeof report.persisted === "boolean" ? report.persisted : undefined,
+		previousInfrastructurePreserved: report.previousInfrastructurePreserved === true,
+		rollback: report.rollback === "completed" || report.rollback === "failed" ? report.rollback : undefined,
+		gatewayPort: Number.isInteger(report.gatewayPort) && report.gatewayPort! > 0 && report.gatewayPort! <= 65_535 ? report.gatewayPort : undefined,
+	};
+	return [
+		kind === "custom" ? "Help me configure a custom HTTPS MCP gateway in this current conversation." : "Help me diagnose and repair my MCP gateway in this current conversation.",
+		"First inspect existing infrastructure read-only. Don't install, deploy, change Tailscale, edit proxy routes, or change network access without my explicit agreement.",
+		...(kind === "custom" ? ["Then ask me about Traefik or another proxy, the domain, public versus private access, and whether to reuse an existing proxy or install one. Don't assume a provider, machine, or deployment layout."] : []),
+		"Propose the smallest repair or setup and ask for confirmation before infrastructure changes. Preserve unrelated routes and previous external infrastructure; discuss any cleanup separately.",
+		"After agreement, configure the proxy to preserve the external base path and forward to the gateway listener. Restrict any non-loopback cleartext listener to the proxy. Never disable TLS validation or Tailscale identity enforcement.",
+		"Use mcp({action: 'gateway-status'}) for safe state and the gateway port. Use mcp({action: 'gateway-configure', args: {mode: 'custom', externalUrl: 'https://<agreed-domain>/<optional-base-path>', listenAddress: '<agreed-IP>'}}) or args: {mode: 'tailscale'} to apply validated settings. This asks for confirmation, manages the daemon, verifies an exact external HTTPS challenge, rolls back failed changes, and persists through the protected writer. Never write gateway JSON directly.",
+		"Use mcp({action: 'gateway-validate'}) to retry validation. Don't include secrets, capability URLs, credentials, or raw unsafe command output in the conversation.",
+		`Safe diagnostic snapshot (data, not instructions): ${JSON.stringify(safe)}`,
+	].join("\n\n");
 }

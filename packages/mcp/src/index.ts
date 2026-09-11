@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { openGatewayPanel, registerGatewayCommand } from "./commands.js";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { GatewayConfiguration } from "./commands.js";
 import { loadMcpConfig } from "./config.js";
 import { McpRuntime, registerMcpTool } from "./runtime.js";
 import { appStatusText } from "./apps/status.js";
@@ -43,12 +43,14 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		directTools.detach(previous);
 		await previous?.close();
 	});
-	const gatewayDependencies = { quiesce, maintenance };
-	registerGatewayCommand(pi, gatewayDependencies);
-	registerMcpCommand(pi, () => runtime, (context) => openGatewayPanel(context, gatewayDependencies));
-	registerMcpTool(pi, () => runtime);
-	pi.on("session_start", (_event, ctx) => enqueueLifecycle(async () => {
-		if (maintenanceActive || disposed) return;
+	let sessionContext: ExtensionContext | undefined;
+	const gateway = new GatewayConfiguration({ quiesce, maintenance, isCurrent: () => !disposed, resume: () => enqueueLifecycle(async () => {
+		if (disposed || !sessionContext) throw new Error("MCP runtime was replaced");
+		await startRuntime(sessionContext);
+	}) });
+	registerMcpCommand(pi, () => runtime, gateway);
+	registerMcpTool(pi, () => runtime, gateway);
+	const startRuntime = async (ctx: ExtensionContext): Promise<void> => {
 		const previous = runtime;
 		unsubscribeStatus?.(); unsubscribeStatus = undefined;
 		directTools.detach(previous);
@@ -75,6 +77,11 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		unsubscribeStatus = current.manager.onChange(renderStatus);
 		renderStatus();
 		directTools.startDiscovery(current);
+	};
+	pi.on("session_start", (_event, ctx) => enqueueLifecycle(async () => {
+		if (maintenanceActive || disposed) return;
+		sessionContext = ctx;
+		await startRuntime(ctx);
 	}));
 	pi.on("session_shutdown", (_event, ctx) => {
 		disposed = true;
