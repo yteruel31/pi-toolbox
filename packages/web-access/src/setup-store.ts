@@ -28,7 +28,7 @@ export class SetupError extends Error {
   constructor(readonly code: "read" | "unsafe" | "busy" | "changed" | "invalid" | "write" | "keyring" | "partial") {
     super({
       read: "Cannot read web-access.json. Check its JSON and permissions before reopening setup.",
-      unsafe: "Unsafe web-access path. Use regular files owned by you, no symlinks or writable shared directories. Credentials require mode 0600.",
+      unsafe: "Unsafe web-access path. Use regular files owned by you and no symlinks. Only web-access.credentials.json requires mode 0600; existing directory permissions are left unchanged.",
       busy: "Web access setup is busy. Retry after the other save finishes. Remove web-access.json.lock only after checking that no Pi process is saving.",
       changed: "Web access settings changed since setup opened. Cancel and reopen /web-access to review the latest settings.",
       invalid: "Invalid setup values. Review the model IDs and enter a non-empty API key without whitespace.",
@@ -46,7 +46,7 @@ function same(left?: Revision, right?: Revision): boolean {
   return left?.hash === right?.hash && left?.ino === right?.ino && left?.dev === right?.dev && left?.mode === right?.mode;
 }
 
-/** Bounded descriptor read; settings may be 0644 for compatibility, saves are always 0600. */
+/** Bounded descriptor read; only credentials require 0600, saves are always private. */
 async function readText(path: string, privateMode = false): Promise<{ text?: string; revision?: Revision }> {
   const info = await lstat(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
@@ -62,7 +62,7 @@ async function readText(path: string, privateMode = false): Promise<{ text?: str
   try {
     const stat = await file.stat();
     if (!stat.isFile() || stat.ino !== info.ino || stat.dev !== info.dev || stat.size > MAX_BYTES || process.platform !== "win32" &&
-      (stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0 || privateMode && (stat.mode & 0o777) !== 0o600)) throw new SetupError("unsafe");
+      (stat.uid !== process.getuid?.() || privateMode && (stat.mode & 0o777) !== 0o600)) throw new SetupError("unsafe");
     const buffer = Buffer.alloc(MAX_BYTES + 1);
     let size = 0;
     while (size < buffer.length) {
@@ -90,10 +90,8 @@ async function safeParent(directory: string): Promise<void> {
   try { await mkdir(directory, { mode: 0o700 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   const info = await lstat(directory);
-  // Root-owned sticky directories may be ancestors, never the destination itself.
-  const sharedSticky = (info.mode & 0o1000) !== 0 && info.uid === 0;
-  if (!info.isDirectory() || info.isSymbolicLink() || process.platform !== "win32" &&
-    ((!sharedSticky && (info.mode & 0o022) !== 0) || info.uid !== 0 && info.uid !== process.getuid?.())) throw new SetupError("unsafe");
+  // Existing directories belong to the user's setup; don't impose or change their modes.
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new SetupError("unsafe");
 }
 
 async function lock(path: string): Promise<() => Promise<void>> {
@@ -172,8 +170,6 @@ export async function saveSetup(snapshot: SetupSnapshot, draft: SetupDraft, key?
     let credentialWritten = false;
     try {
       await safeParent(resolve(snapshot.agentDir));
-      const directory = await lstat(snapshot.agentDir);
-      if (process.platform !== "win32" && (directory.uid !== process.getuid?.() || (directory.mode & 0o022) !== 0)) throw new SetupError("unsafe");
       release = await lock(path);
       if (!same(snapshot.revision, (await readText(path)).revision)) throw new SetupError("changed");
       configTemp = await stage(path, settings);
