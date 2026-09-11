@@ -95,14 +95,36 @@ test("unsafe settings and credentials paths fail closed", { skip: process.platfo
   assert.equal(await readFile(target, "utf8"), "{}");
 }));
 
-test("shared writable and symlinked parent directories are rejected", { skip: process.platform === "win32" }, () => fixture(async (dir) => {
+test("symlinked parent directories remain rejected", { skip: process.platform === "win32" }, () => fixture(async (dir) => {
   const alias = `${dir}-alias`;
   await symlink(dir, alias);
   try { await assert.rejects(saveSetup(await readSetupSnapshot(alias), draft(), "fixture"), /Unsafe/); }
   finally { await rm(alias); }
-  await chmod(dir, 0o777);
-  await assert.rejects(saveSetup(await readSetupSnapshot(dir), draft(), "fixture"), /Unsafe/);
   assert.deepEqual(await readdir(dir), []);
+}));
+
+test("only credentials require private permissions; existing directories are never chmodded", { skip: process.platform === "win32" }, () => fixture(async (dir) => {
+  const piDir = join(dir, ".pi");
+  const agentDir = join(piDir, "agent");
+  await mkdir(agentDir, { recursive: true });
+  await chmod(piDir, 0o775);
+  for (const mode of [0o700, 0o775, 0o777]) {
+    await chmod(agentDir, mode);
+    const path = join(agentDir, "web-access.json");
+    await writeFile(path, '{"cache":{"maxEntries":3}}');
+    await chmod(path, 0o664);
+    await saveSetup(await readSetupSnapshot(agentDir), draft(), "fixture");
+    assert.equal((await lstat(piDir)).mode & 0o777, 0o775);
+    assert.equal((await lstat(agentDir)).mode & 0o777, mode);
+    assert.equal((await lstat(join(agentDir, "web-access.credentials.json"))).mode & 0o777, 0o600);
+    assert.equal((await json(path)).cache.maxEntries, 3);
+  }
+  const credentials = join(agentDir, "web-access.credentials.json");
+  await chmod(credentials, 0o644);
+  await assert.rejects(saveSetup(await readSetupSnapshot(agentDir), draft(), "replacement"), /credentials.json requires mode 0600/);
+  assert.equal((await json(credentials)).gemini, "fixture");
+  assert.equal((await lstat(credentials)).mode & 0o777, 0o644);
+  assert.equal((await lstat(piDir)).mode & 0o777, 0o775);
 }));
 
 test("a stale wizard or an external edit during staging never overwrites newer settings", () => fixture(async (dir) => {
