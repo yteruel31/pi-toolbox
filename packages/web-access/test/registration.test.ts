@@ -13,7 +13,7 @@ function harness(existing: string[] = []) {
   const tools = new Map<string, ToolDefinition>();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
   const notifications: string[] = [];
-  const pi = { registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => handlers.set(name, handler), getAllTools: () => existing.map((name) => ({ name })) } as unknown as ExtensionAPI;
+  const pi = { registerCommand: () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => handlers.set(name, handler), getAllTools: () => existing.map((name) => ({ name })) } as unknown as ExtensionAPI;
   const ctx = { cwd: "/tmp", hasUI: true, scopedModels: [], ui: { notify: (text: string) => notifications.push(text) } } as unknown as ExtensionContext;
   return { pi, tools, handlers, notifications, ctx };
 }

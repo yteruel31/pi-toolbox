@@ -9,6 +9,7 @@ import { ResearchManager, type Job } from "./research.js";
 import { WebService, mapBounded } from "./service.js";
 import { retrieve, type Document } from "./store.js";
 import { CHECK_INSTRUCTIONS, synthesize, validateAssessment } from "./synthesis.js";
+import { registerSetupCommand } from "./setup-command.js";
 
 export const TOOL_NAMES = ["web_search", "fetch_content", "get_search_content", "source_check", "deep_research"] as const;
 const optionalText = (maxLength = 500) => Type.Optional(Type.String({ minLength: 1, maxLength }));
@@ -151,6 +152,7 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
   });
 }
 export default function webAccess(pi: ExtensionAPI): void {
+  registerSetupCommand(pi);
   let research: ResearchManager | undefined;
   let service: WebService | undefined;
   let registered = false;

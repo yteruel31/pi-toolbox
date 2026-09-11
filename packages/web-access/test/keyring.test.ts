@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { parseConfig, resolveKey } from "../src/config.js";
 import { ResearchManager } from "../src/research.js";
+import { storeKeyring } from "../src/keyring.js";
 
 async function helper(script: string, run: (env: NodeJS.ProcessEnv) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), "web-keyring-test-"));
@@ -13,6 +14,20 @@ async function helper(script: string, run: (env: NodeJS.ProcessEnv) => Promise<v
     await run({ PATH: directory, OPENAI_API_KEY: "must-not-fallback", GEMINI_API_KEY: "must-not-fallback" });
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
+test("keyring storage sends the secret only on stdin, with fixed attributes and no shell", { skip: process.platform !== "linux" }, async () => {
+  await helper('test "$#" = 6 && test "$1" = store && test "$2" = "--label=Pi web access" && test "$3" = application && test "$4" = pi-web-access && test "$5" = provider && test "$6" = openai || exit 1\nkey=$(/bin/cat)\ntest "$key" = \'fixture-$;`secret\' || exit 2', async (env) => {
+    await storeKeyring("openai", "fixture-$;`secret", env);
+  });
+});
+test("keyring store missing helper, invalid keys, and helper failures stay sanitized", { skip: process.platform !== "linux" }, async () => {
+  await helper('printf "private-fixture"; printf "private-fixture" >&2; exit 1', async (env) => {
+    for (const key of ["fixture", "bad key"]) await assert.rejects(storeKeyring("gemini", key, env), (error: Error) => {
+      assert.match(error.message, /libsecret-tools/); assert.doesNotMatch(error.message, /private-fixture|bad key/); assert.equal(error.cause, undefined); return true;
+    });
+    await rm(join(env.PATH!, "secret-tool"));
+    await assert.rejects(storeKeyring("gemini", "fixture", env), /libsecret-tools/);
+  });
+});
 const config = parseConfig({ credentials: { openai: "keyring:pi-web-access/openai", gemini: "keyring:pi-web-access/gemini", brave: "keyring:pi-web-access/brave" } }, "/tmp");
 test("keyring lookup uses fixed attributes, no shell interpolation, and refreshes on each read", { skip: process.platform !== "linux" }, async () => {
   await helper('test "$#" = 5 && test "$1" = lookup && test "$2" = application && test "$3" = pi-web-access && test "$4" = provider || exit 1\nprintf "fixture-%s\\n" "$5"', async (env) => {

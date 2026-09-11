@@ -2,11 +2,14 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { lookupKeyring } from "./keyring.js";
+import { readCredentialFile } from "./credentials.js";
 
 export interface WebConfig {
   enabled: boolean;
   search: { provider?: "gemini" | "openai" | "brave"; geminiModel: string; openaiModel: string };
   credentials: { gemini: string; openai: string; brave: string };
+  /** Derived from the agent directory, not configurable through web-access.json. */
+  credentialsFile: string;
   synthesisModel?: string;
   research: { outputDir: string; geminiModel: string; openaiModel: string; pollIntervalMs: number };
   fetch: { timeoutMs: number; maxBytes: number; maxPdfPages: number; javascript: "auto" | "never" };
@@ -44,6 +47,7 @@ export function parseConfig(value: unknown, agentDir: string): WebConfig {
   if (!isAbsolute(outputDir) || !isAbsolute(directory)) throw new Error("Configured output and cache directories must be absolute paths");
   return {
     enabled: root.enabled !== false,
+    credentialsFile: join(agentDir, "web-access.credentials.json"),
     search: { provider: search.provider as WebConfig["search"]["provider"], geminiModel: text(search.geminiModel, "gemini-3.6-flash", "search.geminiModel"), openaiModel: text(search.openaiModel, "gpt-5-mini", "search.openaiModel") },
     credentials: { gemini: text(credentials.gemini, "$GEMINI_API_KEY", "credentials.gemini"), openai: text(credentials.openai, "$OPENAI_API_KEY", "credentials.openai"), brave: text(credentials.brave, "$BRAVE_API_KEY", "credentials.brave") },
     synthesisModel: root.synthesisModel === undefined ? undefined : text(root.synthesisModel, "", "synthesisModel"),
@@ -64,6 +68,10 @@ export async function loadConfig(agentDir = getAgentDir()): Promise<WebConfig> {
 /** Only explicit references or literals. Never execute user-provided credential commands. */
 export async function resolveKey(config: WebConfig, provider: keyof WebConfig["credentials"], env = process.env, signal?: AbortSignal): Promise<string> {
   const source = config.credentials[provider];
+  if (source.startsWith("file:")) {
+    if (source !== `file:pi-web-access/${provider}`) throw new Error("Invalid file reference; use file:pi-web-access/<matching-provider>");
+    return readCredentialFile(config.credentialsFile, provider, signal);
+  }
   if (source.startsWith("keyring:")) {
     if (source !== `keyring:pi-web-access/${provider}`) throw new Error("Invalid keyring reference; use keyring:pi-web-access/<matching-provider>");
     return lookupKeyring(provider, env, signal);

@@ -22,6 +22,8 @@ Don't load this extension alongside another extension registering any of its fiv
 
 For migration, use `pi config` to disable the old extension before enabling this one, then `/reload`. Review the configuration below and explicitly recreate the settings you want. Old `~/.pi/web-search.json`, credentials, browser profiles and installed packages are untouched. To leave this package inactive within the toolbox, set `enabled` to `false` in its configuration.
 
+To test a development worktree when the toolbox Git package is already installed, disable only its `packages/web-access/src/index.ts` resource with `pi config`, then launch `pi -e /absolute/path/to/worktree/packages/web-access/src/index.ts`. Keep the other installed toolbox resources enabled. Don't replace the whole toolbox package or modify the installed clone. Restore the installed web-access resource when you're done testing the worktree.
+
 ## Prerequisites
 
 Install the system dependencies on the machine running Pi, not just on the laptop connected to it over SSH. The extension doesn't install OS packages, download browsers, or change security policies. A complete setup needs Linux: isolated JavaScript rendering and YouTube extraction aren't supported on macOS or Windows. Missing optional dependencies affect the corresponding feature, not registration of the five tools.
@@ -77,6 +79,20 @@ yt-dlp --version
 
 Check the browser executable separately. A binary on `PATH` doesn't prove it's visible in the sandbox, that a Secret Service collection is unlocked, or that user namespaces are permitted. After reboot, a headless/SSH keyring may need to be unlocked again. See [Linux Secret Service](#linux-secret-service) for credential setup. API authentication and live Chromium/YouTube behavior still need testing on the target machine; this isn't a verified clean-machine installation recipe.
 
+## Setup wizard
+
+Run `/web-access` (or `/web-access setup` / `/web-access config`) in Pi's interactive terminal. The compact centered overlay follows `/mcp`, not a fullscreen screen. Use Up/Down to choose, Enter to continue, Shift+Tab to go back, PgUp/PgDn to scroll, and Esc to cancel. On a terminal too small to show a usable form, resize or cancel.
+
+Choose a default search provider, enable or disable the tools, and review the model settings. Gemini and OpenAI have separate native search and deep-research model IDs. Brave has no native model settings. Pi synthesis is separate: leave it blank for the current Pi model, or enter `provider/model-id` using Pi's existing authentication and session model allowlist. The wizard doesn't fetch model catalogs or validate provider availability.
+
+Choose **Keep current source**, **Private file (0600)**, or **Linux Secret Service keyring** explicitly. Keeping the source leaves existing environment, literal, file or keyring settings untouched and doesn't read or test the key. For new credentials, enter the key only in the masked field, never in chat, slash-command arguments, tool inputs or shell history. Secret input has no undo stack or kill ring; Ctrl+u clears it. The final review only says whether a key was entered, never its value.
+
+Nothing is written before **Save changes**. Save preserves unrelated settings and other providers' credentials. Settings changes require `/reload`; saving doesn't automatically reload or resume research jobs. No API request or paid credential test is performed. Any later live test needs your explicit approval.
+
+Settings and private credentials are written through exclusive temporary files with mode `0600`, fsynced, then atomically renamed individually. The writer rejects symlinks, unsafe ownership and shared writable directories. It uses Pi's file mutation queues, a package-local `web-access.json.lock`, and revision checks to reject stale wizard saves or detected external edits. The lock is advisory for external editors: don't edit these files while saving. After a crash, remove the lock only after checking that no Pi process is saving. Settings and credential storage aren't a single transaction: if storing the key succeeds but saving settings fails, the key may remain stored, and the wizard reports this rather than claiming a rollback. Interrupted saves may also leave private `.tmp` files; remove them only when no save is running.
+
+If the keyring is unavailable, setup gives the required Linux dependencies and lets you return to storage selection. It never silently falls back to a file. Switching storage doesn't delete keys from the previous source. Run setup again to rotate a key; remove unused old credentials separately once you've verified the new source.
+
 ## Configuration
 
 The current toolbox checkout uses package-owned configuration files under Pi's agent directory. This package follows that convention: `getAgentDir()/web-access.json`, normally `~/.pi/agent/web-access.json`, respecting `PI_CODING_AGENT_DIR`. It doesn't create a second settings registry or read project-local credential settings. Settings are read on startup; run `/reload` after editing. Unknown fields and invalid values fail closed.
@@ -118,15 +134,33 @@ The current toolbox checkout uses package-owned configuration files under Pi's a
 
 All fields are optional. The example's search provider and dedicated synthesis model are choices, not implicit defaults. Without `search.provider`, each search must name a provider. Without `synthesisModel`, synthesis uses the current Pi model. API calls never fall back to another provider. OpenAI search doesn't support the `recencyFilter` parameter here and rejects it before making a request; Gemini and Brave support it. Domain restrictions are applied to returned sources as well as provider requests where supported. Provider-generated answers aren't proof that every claim satisfies the requested filter.
 
-Credentials accept literals, `$NAME` or `${NAME}` environment references, and the explicit Linux keyring references below. They never execute user-provided commands or use ChatGPT/Codex/Gemini consumer subscriptions. Environment references are resolved only for the selected request. Keep the configuration private (`0600`). Pi model synthesis is separate: it uses Pi's model registry and existing authentication, respects the session model allowlist, and adds a model call whose usage is returned to Pi. Search/research provider consumption is reported when supplied; the extension doesn't invent dollar costs.
+Credentials accept literals, `$NAME` or `${NAME}` environment references, and the explicit private-file or Linux keyring references below. They never execute user-provided commands or use ChatGPT/Codex/Gemini consumer subscriptions. Environment references are resolved only for the selected request. Keep the configuration private (`0600`). Pi model synthesis is separate: it uses Pi's model registry and existing authentication, respects the session model allowlist, and adds a model call whose usage is returned to Pi. Search/research provider consumption is reported when supplied; the extension doesn't invent dollar costs.
 
 Research output defaults to `getAgentDir()/web-access/reports`. The content cache defaults to `getAgentDir()/web-access/cache`; `cache.directory` can override it with an absolute path. Research tracking remains under `getAgentDir()/web-access/research`, independently of cache eviction.
 
+### Private credentials file (recommended for headless servers)
+
+Store keys in `getAgentDir()/web-access.credentials.json`, normally `~/.pi/agent/web-access.credentials.json`. This is separate from settings and doesn't need D-Bus, a keyring, or extra runtime packages. The JSON object maps provider names (`openai`, `gemini`, `brave`) directly to API key strings. On Unix, the file must belong to the current user and have exactly `0600` permissions. Symlinks and non-regular files are rejected. On Windows, restrict access with your user profile's ACLs; Unix mode checks don't apply.
+
+Use `/web-access setup` and choose **Private file (0600)**. No Python setup script is needed. The wizard writes the matching reference into `web-access.json`, for example:
+
+```json
+{
+  "credentials": {
+    "openai": "file:pi-web-access/openai"
+  }
+}
+```
+
+Use `file:pi-web-access/gemini` or `file:pi-web-access/brave` for the other providers. References must match their provider and can't name arbitrary paths. Existing environment defaults and keyring references stay unchanged. There is no automatic migration or fallback when an explicitly selected source fails.
+
+Keys are read on each operation, so replacing a key in the same source doesn't require a reload. To rotate keys or add a provider, run `/web-access setup` again. For manual edits, use a trusted editor that doesn't upload contents or leave unprotected swap/backup files. Keep it outside Git and protect backups too. This is plaintext protected by filesystem permissions, not encryption: root and processes running as your user can read it. It doesn't change Pi's own model authentication.
+
 ### Linux Secret Service
 
-To keep provider keys out of JSON and shell startup files, store them with `secret-tool` (usually provided by `libsecret-tools`). This uses the same Secret Service mechanism as the SonarCloud CLI, with separate `application=pi-web-access` and `provider` attributes. It isn't the kernel session keyring.
+To keep provider keys out of JSON and shell startup files, choose **Linux Secret Service keyring** in `/web-access setup`. The wizard runs `secret-tool` (usually provided by `libsecret-tools`) with the key passed through stdin, not command arguments. This uses the same Secret Service mechanism as the SonarCloud CLI, with separate `application=pi-web-access` and `provider` attributes. It isn't the kernel session keyring.
 
-Run this interactively in your own terminal and enter the key at the prompt. Don't put the key in command arguments, shell history, or an agent conversation:
+For manual setup outside Pi, run this interactively in your own terminal and enter the key at the prompt. Don't put the key in command arguments, shell history, or an agent conversation:
 
 ```bash
 secret-tool store --label='Pi web-access OpenAI API key' application pi-web-access provider openai
@@ -146,7 +180,7 @@ Repeat with `provider gemini` or `provider brave` and a matching label for other
 
 Each reference must match its provider. The helper runs directly without a shell, with a 30-second timeout and bounded output. Keys are resolved when needed, aren't cached across operations, and aren't written to research records or forwarded to the synthesis model. Missing entries, a locked collection, an unavailable helper, cancellation, and D-Bus failures produce sanitized errors, never a fallback to environment or literal credentials. Existing environment defaults remain unchanged unless you select a keyring reference.
 
-On an SSH server, Pi must have access to a user session D-Bus and a running Secret Service implementation such as GNOME Keyring. `secret-tool` alone isn't enough. Persistence and encryption depend on the collection/backend; after logout or reboot, the collection may need to be unlocked again before background research can poll. Don't place an unlock password in scripts. This reduces accidental file/env leaks but doesn't isolate secrets from root or other processes allowed to access the same unlocked collection. No automatic migration, key creation, or change to Pi's own synthesis authentication is performed.
+On an SSH server, Pi must have access to a user session D-Bus and a running Secret Service implementation such as GNOME Keyring. `secret-tool` alone isn't enough. Persistence and encryption depend on the collection/backend; after logout or reboot, the collection may need to be unlocked again before background research can poll. Don't place an unlock password in scripts. This reduces accidental file/env leaks but doesn't isolate secrets from root or other processes allowed to access the same unlocked collection. Keys are stored only after explicit wizard confirmation or a manual `secret-tool store`. No automatic migration or change to Pi's own synthesis authentication is performed.
 
 ## Examples
 
@@ -218,7 +252,7 @@ npm run pack:dry --workspace @yteruel31/pi-web-access
 npm run smoke:extensions
 ```
 
-Provider protocol tests are mocked and do not spend API credits. Tests cover credentials/payloads, citations, lifecycle/recovery/cancellation, non-overwriting Markdown output, cache bounds, SSRF, extraction and Pi registration. Real credential smoke tests and live Linux browser/YouTube isolation tests need separate approval and installed dependencies.
+Provider protocol tests are mocked and do not spend API credits. Tests cover masked entry, wizard navigation/cancel/confirmation, constrained modal dimensions and scrolling, credential storage selection, permissions/symlinks, concurrent settings preservation, sanitized failures, provider payloads, citations, lifecycle/recovery/cancellation, non-overwriting Markdown output, cache bounds, SSRF, extraction and Pi registration. Real credential smoke tests and live Linux browser/YouTube isolation tests need separate approval and installed dependencies.
 
 Protocol references checked during implementation:
 
