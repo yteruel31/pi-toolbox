@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test, { afterEach } from "node:test";
 import { writeMcpGatewaySettings, writeMcpServerControls } from "../src/config-writer.js";
+import { DEFAULT_UI_SETTINGS } from "../src/config.js";
 
 const execFileAsync = promisify(execFile);
 const child = fileURLToPath(new URL("./fixtures/config-writer-child.ts", import.meta.url));
@@ -19,6 +20,7 @@ test("writer preserves unknown data and existing permissions while changing only
 	const path = join(home, ".pi", "agent", "mcp.json");
 	mkdirSync(join(path, ".."), { recursive: true });
 	writeFileSync(path, JSON.stringify({ custom: { keep: true }, mcpServers: { local: { command: "node", args: ["server.js"], unknown: "keep" } } }), { mode: 0o640 });
+	chmodSync(path, 0o640); // Test existing permissions independently of the caller's umask.
 	await writeMcpServerControls({ local: { disabled: true, directTools: ["read"] } }, { path });
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
 		custom: { keep: true },
@@ -32,6 +34,7 @@ test("gateway writer narrowly replaces and removes settings.gateway", async () =
 	const path = join(home, ".pi", "agent", "mcp.json");
 	mkdirSync(join(path, ".."), { recursive: true });
 	writeFileSync(path, JSON.stringify({ keep: { value: true }, settings: { directTools: true, unknown: "keep", gateway: { mode: "tailscale" } }, mcpServers: { local: { command: "node" } } }), { mode: 0o640 });
+	chmodSync(path, 0o640);
 	await writeMcpGatewaySettings({ mode: "custom", externalUrl: "https://mcp.example.test/apps", listenAddress: "127.0.0.1" }, { path });
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
 		keep: { value: true },
@@ -163,6 +166,53 @@ test("queued updates compose instead of overwriting each other", async () => {
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
 		mcpServers: { one: { disabled: true }, two: { directTools: ["search"] } },
 	});
+});
+
+test("gateway expected state is checked after waiting for the configuration lock", async () => {
+	for (const changed of [{ ui: { gatewayPort: 29999 } }, { gateway: { mode: "tailscale" } }]) {
+		const home = temporaryHome();
+		const path = join(home, ".pi", "agent", "mcp.json");
+		mkdirSync(join(path, ".."), { recursive: true });
+		writeFileSync(path, "{}");
+		writeFileSync(`${path}.lock`, JSON.stringify({ pid: process.pid, token: "test-owner" }));
+		const pending = writeMcpGatewaySettings({ mode: "custom", externalUrl: "https://safe.test", listenAddress: "127.0.0.1" }, {
+			path, homeDir: home, expected: { ui: { ...DEFAULT_UI_SETTINGS } },
+		});
+		const rejected = assert.rejects(pending, { code: "configuration-changed" });
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		const newer = { settings: changed, keep: "newer" };
+		writeFileSync(path, JSON.stringify(newer));
+		rmSync(`${path}.lock`);
+		await rejected;
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), newer);
+	}
+});
+
+test("gateway pre-commit cancellation after lock wait leaves the file unchanged", async () => {
+	const home = temporaryHome();
+	const path = join(home, ".pi", "agent", "mcp.json");
+	mkdirSync(join(path, ".."), { recursive: true });
+	writeFileSync(path, "{}");
+	writeFileSync(`${path}.lock`, "test-owner");
+	const abort = new AbortController();
+	const pending = writeMcpGatewaySettings({ mode: "tailscale" }, { path, homeDir: home, expected: { ui: { ...DEFAULT_UI_SETTINGS } }, beforeCommit: () => abort.signal.throwIfAborted() });
+	const rejected = assert.rejects(pending, { name: "AbortError" });
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	abort.abort();
+	rmSync(`${path}.lock`);
+	await rejected;
+	assert.equal(readFileSync(path, "utf8"), "{}");
+	assert.deepEqual(readdirSync(join(path, "..")), ["mcp.json"]);
+});
+
+test("gateway expected state permits unrelated queued server updates", async () => {
+	const home = temporaryHome();
+	const path = join(home, ".pi", "agent", "mcp.json");
+	await Promise.all([
+		writeMcpServerControls({ one: { disabled: true } }, { path }),
+		writeMcpGatewaySettings({ mode: "tailscale" }, { path, homeDir: home, expected: { ui: { ...DEFAULT_UI_SETTINGS } } }),
+	]);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { mcpServers: { one: { disabled: true } }, settings: { gateway: { mode: "tailscale" } } });
 });
 
 test("separate processes serialize control updates", async () => {

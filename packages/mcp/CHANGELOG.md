@@ -11,7 +11,9 @@ This package does not claim universal `pi-mcp-adapter` parity; see `PARITY.md` f
 - Adapter-compatible OAuth/lazy server definitions remain valid in `/mcp`, while actions on unsupported definitions now explain why they cannot run.
 
 ### Added
-- Panel-only `/mcp-gateway` configuration with explicit managed-Tailscale and custom-HTTPS reverse-proxy modes, configurable IP listener, exact external capability challenge before persistence, diagnosis/deactivation, and `/mcp` OAuth handoff when unconfigured.
+- Unified compact `/mcp` modal with Servers, Gateway, and Diagnostics sections, following Subagents configuration conventions. Gateway controls remain accessible in every publication state.
+- Safe gateway diagnostics with failing steps, known causes, rollback status, and explicit current-agent repair handoff. Custom selection starts an infrastructure discovery and agreement conversation.
+- Agent-accessible gateway status, validation, configuration, and deactivation through `mcp`, sharing interactive confirmation, daemon lifecycle, exact external challenge, rollback, and protected persistence with the UI.
 - Controlled same-protocol gateway reconfiguration and shared external exposure verification for OAuth callbacks and MCP Apps; gateway protocol v3 continues to fail closed against older daemons.
 - `/mcp` TUI management panel with live server/tool search, enable/disable, direct-tool selection, reconnect, OAuth start, safe global config persistence, and a compact below-editor MCP status indicator.
 - Control-only `disabled`/`directTools` server overlays in `~/.pi/agent/mcp.json`, avoiding transport or credential duplication from the lower config layer.

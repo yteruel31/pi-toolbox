@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import mcpExtension from "../src/index.js";
+import { createServer } from "node:http";
+import { GatewayClient } from "../src/gateway/client.js";
+import { DEFAULT_UI_SETTINGS } from "../src/config.js";
 
 test("extension lifecycle stays network-idle until an MCP operation needs a connection", async () => {
 	const commands: unknown[][] = [];
@@ -26,8 +29,8 @@ test("extension lifecycle stays network-idle until an MCP operation needs a conn
 		events: { emit: (channel: string, data: unknown) => emitted.push({ channel, data }), on: () => () => {} },
 	} as never);
 
-	assert.equal(commands.length, 2);
-	assert.deepEqual(commands.map((command) => command[0]), ["mcp-gateway", "mcp"]);
+	assert.equal(commands.length, 1);
+	assert.deepEqual(commands.map((command) => command[0]), ["mcp"]);
 	const tool = tools.find((candidate) => candidate.name === "mcp");
 	assert.ok(tool);
 	assert.deepEqual([...events.keys()], ["session_start", "session_shutdown"]);
@@ -64,6 +67,56 @@ test("extension lifecycle stays network-idle until an MCP operation needs a conn
 		assert.deepEqual(emitted[1]?.data, { v: 1, counts: { total: 1, enabled: 0, connected: 0, authRequired: 0, errors: 0, disabled: 1 } });
 		assert.deepEqual(emitted.at(-1)?.data, { v: 1, counts: null }, "shutdown clears counts");
 	} finally {
+		globalThis.fetch = originalFetch;
+		if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("agent gateway configuration restores the real MCP runtime without reloading the agent session", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pi-mcp-runtime-restore-"));
+	const reserve = createServer();
+	await new Promise<void>((resolve) => reserve.listen(0, "127.0.0.1", resolve));
+	const gatewayPort = (reserve.address() as { port: number }).port;
+	await new Promise<void>((resolve) => reserve.close(() => resolve()));
+	mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+	writeFileSync(join(home, ".pi", "agent", "mcp.json"), JSON.stringify({ settings: { ui: { gatewayPort } } }));
+	const originalHome = process.env.HOME;
+	const originalFetch = globalThis.fetch;
+	process.env.HOME = home;
+	const candidate = { mode: "custom", externalUrl: "https://gateway.example.test/mcp-ui", listenAddress: "127.0.0.1" };
+	const client = new GatewayClient({ homeDir: home, settings: { ...DEFAULT_UI_SETTINGS, gatewayPort, requireTailscaleIdentity: false }, externalUrlResolver: async () => candidate.externalUrl });
+	const events = new Map<string, (...args: any[]) => Promise<void>>();
+	const tools: any[] = [];
+	let active = ["mcp", "read"];
+	const context = { hasUI: true, ui: {
+		async confirm() { return true; }, setStatus() {}, theme: { fg: (_color: string, value: string) => value },
+	} };
+	globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+		const url = new URL(input instanceof Request ? input.url : input.toString());
+		assert.equal(url.origin, "https://gateway.example.test");
+		return originalFetch(`http://127.0.0.1:${gatewayPort}${url.pathname}`, init);
+	}) as typeof fetch;
+	try {
+		mcpExtension({ registerCommand() {}, registerTool: (tool: unknown) => tools.push(tool),
+			on: (name: string, handler: (...args: any[]) => Promise<void>) => events.set(name, handler),
+			getAllTools: () => tools, getActiveTools: () => active, setActiveTools: (names: string[]) => { active = names; },
+			events: { emit() {} },
+		} as never);
+		await events.get("session_start")!({}, context);
+		const tool = tools.find((tool) => tool.name === "mcp");
+		const result = await tool.execute("configure", { action: "gateway-configure", args: candidate }, undefined, undefined, context);
+		assert.equal(result.details.gateway.persisted, true, JSON.stringify(result));
+		assert.equal(result.details.gateway.restoreDiagnostic, undefined);
+		assert.doesNotMatch(JSON.stringify(await tool.execute("servers", {}, undefined)), /before session start/);
+		assert.equal((await tool.execute("gateway", { action: "gateway-status" })).details.gateway.mode, "custom");
+		assert.ok(active.includes("mcp") && active.includes("read"));
+		const removed = await tool.execute("remove", { action: "gateway-deactivate" }, undefined, undefined, context);
+		assert.equal(removed.details.gateway.state, "deactivated");
+		assert.doesNotMatch(JSON.stringify(await tool.execute("servers-again", {}, undefined)), /before session start/);
+	} finally {
+		await events.get("session_shutdown")?.({}, context);
+		await client.shutdown();
 		globalThis.fetch = originalFetch;
 		if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
 		rmSync(home, { recursive: true, force: true });

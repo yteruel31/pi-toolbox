@@ -1,14 +1,15 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import type { McpUiSettings } from "./config.js";
+import { GatewayDiagnosticError, networkErrorCode, type GatewayDiagnosticCode } from "./gateway/diagnostics.js";
 
 const execFile = promisify(execFileCallback);
 export interface TailscaleExec { (args: readonly string[]): Promise<{ stdout: string }> }
 export type RouteState = "absent" | "matching" | "conflicting";
 export interface RouteMutationResult { state: "absent" | "matching"; changed: boolean; }
-export class TailscaleMutationError extends Error {
-	constructor(readonly operation: "setup" | "remove", readonly changed: boolean) {
-		super(`Tailscale Serve ${operation} failed`);
+export class TailscaleMutationError extends GatewayDiagnosticError {
+	constructor(readonly operation: "setup" | "remove", readonly changed: boolean, code: GatewayDiagnosticCode = "route-mutation-failed") {
+		super(code);
 	}
 }
 
@@ -24,10 +25,10 @@ export class TailscaleAdapter {
 		const target = `http://127.0.0.1:${settings.gatewayPort}`;
 		let stdout: string;
 		try { ({ stdout } = await this.run(["serve", "status", "--json"])); }
-		catch { throw new Error("Tailscale is unavailable"); }
+		catch (error) { throw tailscaleError(error); }
 		let data: unknown;
 		try { data = JSON.parse(stdout); }
-		catch { throw new Error("Malformed Tailscale Serve status"); }
+		catch { throw new GatewayDiagnosticError("tailscale-status-invalid"); }
 		const configured = selectedHandler(data, settings.httpsPort, settings.basePath);
 		const state: RouteState = configured === undefined ? "absent" : configured === target ? "matching" : "conflicting";
 		return { state, target };
@@ -36,19 +37,19 @@ export class TailscaleAdapter {
 	async hostname(): Promise<string | undefined> {
 		let stdout: string;
 		try { ({ stdout } = await this.run(["status", "--json"])); }
-		catch { throw new Error("Tailscale is unavailable"); }
+		catch (error) { throw tailscaleError(error); }
 		try {
 			const data = JSON.parse(stdout);
 			const name = data?.Self?.DNSName;
 			if (name === undefined) return undefined;
 			if (typeof name !== "string" || !name.trim()) throw new Error();
 			return name.replace(/\.$/, "");
-		} catch { throw new Error("Malformed Tailscale status"); }
+		} catch { throw new GatewayDiagnosticError("tailscale-status-invalid"); }
 	}
 
 	async setup(settings: McpUiSettings): Promise<RouteMutationResult> {
 		const status = await this.status(settings);
-		if (status.state === "conflicting") throw new TailscaleMutationError("setup", false);
+		if (status.state === "conflicting") throw new TailscaleMutationError("setup", false, "route-conflict");
 		if (status.state === "matching") return { state: "matching", changed: false };
 		let changed = false;
 		try {
@@ -57,14 +58,14 @@ export class TailscaleAdapter {
 			const verified = await this.status(settings);
 			if (verified.state !== "matching") throw new Error("postcondition");
 			return { state: "matching", changed };
-		} catch {
-			throw new TailscaleMutationError("setup", changed);
+		} catch (error) {
+			throw new TailscaleMutationError("setup", changed, error instanceof GatewayDiagnosticError ? error.code : undefined);
 		}
 	}
 
 	async remove(settings: McpUiSettings): Promise<RouteMutationResult> {
 		const status = await this.status(settings);
-		if (status.state === "conflicting") throw new TailscaleMutationError("remove", false);
+		if (status.state === "conflicting") throw new TailscaleMutationError("remove", false, "route-conflict");
 		if (status.state === "absent") return { state: "absent", changed: false };
 		let changed = false;
 		try {
@@ -73,15 +74,20 @@ export class TailscaleAdapter {
 			const verified = await this.status(settings);
 			if (verified.state !== "absent") throw new Error("postcondition");
 			return { state: "absent", changed };
-		} catch {
-			throw new TailscaleMutationError("remove", changed);
+		} catch (error) {
+			throw new TailscaleMutationError("remove", changed, error instanceof GatewayDiagnosticError ? error.code : undefined);
 		}
 	}
 
 	private async safeRun(args: readonly string[]): Promise<void> {
 		try { await this.run(args); }
-		catch { throw new Error("Tailscale command failed"); }
+		catch (error) { throw tailscaleError(error); }
 	}
+}
+
+function tailscaleError(error: unknown): GatewayDiagnosticError {
+	const code = (error as NodeJS.ErrnoException)?.code;
+	return new GatewayDiagnosticError(code === "ENOENT" ? "tailscale-missing" : networkErrorCode(error) ?? "tailscale-unavailable");
 }
 
 function selectedHandler(value: unknown, port: number, basePath: string): string | undefined {

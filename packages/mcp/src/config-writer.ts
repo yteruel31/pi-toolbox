@@ -4,7 +4,10 @@ import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { getMcpConfigPaths, parseDirectTools, parseGatewaySettings, type McpGatewaySettings, type McpServerControls } from "./config.js";
+import { DEFAULT_UI_SETTINGS, getMcpConfigPaths, loadMcpConfig, parseDirectTools, parseGatewaySettings, type McpGatewaySettings, type McpServerControls, type McpUiSettings } from "./config.js";
+import { GatewayDiagnosticError } from "./gateway/diagnostics.js";
+
+export interface GatewayExpectedState { gateway?: McpGatewaySettings; ui: McpUiSettings; }
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const JSON_NUMBER = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/;
@@ -208,7 +211,7 @@ function applyGateway(root: Record<string, unknown>, gateway: McpGatewaySettings
 
 async function writeMcpConfig(
 	mutate: (root: Record<string, unknown>) => string,
-	options: { homeDir?: string; path?: string },
+	options: { homeDir?: string; path?: string; beforeCommit?: () => void },
 ): Promise<string> {
 	const path = options.path ?? getMcpConfigPaths(options.homeDir ?? homedir())[1];
 	return withFileMutationQueue(path, async () => {
@@ -225,6 +228,7 @@ async function writeMcpConfig(
 					try { await handle.writeFile(encoded); await handle.sync(); } finally { await handle.close(); }
 					await chmod(temporary, revision.mode);
 					if (!sameRevision(revision, (await readText(path)).revision)) continue;
+					options.beforeCommit?.();
 					await rename(temporary, path);
 					await chmod(path, revision.mode);
 					const committed = await readText(path);
@@ -251,8 +255,21 @@ export async function writeMcpServerControls(
 /** Atomically replaces or removes only settings.gateway in the Pi-owned global MCP config. */
 export async function writeMcpGatewaySettings(
 	gateway: McpGatewaySettings | undefined,
-	options: { homeDir?: string; path?: string } = {},
+	options: { homeDir?: string; path?: string; expected?: GatewayExpectedState; beforeCommit?: () => void } = {},
 ): Promise<string> {
 	if (gateway !== undefined && !parseGatewaySettings(gateway)) throw new Error("MCP gateway settings are invalid");
-	return writeMcpConfig((root) => applyGateway(root, gateway), options);
+	return writeMcpConfig((root) => {
+		if (options.expected) {
+			// Recheck after acquiring the writer lock, and on every optimistic retry.
+			// Server-only changes can merge; the configuration we validated must not drift.
+			const paths = getMcpConfigPaths(options.homeDir ?? homedir());
+			const current = loadMcpConfig({ paths: [paths[0], options.path ?? paths[1]] });
+			const expected = options.expected;
+			const gatewayMatches = JSON.stringify(current.settings.gateway && parseGatewaySettings(current.settings.gateway)) === JSON.stringify(expected.gateway && parseGatewaySettings(expected.gateway));
+			const uiMatches = (Object.keys(DEFAULT_UI_SETTINGS) as Array<keyof McpUiSettings>).every((key) => current.settings.ui[key] === expected.ui[key]);
+			const invalid = current.diagnostics.some((item) => ["invalid-gateway", "invalid-ui", "invalid-json", "read-error", "invalid-top-level"].includes(item.code));
+			if (invalid || !gatewayMatches || !uiMatches) throw new GatewayDiagnosticError("configuration-changed");
+		}
+		return applyGateway(root, gateway);
+	}, options);
 }
