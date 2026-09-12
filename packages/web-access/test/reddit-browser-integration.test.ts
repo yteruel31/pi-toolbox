@@ -35,11 +35,15 @@ test("offline native Reddit browser exercises sandbox, pages, routes, evaluation
   const profileDir = join(root, "profile");
   await mkdir(profileDir, { mode: 0o700 });
   const events: string[] = [];
+  let activeContexts = 0, maximumActiveContexts = 0;
   const searchBody = JSON.stringify(listing([post]));
   const postBody = JSON.stringify([listing([post]), listing([])]);
   const fixtures = new Map([
     [buildRedditSearchUrl({ q: "typescript", sort: "relevance", time: "all", limit: 5 }), searchBody],
     [buildRedditPostUrl("https://www.reddit.com/r/typescript/comments/abc123/title/", { sort: "confidence", limit: 10, depth: 2 }), postBody],
+    [buildRedditSearchUrl({ q: "one" }), searchBody],
+    [buildRedditSearchUrl({ q: "two" }), searchBody],
+    [buildRedditPostUrl("https://www.reddit.com/comments/abc123", {}), postBody],
   ]);
 
   const browser: RedditBrowserDependencies = {
@@ -54,6 +58,7 @@ test("offline native Reddit browser exercises sandbox, pages, routes, evaluation
         assert.equal(options.headless, false);
         assert.ok(!options.args?.some((arg) => /no-sandbox|disable-setuid-sandbox|bwrap/.test(arg)));
         const context = await chromium.launchPersistentContext(directory, options);
+        activeContexts++; maximumActiveContexts = Math.max(maximumActiveContexts, activeContexts);
         events.push("launched");
         context.on("close", () => events.push("context:event-close"));
         const instrumentPage = (page: Page): Page => {
@@ -77,7 +82,7 @@ test("offline native Reddit browser exercises sandbox, pages, routes, evaluation
             if (property === "pages") return () => { const pages = target.pages(); events.push(`context:pages:${pages.length}`); return pages; };
             if (property === "close") return async () => {
               events.push("context:close");
-              try { await target.close(); events.push("context:closed"); }
+              try { await target.close(); activeContexts--; events.push("context:closed"); }
               catch (error) { events.push(`close:error:${error instanceof Error ? error.name : "unknown"}`); throw error; }
             };
             if (property === "route") return async (pattern: string, handler: (route: Route) => Promise<void>) => { events.push("context:route"); return target.route(pattern, async (route) => {
@@ -101,12 +106,21 @@ test("offline native Reddit browser exercises sandbox, pages, routes, evaluation
 
   try {
     const config = parseConfig({ reddit: { profileDir, executablePath: "/opt/google/chrome/chrome" } }, root);
-    const result = await new RedditService(config, { request: requestRedditJson, now: () => new Date(), browser }).test(AbortSignal.timeout(75_000));
+    const service = new RedditService(config, { request: requestRedditJson, now: () => new Date(), browser });
+    const result = await service.test(AbortSignal.timeout(75_000));
     assert.equal(result.status, "ready", `native phases: ${events.join(",")}`);
-    assert.equal(events.filter((event) => event === "fixture:fulfill").length, 2);
-    assert.equal(events.filter((event) => event === "page:goto").length, 4);
-    assert.equal(events.filter((event) => event === "page:evaluate").length, 2);
-    assert.equal(events.filter((event) => event === "context:closed").length, 2);
+    const mixed = await Promise.all([
+      service.search({ q: "one" }, AbortSignal.timeout(75_000)),
+      service.fetchPost("https://www.reddit.com/comments/abc123", {}, AbortSignal.timeout(75_000)),
+      service.search({ q: "two" }, AbortSignal.timeout(75_000)),
+    ]);
+    assert.equal(mixed.length, 3);
+    assert.equal(maximumActiveContexts, 1, `native phases: ${events.join(",")}`);
+    assert.equal(events.filter((event) => event === "fixture:fulfill").length, 5);
+    assert.equal(events.filter((event) => event === "page:goto").length, 10);
+    assert.equal(events.filter((event) => event === "page:evaluate").length, 5);
+    assert.equal(events.filter((event) => event === "context:closed").length, 5);
+    assert.equal(activeContexts, 0);
     assert.deepEqual((await readdir(profileDir)).filter((name) => name === ".pi-web-access-reddit.lock" || name.startsWith("Singleton")), []);
     assert.deepEqual(await profileProcesses(profileDir), []);
   } finally {

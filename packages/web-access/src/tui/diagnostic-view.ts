@@ -31,6 +31,10 @@ const stamp = (value?: string): string => value && Number.isFinite(Date.parse(va
 const compactStamp = (value?: string): string => value && Number.isFinite(Date.parse(value))
   ? new Date(value).toISOString().replace("T", " ").slice(0, 16) + "Z"
   : "time unavailable";
+const transientRedditStatus = (status: RedditDiagnostic["status"]): boolean => ["profile_busy", "queue_full", "queue_timeout", "not_found", "post_unavailable", "rate_limited", "upstream_unavailable", "request_failed", "cancelled", "timeout"].includes(status);
+const redditMessage = (diagnostic: RedditDiagnostic): string => diagnostic.status === "profile_busy"
+  ? `The profile is in use; wait for the current operation${diagnostic.eligible ? ". Cached validation remains valid" : " before validating"}.`
+  : diagnostic.message;
 
 /** State and bounded rendering for the Diagnostic tab. Inspections are local-only. */
 export class DiagnosticView {
@@ -112,8 +116,14 @@ export class DiagnosticView {
         if (!this.closed) {
           if (controller.signal.aborted && result.diagnostic.status === "ready") result = { ...result, diagnostic: { status: "cancelled", eligible: false, message: "Reddit browser validation was cancelled; cached readiness is unchanged." } };
           this.redditProof = { result, at: this.now() };
-          // The service result is also the newest local eligibility observation.
-          if (result.diagnostic.status !== "cancelled") this.redditLocal = result;
+          // A transient action result is not a readiness snapshot. Re-inspect
+          // locally so cached eligibility and the explicit test stay distinct.
+          if (transientRedditStatus(result.diagnostic.status)) {
+            try {
+              const inspected = await (this.options.inspectReddit ?? inspectRedditAccess)();
+              if (!this.closed) { this.redditLocal = inspected; this.redditError = undefined; }
+            } catch { if (!this.closed) this.redditError = "Reddit config inspection failed; cached readiness is unknown."; }
+          } else this.redditLocal = result;
         }
       }
     } finally {
@@ -188,16 +198,27 @@ export class DiagnosticView {
   private redditStatus(): { color: "success" | "warning" | "error" | "muted"; symbol: string; label: string; action: string; stale: boolean } {
     const local = this.redditLocal;
     const stale = this.redditProof?.result.diagnostic.status === "ready"
-      && Boolean(this.redditError || (local && (!local.enabled || local.diagnostic.status !== "ready")));
+      && Boolean(this.redditError || (local && (!local.enabled || !local.diagnostic.eligible)));
     if (!local) return { color: "muted", symbol: "○", label: "UNKNOWN", action: "Refresh local config/profile status.", stale };
     if (!local.enabled) return { color: "warning", symbol: "!", label: "DISABLED", action: "Enable web access, then refresh.", stale };
     const status = local.diagnostic.status;
-    if (status === "ready") return { color: "success", symbol: "✓", label: "READY", action: "Validated for current profile; run /reload if needed.", stale };
+    if (status === "ready") {
+      const cached = this.redditProof && this.redditProof.result.diagnostic.status !== "ready" ? "CACHED READY" : "READY";
+      return { color: "success", symbol: "✓", label: cached, action: "Validated for current profile; run /reload only if tools are not yet registered.", stale };
+    }
+    if (status === "profile_busy" && local.diagnostic.eligible) return { color: "warning", symbol: "!", label: "IN USE", action: "Calls wait their turn; cached validation remains valid.", stale };
     if (status === "not_configured") return { color: "muted", symbol: "○", label: "NOT CONFIGURED", action: "Configure the Reddit profile, then refresh.", stale };
     if (status === "untested") return { color: "muted", symbol: "○", label: "NOT TESTED", action: "Run Test Reddit to validate this profile.", stale };
-    if (status === "cancelled") return { color: "warning", symbol: "!", label: "CANCELLED", action: "Refresh to read current eligibility.", stale };
-    const warning = status === "profile_busy" || status === "timeout";
-    return { color: warning ? "warning" : "error", symbol: warning ? "!" : "✗", label: status.replaceAll("_", " ").toUpperCase(), action: "Fix the current condition, then test again.", stale };
+    if (status === "profile_busy") return { color: "warning", symbol: "!", label: "IN USE", action: "Wait for the current profile user, then validate once.", stale };
+    if (status === "queue_full") return { color: "warning", symbol: "!", label: "QUEUE FULL", action: "Reduce concurrent calls or wait for pending calls.", stale };
+    if (status === "queue_timeout") return { color: "warning", symbol: "!", label: "QUEUE TIMEOUT", action: "The bounded wait expired; wait or cancel other calls before retrying.", stale };
+    if (status === "cancelled") return { color: "warning", symbol: "!", label: "CANCELLED", action: "No readiness change; retry only when wanted.", stale };
+    if (status === "timeout") return { color: "warning", symbol: "!", label: "TIMEOUT", action: "The bounded request expired; cached readiness is unchanged.", stale };
+    if (status === "rate_limited" || status === "upstream_unavailable" || status === "request_failed") return { color: "warning", symbol: "!", label: status.replaceAll("_", " ").toUpperCase(), action: "Temporary request failure; wait before making another bounded call.", stale };
+    if (status === "not_found" || status === "post_unavailable") return { color: "warning", symbol: "!", label: status.replaceAll("_", " ").toUpperCase(), action: "This resource is unavailable; choose a different resource.", stale };
+    if (status === "access_denied" || status === "authentication_required") return { color: "error", symbol: "✗", label: status.replaceAll("_", " ").toUpperCase(), action: "Review this profile's Reddit access outside Pi, then validate once.", stale };
+    if (status === "invalid_response") return { color: "error", symbol: "✗", label: "INVALID RESPONSE", action: "Reddit returned incompatible data; retry later or report the resource.", stale };
+    return { color: "error", symbol: "✗", label: status.replaceAll("_", " ").toUpperCase(), action: "Correct the local browser/profile condition, then validate once.", stale };
   }
 
   private redditLines(): string[] {
@@ -207,7 +228,11 @@ export class DiagnosticView {
     if (this.expanded.reddit) {
       const stale = state.stale ? " · STALE VALIDATION" : "";
       lines.push(`  ${t.fg(state.color, `${state.symbol} ${state.label}${stale}`)} — ${state.action}`);
-      if (this.redditProof?.result.diagnostic.status === "cancelled") lines.push(`  ${t.fg("warning", "! Latest test cancelled")} · ${compactStamp(this.redditProof.at)}`);
+      const proof = this.redditProof;
+      if (proof && proof.result.diagnostic.status !== "ready") {
+        const status = proof.result.diagnostic.status.replaceAll("_", " ").toUpperCase();
+        lines.push(`  ${t.fg(proof.result.diagnostic.status === "cancelled" ? "warning" : "error", `${proof.result.diagnostic.status === "cancelled" ? "!" : "✗"} Latest test: ${status}`)} · ${compactStamp(proof.at)}`);
+      }
       const validatedAt = this.redditLocal?.diagnostic.lastValidatedAt;
       if (validatedAt) lines.push(`  Last validation: ${compactStamp(validatedAt)}`);
     }
@@ -227,8 +252,8 @@ export class DiagnosticView {
     }
     if (this.redditError) lines.push(`  ${t.fg("error", this.redditError)}`);
     if (this.renderProof) lines.push(`  Latest render detail (${stamp(this.renderProof.at)}): ${safe(this.renderProof.result.summary)}`);
-    if (this.redditLocal) lines.push(`  Current Reddit detail: ${safe(this.redditLocal.diagnostic.message)}`);
-    if (this.redditProof) lines.push(`  Latest Reddit action (${stamp(this.redditProof.at)}, ${this.redditProof.result.diagnostic.status}): ${safe(this.redditProof.result.diagnostic.message)}`);
+    if (this.redditLocal) lines.push(`  Current Reddit detail: ${safe(redditMessage(this.redditLocal.diagnostic))}`);
+    if (this.redditProof) lines.push(`  Latest Reddit action (${stamp(this.redditProof.at)}, ${this.redditProof.result.diagnostic.status}): ${safe(redditMessage(this.redditProof.result.diagnostic))}`);
     if (this.report?.remedies.length) lines.push(`  ${t.fg("warning", "Manual remedies — review; never executed by this panel:")}`, ...this.report.remedies.map((line) => `  ${safe(line)}`));
     return lines;
   }
@@ -241,7 +266,7 @@ export class DiagnosticView {
       const label = `[${item.label} ${item.key}]`;
       return this.focus === 0 && index === this.action ? t.bg("selectedBg", t.fg("accent", `▸${label}`)) : t.fg("muted", label);
     }).join(" ");
-    const busy = this.busy ? (this.busy === "refresh" ? "Reading local metadata only…" : this.controller?.signal.aborted ? "Cancelling; waiting for browser cleanup…" : `${this.busy === "render" ? "Testing synthetic render" : "Testing Reddit"}… c cancels`) : undefined;
+    const busy = this.busy ? (this.busy === "refresh" ? "Reading local metadata only…" : this.controller?.signal.aborted ? "Cancelling; waiting for browser cleanup…" : this.busy === "render" ? "Testing synthetic render… c cancels" : "Testing Reddit — waiting for profile or running bounded request… c cancels") : undefined;
     const browserRows = this.browserLines().flatMap((line) => wrapTextWithAnsi(line, width));
     const redditRows = this.redditLines().flatMap((line) => wrapTextWithAnsi(line, width));
     const advancedRows = this.advancedLines().flatMap((line) => wrapTextWithAnsi(line, width));

@@ -5,7 +5,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { truncateHead, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadConfig, type WebConfig } from "./config.js";
 import { RedditBrowserError } from "./reddit-browser.js";
-import { RedditService, type RedditDiagnostic } from "./reddit-service.js";
+import { RedditService, redditDiagnosticAllowsOperation, type RedditDiagnostic } from "./reddit-service.js";
 import type { WebService } from "./service.js";
 import type { Document } from "./store.js";
 
@@ -52,13 +52,20 @@ function result(text: string, details: RedditDetails) {
 function signalFor(signal: AbortSignal | undefined, lifetimeSignal: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, lifetimeSignal]) : lifetimeSignal;
 }
-function diagnosticText(diagnostic: RedditDiagnostic, action: "inspect" | "test", contentToolsRegistered: boolean): string {
-  const next = diagnostic.eligible
-    ? contentToolsRegistered
-      ? "Reddit content tools are available for this session."
-      : "Validation succeeded, but tool availability is fixed at session startup. Run /reload to expose Reddit content tools."
-    : "Fix the reported condition, run reddit_profile_diagnostic with action \"test\", then run /reload. Tool availability does not change during this conversation.";
-  return `Reddit profile ${action}: ${diagnostic.status}\n${diagnostic.message}\n${next}${diagnostic.lastValidatedAt ? `\nLast validated: ${diagnostic.lastValidatedAt}` : ""}`;
+const transientDiagnostic = (status: RedditDiagnostic["status"]): boolean => ["profile_busy", "queue_full", "queue_timeout", "not_found", "post_unavailable", "rate_limited", "upstream_unavailable", "request_failed", "cancelled", "timeout"].includes(status);
+function diagnosticText(diagnostic: RedditDiagnostic, action: "inspect" | "test", contentToolsRegistered: boolean, cached?: RedditDiagnostic): string {
+  const readiness = cached ?? diagnostic;
+  const message = diagnostic.status === "profile_busy"
+    ? `The profile is in use by another operation. Wait for it to finish${diagnostic.eligible ? "; cached validation remains valid and content calls use the bounded queue" : " before validating"}.`
+    : diagnostic.message;
+  let next: string;
+  if (readiness.eligible) next = contentToolsRegistered
+    ? "Cached readiness permits Reddit content tools in this session."
+    : "Cached readiness is valid, but tool availability is fixed at session startup. Run /reload to expose Reddit content tools.";
+  else if (transientDiagnostic(diagnostic.status)) next = "This operation outcome does not prove missing configuration or erase an earlier successful readiness check. Wait, cancel, or choose another resource as appropriate; no automatic retry is performed.";
+  else next = "Correct the reported profile/browser condition, run the explicit diagnostic test, then /reload. Tool availability does not change during this conversation.";
+  const cachedLine = cached ? `\nCached readiness after the test: ${cached.status}${cached.lastValidatedAt ? ` (${cached.lastValidatedAt})` : ""}.` : "";
+  return `Reddit profile ${action}: ${diagnostic.status}\n${message}${cachedLine}\n${next}${diagnostic.lastValidatedAt ? `\nLast validated: ${diagnostic.lastValidatedAt}` : ""}`;
 }
 function commentsText(comments: Awaited<ReturnType<RedditService["fetchPost"]>>["comments"], indent = 0): string {
   return comments.map((comment) => `${"  ".repeat(indent)}- ${comment.author ? `u/${comment.author}` : "[deleted]"} (${comment.score}): ${comment.body}\n${commentsText(comment.replies, indent + 1)}`).join("");
@@ -67,17 +74,33 @@ function commentCount(comments: Awaited<ReturnType<RedditService["fetchPost"]>>[
   return comments.reduce((count, comment) => count + 1 + commentCount(comment.replies), 0);
 }
 function readinessError(diagnostic: RedditDiagnostic): Error {
-  return new Error(`Reddit content access is not ready (${diagnostic.status}): ${diagnostic.message} Run reddit_profile_diagnostic with action "test", then /reload. If web-access.json changed, validation and /reload are required.`);
+  const action = diagnostic.status === "browser_unavailable"
+    ? "Check the configured browser, then run the explicit diagnostic test; reload only after readiness succeeds."
+    : diagnostic.status === "profile_unsafe" || diagnostic.status === "not_configured" || diagnostic.status === "untested" || diagnostic.status === "configuration_changed"
+      ? "Correct or validate the configuration with the explicit diagnostic test, then /reload."
+      : "Resolve the reported readiness condition before making content requests.";
+  return new Error(`[reddit code=${diagnostic.status} phase=preflight] ${action}`);
+}
+function operationError(error: RedditBrowserError): Error {
+  const phase = error.phase ?? "request";
+  return new Error(`[reddit code=${error.code} phase=${phase}] ${error.message}`, { cause: error });
 }
 async function requestWithGuidance<T>(service: RedditServiceLike, action: () => Promise<T>): Promise<T> {
   try { return await action(); }
   catch (error) {
+    if (error instanceof RedditBrowserError) throw operationError(error);
     if (error instanceof DOMException && error.name === "AbortError") throw error;
-    if (error instanceof RedditBrowserError && (error.code === "cancelled" || error.code === "timeout")) throw error;
     const diagnostic = await service.inspect().catch(() => undefined);
-    if (diagnostic && !diagnostic.eligible) throw readinessError(diagnostic);
-    throw error;
+    if (diagnostic && !redditDiagnosticAllowsOperation(diagnostic)) throw readinessError(diagnostic);
+    throw new Error("[reddit code=request_failed phase=request] The Reddit request failed before a response was received.");
   }
+}
+function renderedErrorSummary(text: string): string {
+  const code = /\[reddit code=([a-z_]+) phase=[a-z_]+\]/.exec(text)?.[1];
+  if (code === "cancelled") return "Reddit request cancelled";
+  if (code === "queue_timeout") return "Reddit queue wait timed out";
+  if (code === "timeout") return "Reddit request timed out";
+  return code ? `Reddit unavailable: ${code.replaceAll("_", " ")}` : "Reddit request failed";
 }
 
 export function registerRedditTools(
@@ -89,7 +112,7 @@ export function registerRedditTools(
   lifetimeSignal: AbortSignal,
   dependencies: RedditToolDependencies,
 ): void {
-  const contentToolsRegistered = startupDiagnostic.eligible;
+  const contentToolsRegistered = redditDiagnosticAllowsOperation(startupDiagnostic);
   function register<S extends TSchema>(name: typeof REDDIT_TOOL_NAMES[number], description: string, schema: S, execute: ToolDefinition<S, RedditDetails>["execute"]): void {
     pi.registerTool<S, RedditDetails>({
       name, label: name, description, promptSnippet: description,
@@ -101,7 +124,8 @@ export function registerRedditTools(
       async execute(id, params, signal, update, ctx) {
         if (!Value.Check(schema, params)) throw new Error(`Invalid ${name} arguments`);
         const combined = signalFor(signal, lifetimeSignal); combined.throwIfAborted();
-        update?.(result("Working...", { summary: "Working..." }));
+        const working = name === "reddit_profile_diagnostic" ? "Inspecting Reddit readiness..." : "Waiting for the profile or running one bounded request...";
+        update?.(result(working, { summary: working }));
         return execute(id, params, combined, update, ctx);
       },
       renderCall(args, theme) {
@@ -112,8 +136,10 @@ export function registerRedditTools(
       renderResult(value, { expanded, isPartial }, theme, context) {
         const container = new Container();
         const text = value.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
-        container.addChild(new Text(theme.fg(context.isError ? "error" : isPartial ? "warning" : "success", value.details?.summary ?? "Complete"), 0, 0));
-        if (expanded || context.isError) container.addChild(new Text(theme.fg("dim", text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "").slice(0, expanded ? 6000 : 600)), 0, 0));
+        const summary = context.isError ? renderedErrorSummary(text) : value.details?.summary ?? (isPartial ? "Working..." : "Complete");
+        const diagnosticFailed = value.details?.status && value.details.status !== "ready";
+        container.addChild(new Text(theme.fg(context.isError ? "error" : isPartial || diagnosticFailed ? "warning" : "success", summary), 0, 0));
+        if (!context.isError && expanded) container.addChild(new Text(theme.fg("dim", text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "").slice(0, 6000)), 0, 0));
         return container;
       },
     });
@@ -125,7 +151,8 @@ export function registerRedditTools(
     if (!config.enabled) throw new Error("Web access is disabled in web-access.json. Run /reload to remove this stale tool set.");
     const service = config === startupConfig ? startupService : dependencies.createService(config);
     const diagnostic = action === "test" ? await service.test(signal) : await service.inspect();
-    return result(diagnosticText(diagnostic, action, contentToolsRegistered), { summary: `Reddit: ${diagnostic.status}`, status: diagnostic.status });
+    const cached = action === "test" && transientDiagnostic(diagnostic.status) ? await service.inspect().catch(() => undefined) : undefined;
+    return result(diagnosticText(diagnostic, action, contentToolsRegistered, cached), { summary: `Reddit ${action}: ${diagnostic.status}`, status: diagnostic.status });
   });
 
   if (!contentToolsRegistered) return;
@@ -134,10 +161,10 @@ export function registerRedditTools(
     if (!config.enabled) throw new Error("Web access is disabled in web-access.json. Run /reload to remove this stale tool set.");
     const service = config === startupConfig ? startupService : dependencies.createService(config);
     const diagnostic = await service.inspect();
-    if (!diagnostic.eligible) throw readinessError(diagnostic);
+    if (!redditDiagnosticAllowsOperation(diagnostic)) throw readinessError(diagnostic);
     return service;
   };
-  register("reddit_search", "Search one bounded Reddit result page through the explicitly configured native browser profile. Returns its after cursor but never fetches additional pages automatically; stores the returned page for get_search_content.", redditSchemas.reddit_search, async (_id, params, signal) => {
+  register("reddit_search", "Search one bounded Reddit result page through the explicitly configured native browser profile. Same-profile calls are serialized internally, so callers may issue bounded parallel calls; do not retry. Returns its after cursor but never fetches additional pages automatically; stores the returned page for get_search_content.", redditSchemas.reddit_search, async (_id, params, signal) => {
     const service = await runtimeService();
     const parsed = await requestWithGuidance(service, () => service.search(params, signal));
     const metadata = `Pagination: after=${parsed.after ?? "none"}; additional pages are not fetched automatically.`;
@@ -147,7 +174,7 @@ export function registerRedditTools(
     const preview = body.slice(0, webService.config.cache.inlineChars);
     return result(`responseId: ${responseId}\n${metadata}\n\n${preview}${preview.length < body.length ? "\n[Preview truncated; use get_search_content]" : ""}`, { summary: `${parsed.items.length} Reddit post(s)`, responseId });
   });
-  register("reddit_fetch_content", "Fetch one recognized Reddit post URL and a bounded, partial comment tree through the explicitly configured native browser profile. Returned counts may be partial, and More children are never fetched automatically; stores only the returned parsed text for get_search_content.", redditSchemas.reddit_fetch_content, async (_id, params, signal) => {
+  register("reddit_fetch_content", "Fetch one recognized Reddit post URL and a bounded, partial comment tree through the explicitly configured native browser profile. Same-profile calls are serialized internally, so callers may issue bounded parallel calls; do not retry. Returned counts may be partial, and More children are never fetched automatically; stores only the returned parsed text for get_search_content.", redditSchemas.reddit_fetch_content, async (_id, params, signal) => {
     const service = await runtimeService();
     const parsed = await requestWithGuidance(service, () => service.fetchPost(params.url, params, signal));
     const metadata = `Comment coverage (partial): returned=${commentCount(parsed.comments)}; more placeholders=${parsed.more.placeholders}; omitted child IDs=${parsed.more.children}; truncated=${parsed.truncated ? "yes" : "no"}. More comments are not fetched automatically.`;
