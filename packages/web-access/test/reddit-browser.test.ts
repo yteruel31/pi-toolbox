@@ -19,12 +19,16 @@ async function fixture(t: test.TestContext): Promise<ValidatedRedditConfig> {
 function harness(launchWait?: Promise<void>, overrides: Partial<RedditBrowserDependencies> = {}, closeWait?: Promise<void>, sandbox = "PID namespaces Yes\nNetwork namespaces Yes\nSeccomp-BPF sandbox Yes", evaluateWait?: Promise<void>) {
   const events: string[] = []; let closes = 0, launchOptions: any;
   const restored = { close: async () => { events.push("restored-close"); } };
-  const sandboxPage = { goto: async (url: string) => { events.push(`goto:${url}`); }, locator: () => ({ innerText: async () => sandbox }), close: async () => { events.push("sandbox-close"); } };
-  const requestPage = { goto: async () => { events.push("goto:root"); }, evaluate: async () => { await evaluateWait; return { status: 200, body: "{}" }; }, close: async () => {} };
+  const controlledPage = {
+    goto: async (url: string) => { events.push(url === "chrome://sandbox" ? `goto:${url}` : "goto:root"); },
+    locator: () => ({ innerText: async () => sandbox }),
+    evaluate: async () => { await evaluateWait; return { status: 200, body: "{}" }; },
+    close: async () => {},
+  };
   let pages = 0; const browserEvents = new Map<string, () => void>();
   const context = {
-    pages: () => [restored], route: async () => events.push("route"), routeWebSocket: async () => events.push("ws"),
-    newPage: async () => ++pages === 1 ? sandboxPage : requestPage, on: () => {},
+    pages: () => [restored, ...(pages ? [controlledPage] : [])], route: async () => events.push("route"), routeWebSocket: async () => events.push("ws"),
+    newPage: async () => { pages++; return controlledPage; }, on: () => {},
     browser: () => ({ once: (name: string, callback: () => void) => browserEvents.set(name, callback) }),
     close: async () => { closes++; await closeWait; },
   } as unknown as BrowserContext;
@@ -35,7 +39,7 @@ function harness(launchWait?: Promise<void>, overrides: Partial<RedditBrowserDep
     loadEngine: async () => ({ launchPersistentContext: async (_dir, options) => { launchOptions = options; if (launchWait) await launchWait; return context; } }),
     ...overrides,
   };
-  return { deps, events, closes: () => closes, launchOptions: () => launchOptions, disconnect: () => browserEvents.get("disconnected")?.() };
+  return { deps, events, closes: () => closes, pages: () => pages, launchOptions: () => launchOptions, disconnect: () => browserEvents.get("disconnected")?.() };
 }
 async function tcpExchange(port: number, request: string): Promise<string> {
   return new Promise((resolve, reject) => { const socket = createConnection(port, "127.0.0.1"); let data = ""; socket.on("connect", () => socket.write(request)); socket.on("data", (chunk) => { data += chunk; if (data.includes("\r\n\r\n")) { socket.destroy(); resolve(data); } }); socket.on("close", () => resolve(data)); socket.on("error", reject); });
@@ -74,7 +78,8 @@ test("real localhost CONNECT gate rejects disabled, wrong-host and non-CONNECT r
 test("native sandbox browser installs controls, verifies sandbox, then enables gate", async (t) => {
   const config = await fixture(t), h = harness();
   assert.deepEqual(await requestRedditJson(config, TEST_URL, {}, h.deps), { status: 200, body: "{}" });
-  assert.ok(h.events.indexOf("route") < h.events.indexOf("restored-close")); assert.ok(h.events.indexOf("sandbox-close") < h.events.indexOf("enable"));
+  assert.ok(h.events.indexOf("route") < h.events.indexOf("restored-close")); assert.ok(h.events.indexOf("goto:chrome://sandbox") < h.events.indexOf("enable"));
+  assert.equal(h.pages(), 1); assert.ok(h.events.indexOf("enable") < h.events.indexOf("goto:root"));
   assert.equal(h.launchOptions().executablePath, config.executablePath); assert.equal(h.launchOptions().headless, false); assert.equal(h.launchOptions().chromiumSandbox, true);
   assert.equal(h.launchOptions().env.DISPLAY, ":123"); assert.equal(h.launchOptions().env.XAUTHORITY, "/auth"); assert.equal(h.launchOptions().env.HOME, process.env.HOME);
   assert.ok(h.launchOptions().args.includes("--proxy-server=http://127.0.0.1:3210"));
