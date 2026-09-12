@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { boundText, extractHtml, extractPdf, MAX_TEXT_BYTES } from "../src/extraction.ts";
 import { browserIsolationPlan, createBrowserRouteHandler, renderPage } from "../src/browser.ts";
 import type { Route } from "playwright-core";
@@ -108,12 +107,12 @@ test("browser wrapper requires namespace isolation and does not disable Chromium
   assert.doesNotMatch(source, /connectOverCDP|launchPersistentContext|remote-debugging-port/);
 });
 
-test("missing bubblewrap fails closed with installation guidance", { skip: process.platform === "linux" && (existsSync("/usr/bin/bwrap") || existsSync("/bin/bwrap")) }, async () => {
+test("missing bubblewrap fails closed with installation guidance", async () => {
   let requested = false;
   await assert.rejects(renderPage("https://example.test/", {
     timeoutMs: 100,
     request: async () => { requested = true; return response(); },
-  }), /requires Linux, bubblewrap.*--no-sandbox fallback/);
+  }, { inspect: async () => ({ failure: "bwrap-missing" }), loadEngine: async () => { throw new Error("Must not load a browser"); } }), /\[bwrap-missing\].*render: "never"/);
   assert.equal(requested, false);
 });
 

@@ -1,8 +1,8 @@
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { constants } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { BrowserFailure, classifyBrowserLaunch, inspectBrowserRuntime } from "./browser-environment.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Browser, BrowserContext, Route } from "playwright-core";
+import type { Browser, BrowserContext, BrowserType, Route } from "playwright-core";
 
 export interface RenderOptions {
   timeoutMs: number;
@@ -12,7 +12,7 @@ export interface RenderOptions {
 const MAX_REQUESTS = 100;
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
-const GUIDANCE = "Isolated rendering requires Linux, bubblewrap (bwrap), a system Chromium, and enabled unprivileged/nested user namespaces. Install these through your system administrator; browser downloads and --no-sandbox fallback are not supported.";
+
 
 function webUrl(value: string): string {
   const url = new URL(value);
@@ -23,7 +23,7 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Testable launch plan. Only system runtime files are mounted, never home/run sockets. */
 export function browserIsolationPlan(bwrap: string, chromium: string): string {
-  if (!chromium.startsWith("/usr/") && !chromium.startsWith("/opt/")) throw new Error(`Chromium must be installed under /usr or /opt. ${GUIDANCE}`);
+  if (!chromium.startsWith("/usr/") && !chromium.startsWith("/opt/")) throw new Error("Chromium must be installed under /usr or /opt");
   const args = [
     "--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts",
     "--die-with-parent", "--new-session", "--cap-drop", "ALL",
@@ -80,36 +80,39 @@ export function createBrowserRouteHandler(request: RenderOptions["request"], sig
   };
 }
 
-async function executable(candidates: string[]): Promise<string | undefined> {
-  for (const path of candidates) {
-    try { await access(path, constants.X_OK); return path; } catch { /* Try next system executable. */ }
-  }
-  return undefined;
+export interface BrowserDependencies {
+  inspect: typeof inspectBrowserRuntime;
+  loadEngine: () => Promise<Pick<BrowserType, "launch">>;
 }
-
-export async function renderPage(url: string, options: RenderOptions): Promise<string> {
+const browserDependencies: BrowserDependencies = {
+  inspect: inspectBrowserRuntime,
+  loadEngine: async () => (await import("playwright-core")).chromium,
+};
+export async function renderPage(url: string, options: RenderOptions, dependencies = browserDependencies): Promise<string> {
   webUrl(url);
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error("timeoutMs must be positive");
   options.signal?.throwIfAborted();
-  if (process.platform !== "linux") throw new Error(GUIDANCE);
-  const bwrap = await executable(["/usr/bin/bwrap", "/bin/bwrap"]);
-  const chromium = await executable(process.env.WEB_ACCESS_CHROMIUM_PATH ? [process.env.WEB_ACCESS_CHROMIUM_PATH] : ["/usr/lib/chromium/chromium", "/usr/lib64/chromium-browser/chromium-browser", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/opt/google/chrome/chrome"]);
-  if (!bwrap || !chromium) throw new Error(GUIDANCE);
-  const directory = await mkdtemp(join(tmpdir(), "web-access-browser-"));
+  const runtime = await dependencies.inspect();
+  if (runtime.failure) throw new BrowserFailure(runtime.failure);
+  const { bwrap, chromium } = runtime;
+  if (!bwrap || !chromium) throw new BrowserFailure("launch-unknown");
+  const directory = await mkdtemp(join(tmpdir(), "web-access-browser-")).catch(() => { throw new BrowserFailure("launch-unknown"); });
   const controller = new AbortController();
-  const abort = () => controller.abort(options.signal?.reason ?? new Error("Browser rendering aborted"));
+  const abort = () => controller.abort(new BrowserFailure(options.signal?.reason?.name === "TimeoutError" ? "timeout" : "cancelled"));
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) abort();
-  const timer = setTimeout(() => controller.abort(new Error("Browser rendering timed out")), Math.min(options.timeoutMs, 2_147_483_647));
+  const timer = setTimeout(() => controller.abort(new BrowserFailure("timeout")), Math.min(options.timeoutMs, 2_147_483_647));
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
   let aborted: (() => void) | undefined;
+  let operation: Promise<string> | undefined;
+  let launched = false;
   try {
     const wrapper = join(directory, "chromium-isolated");
     await writeFile(wrapper, browserIsolationPlan(bwrap, chromium), { mode: 0o700 });
     controller.signal.throwIfAborted();
-    const operation = (async () => {
-      const { chromium: engine } = await import("playwright-core");
+    operation = (async () => {
+      const engine = await dependencies.loadEngine();
       controller.signal.throwIfAborted();
       browser = await engine.launch({
         executablePath: wrapper, chromiumSandbox: true, headless: true,
@@ -117,10 +120,11 @@ export async function renderPage(url: string, options: RenderOptions): Promise<s
         env: { PATH: "/usr/bin:/bin", HOME: directory, LANG: "C.UTF-8" },
         args: ["--disable-quic", "--disable-background-networking", "--disable-extensions", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
       });
+      launched = true;
       if (controller.signal.aborted) { await browser.close(); controller.signal.throwIfAborted(); }
       context = await browser.newContext({ serviceWorkers: "block", acceptDownloads: false, permissions: [], storageState: { cookies: [], origins: [] } });
       await context.routeWebSocket("**/*", (socket) => socket.close());
-      await context.route("**/*", createBrowserRouteHandler(options.request, controller.signal, (error) => controller.abort(error)));
+      await context.route("**/*", createBrowserRouteHandler(options.request, controller.signal, () => controller.abort(new BrowserFailure("parent-request"))));
       const page = await context.newPage();
       context.on("page", (popup) => { if (popup !== page) void popup.close().catch(() => {}); });
       page.on("download", (download) => { void download.cancel().catch(() => {}); });
@@ -146,14 +150,20 @@ export async function renderPage(url: string, options: RenderOptions): Promise<s
     return await Promise.race([operation, interrupted]);
   } catch (error) {
     if (controller.signal.aborted) throw controller.signal.reason;
-    throw new Error(`Isolated Chromium rendering failed. ${GUIDANCE}`, { cause: error });
+    if (error instanceof Error && error.name === "TimeoutError") throw new BrowserFailure("timeout");
+    throw launched ? new BrowserFailure("render-unknown") : classifyBrowserLaunch(error);
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", abort);
     if (aborted) controller.signal.removeEventListener("abort", aborted);
     controller.abort(new Error("Browser rendering finished"));
+    // Close an active browser to interrupt page work. A launch still in flight is
+    // bounded by Playwright's launch timeout and closes itself on late arrival.
+    // Join it before deleting the wrapper or reporting completion/cancellation.
+    await browser?.close().catch(() => {});
+    await operation?.catch(() => {});
     await context?.close().catch(() => {});
     await browser?.close().catch(() => {});
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true }).catch(() => { throw new BrowserFailure("cleanup-failed"); });
   }
 }
