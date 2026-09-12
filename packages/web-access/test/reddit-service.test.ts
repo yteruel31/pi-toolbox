@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { access, chmod, mkdir, mkdtemp, readFile, symlink } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig, type WebConfig } from "../src/config.js";
@@ -58,12 +58,12 @@ test("403 is persisted and reported as access_denied rather than missing profile
   assert.equal((await service.inspect()).status, "access_denied");
 });
 
-test("timeout and cancellation diagnostics remain honest and runtime failures invalidate ready", async (t) => {
+test("timeout and cancellation diagnostics remain honest without replacing cached readiness", async (t) => {
   const { config } = await configFixture(t);
   const timeout = await new RedditService(config, { now: () => new Date(0), request: async () => { throw new RedditBrowserError("timeout"); } }).test();
-  assert.equal(timeout.status, "timeout"); assert.equal((await new RedditService(config).inspect()).status, "browser_unavailable");
+  assert.equal(timeout.status, "timeout"); assert.equal((await new RedditService(config).inspect()).status, "untested");
   const cancelled = await new RedditService(config, { now: () => new Date(1), request: async () => { throw new RedditBrowserError("cancelled"); } }).test();
-  assert.equal(cancelled.status, "cancelled"); assert.equal((await new RedditService(config).inspect()).status, "browser_unavailable");
+  assert.equal(cancelled.status, "cancelled"); assert.equal((await new RedditService(config).inspect()).status, "untested");
 });
 
 test("pre-cancelled diagnostic creates no state, profile lock, or browser work", async (t) => {
@@ -94,6 +94,92 @@ test("service cancellation during a real mocked launch retains its borrowed lock
   finishClose(); await waitFor(() => access(join(config.reddit.profileDir!, ".pi-web-access-reddit.lock")).then(() => false, () => true));
 });
 
+test("runtime launch invalidation is persisted before releasing the operation lock", async (t) => {
+  const { config } = await configFixture(t); let released = false, invalidatedWhileHeld = false;
+  const service = new RedditService(config, {
+    acquire: async () => ({ borrow: () => undefined, release: async () => { released = true; } }),
+    now: () => { invalidatedWhileHeld = !released; return new Date(0); },
+    request: async () => { throw new RedditBrowserError("browser_unavailable", "launch"); },
+  });
+  await assert.rejects(service.search({ q: "launch" }), (error: RedditBrowserError) => error.code === "browser_unavailable");
+  assert.equal(invalidatedWhileHeld, true); assert.equal(released, true);
+  assert.equal((await service.inspect()).status, "browser_unavailable");
+});
+
+test("three mixed service operations serialize with one request each and no loss", async (t) => {
+  const { config } = await configFixture(t); let active = 0, maximum = 0, calls = 0;
+  const service = new RedditService(config, { now: () => new Date(0), request: async (_config, url) => {
+    calls++; active++; maximum = Math.max(maximum, active); await new Promise((resolve) => setTimeout(resolve, 15)); active--;
+    return { status: 200, body: JSON.stringify(url.includes("comments/") ? [listing([post]), listing([])] : listing([post])) };
+  } });
+  const results = await Promise.all([service.search({ q: "one" }), service.fetchPost("https://www.reddit.com/comments/abc123"), service.search({ q: "two" })]);
+  assert.equal(results.length, 3); assert.equal(calls, 3); assert.equal(maximum, 1);
+});
+
+test("explicit diagnostic keeps its search and post pair under one lock", async (t) => {
+  const { config } = await configFixture(t); const order: string[] = []; let releaseFirst!: () => void;
+  const firstWait = new Promise<void>((resolve) => { releaseFirst = resolve; }); let firstStarted!: () => void;
+  const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+  const service = new RedditService(config, { now: () => new Date(0), request: async (_config, url) => {
+    order.push(url.includes("comments/") ? "post" : url.includes("typescript") ? "diagnostic-search" : "ordinary-search");
+    if (order.length === 1) { firstStarted(); await firstWait; }
+    return { status: 200, body: JSON.stringify(url.includes("comments/") ? [listing([post]), listing([])] : listing([post])) };
+  } });
+  const diagnostic = service.test(); await started; const ordinary = service.search({ q: "other" }); releaseFirst();
+  assert.equal((await diagnostic).status, "ready"); await ordinary;
+  assert.deepEqual(order, ["diagnostic-search", "post", "ordinary-search"]);
+});
+
+test("resource HTTP and malformed failures preserve cached ready metadata", async (t) => {
+  const { config } = await configFixture(t);
+  const ready = new RedditService(config, { now: () => new Date(0), request: async (_config, url) => ({ status: 200, body: JSON.stringify(url.includes("search.json") ? listing([post]) : [listing([post]), listing([])]) }) });
+  assert.equal((await ready.test()).status, "ready");
+  for (const code of ["post_unavailable", "rate_limited"] as const) {
+    const failing = new RedditService(config, { now: () => new Date(1), request: async () => { throw new RedditBrowserError(code); } });
+    await assert.rejects(failing.fetchPost("https://www.reddit.com/comments/abc123"), (error: RedditBrowserError) => error.code === code);
+    assert.equal((await failing.inspect()).status, "ready");
+  }
+  const malformed = new RedditService(config, { now: () => new Date(2), request: async () => ({ status: 200, body: "not-json" }) });
+  await assert.rejects(malformed.search({ q: "x" }), (error: RedditBrowserError) => error.code === "invalid_response");
+  assert.equal((await malformed.inspect()).status, "ready");
+});
+
+test("transient explicit HTTP diagnostics report the attempt but preserve cached readiness", async (t) => {
+  const { config } = await configFixture(t);
+  const ready = new RedditService(config, { now: () => new Date(0), request: async (_config, url) => ({ status: 200, body: JSON.stringify(url.includes("search.json") ? listing([post]) : [listing([post]), listing([])]) }) });
+  assert.equal((await ready.test()).status, "ready");
+  for (const code of ["rate_limited", "upstream_unavailable", "post_unavailable"] as const) {
+    let calls = 0;
+    const failing = new RedditService(config, { now: () => new Date(1), request: async (_config, url) => {
+      calls++;
+      if (code === "post_unavailable" && url.includes("search.json")) return { status: 200, body: JSON.stringify(listing([post])) };
+      throw new RedditBrowserError(code, "request");
+    } });
+    const result = await failing.test();
+    assert.equal(result.status, code); assert.equal(result.eligible, false);
+    assert.equal(calls, code === "post_unavailable" ? 2 : 1);
+    const cached = await failing.inspect(); assert.equal(cached.status, "ready"); assert.equal(cached.lastValidatedAt, new Date(0).toISOString());
+  }
+});
+
+test("a cancelled waiter never reaches HTTP while an active operation holds the profile", async (t) => {
+  const { config } = await configFixture(t); let release!: () => void, calls = 0;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const service = new RedditService(config, { now: () => new Date(0), request: async () => { calls++; await held; return { status: 200, body: JSON.stringify(listing([post])) }; } });
+  const first = service.search({ q: "holder" }); await waitFor(() => calls === 1);
+  const controller = new AbortController(), waiting = service.search({ q: "cancelled" }, controller.signal); controller.abort();
+  await assert.rejects(waiting, (error: RedditBrowserError) => error.code === "cancelled"); assert.equal(calls, 1);
+  release(); await first;
+});
+
+test("cached ready remains eligible while the profile is transiently busy", async (t) => {
+  const { config } = await configFixture(t);
+  const ready = new RedditService(config, { now: () => new Date(0), request: async (_config, url) => ({ status: 200, body: JSON.stringify(url.includes("search.json") ? listing([post]) : [listing([post]), listing([])]) }) });
+  assert.equal((await ready.test()).status, "ready");
+  await symlink("remote-pid", join(config.reddit.profileDir!, "SingletonLock"));
+  const inspected = await ready.inspect(); assert.equal(inspected.status, "profile_busy"); assert.equal(inspected.eligible, true); assert.equal(inspected.lastValidatedAt, new Date(0).toISOString());
+});
+
 test("service cancellation retains its borrowed lock indefinitely when late browser close rejects", async (t) => {
   const { config } = await configFixture(t); let rejectClose!: (error: Error) => void;
   const h = lateLaunchBrowser(new Promise<void>((_resolve, reject) => { rejectClose = reject; }));
@@ -103,4 +189,9 @@ test("service cancellation retains its borrowed lock indefinitely when late brow
   await waitFor(() => h.closes() > 0); rejectClose(new Error("unknown process state"));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(await access(join(config.reddit.profileDir!, ".pi-web-access-reddit.lock")).then(() => true, () => false));
+  await writeFile(join(config.reddit.profileDir!, "SingletonLock"), "owned late browser", { mode: 0o600 });
+  let calls = 0;
+  const blocked = new RedditService(config, { now: () => new Date(1), queue: { waitTimeoutMs: 30, pollIntervalMs: 5 }, request: async () => { calls++; return { status: 200, body: JSON.stringify(listing([post])) }; } });
+  await assert.rejects(blocked.search({ q: "blocked" }), (error: RedditBrowserError) => error.code === "queue_timeout");
+  assert.equal(calls, 0); assert.ok(await access(join(config.reddit.profileDir!, ".pi-web-access-reddit.lock")).then(() => true, () => false));
 });
