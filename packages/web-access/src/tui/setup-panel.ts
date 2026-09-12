@@ -205,7 +205,7 @@ export class SetupPanel implements Component, Focusable {
     const kb = this.#options.keybindings;
     if (kb.matches(data, "tui.select.cancel") || matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) { this.finish(false); return; }
     if (this.tooSmall) return;
-    if (matchesKey(data, "ctrl+right") || matchesKey(data, "ctrl+left")) {
+    if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
       this.section = this.section === "Setup" ? "Diagnostic" : "Setup"; this.redraw(); return;
     }
     if (this.section === "Diagnostic") { this.diagnosticInput(data); return; }
@@ -223,7 +223,7 @@ export class SetupPanel implements Component, Focusable {
       else if (matchesKey(data, "up")) this.scroll = Math.max(0, this.scroll - 1);
       this.redraw(); return;
     }
-    if (matchesKey(data, "shift+tab") || matchesKey(data, "alt+left")) this.back();
+    if (matchesKey(data, "alt+left")) this.back();
     else if (this.step === "review") {
       if (confirm || matchesKey(data, "ctrl+s")) { void this.save(); return; }
       if (matchesKey(data, "down") || matchesKey(data, "pageDown")) this.scroll++;
@@ -240,7 +240,7 @@ export class SetupPanel implements Component, Focusable {
     } else {
       this.manualScroll = false;
       const length = this.step === "enabled" ? 2 : 3;
-      if (kb.matches(data, "tui.select.down") || matchesKey(data, "down") || matchesKey(data, "tab")) this.selected = (this.selected + 1) % length;
+      if (kb.matches(data, "tui.select.down") || matchesKey(data, "down")) this.selected = (this.selected + 1) % length;
       else if (kb.matches(data, "tui.select.up") || matchesKey(data, "up")) this.selected = (this.selected + length - 1) % length;
     }
     this.redraw();
@@ -305,15 +305,18 @@ export class SetupPanel implements Component, Focusable {
     const inner = width - 4;
     const steps = this.steps();
     const diagnostic = this.section === "Diagnostic";
-    const title = ` Web access · ${diagnostic ? "Setup | [Diagnostic]" : "[Setup] | Diagnostic"} `;
-    const footer = diagnostic ? [this.diagnosticBusy === "render" ? "c cancel test (wait cleanup)" : "Left/Right action | Enter run", "Up/Down/PgUp/PgDn scroll", "Ctrl+Right tab | Esc cancel"] : this.busy ? ["Saving locally. Please wait..."] : this.failure ?
+    const title = " Web access ";
+    const tabs = ["Setup", "Diagnostic"].map((name) => name === this.section
+      ? theme.bg("selectedBg", theme.bold(theme.fg("accent", ` ${name} `)))
+      : theme.fg("muted", ` ${name} `)).join(" ");
+    const footer = diagnostic ? [this.diagnosticBusy === "render" ? "c cancel test (wait cleanup)" : "Left/Right action | Enter run", "Up/Down/PgUp/PgDn scroll", "Tab/Shift+Tab | Esc cancel"] : this.busy ? ["Saving locally. Please wait..."] : this.failure ?
       [this.failure === "storage" ? "Enter choose storage again" : "Enter close; reopen setup to retry", "Up/Down scroll | Esc close"] :
       [this.step === "review" ? "Enter save changes | Up/Down scroll" : this.isText() || this.step === "key" ? "Enter next | Ctrl+u clear" : "Up/Down select | Enter next",
-        "Shift+Tab back | Esc cancel", "Ctrl+Right tab | PgUp/PgDn scroll"];
+        "Alt+Left back | Esc cancel", "Tab/Shift+Tab tabs | PgUp/PgDn scroll"];
     const wrappedFooter = footer.flatMap((line) => wrapTextWithAnsi(line, inner));
     const body = diagnostic ? this.diagnosticBody(inner) : this.body(inner);
     const actions = diagnostic ? wrapTextWithAnsi(["Refresh checks [r]", "Test isolated render [t]"].map((label, index) => index === this.diagnosticAction ? `▸ ${label}` : label).join(" | "), inner) : [];
-    const budget = Math.max(1, rows - wrappedFooter.length - 5 - actions.length);
+    const budget = Math.max(1, rows - wrappedFooter.length - 6 - actions.length);
     // Form fields and selected rows must remain visible even when explanatory copy wraps.
     if (!diagnostic && this.step !== "review" && !this.failure && !this.manualScroll) {
       const focus = this.isText() || this.step === "key" ? body.findIndex((line) => line.includes("\x1b[7m"))
@@ -334,6 +337,7 @@ export class SetupPanel implements Component, Focusable {
     const progress = body.length > budget ? ` (${scroll + 1}-${scroll + content.length}/${body.length})` : "";
     return [
       theme.fg("borderAccent", "╭") + heading + theme.fg("borderAccent", "─".repeat(Math.max(0, width - visibleWidth(heading) - 2)) + "╮"),
+      row(tabs),
       row(theme.bold(diagnostic ? "Diagnostic" : `${titles[this.step]} ${steps.indexOf(this.step) + 1}/${steps.length}`) + theme.fg("dim", progress)),
       ...actions.map((line) => row(theme.fg("accent", line))),
       ...content.map(row),

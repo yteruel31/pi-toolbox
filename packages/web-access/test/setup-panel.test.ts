@@ -10,7 +10,7 @@ import type { DiagnosticReport, RenderProbeResult } from "../src/diagnostics.js"
 
 const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
 const kb = { matches: (data: string, id: string) => matchesKey(data, ({ "tui.select.confirm": "enter", "tui.select.cancel": "escape", "tui.select.up": "up", "tui.select.down": "down" } as Record<string, string>)[id] as never) } as never;
-const enter = "\r", down = "\x1b[B", up = "\x1b[A", back = "\x1b[Z", escape = "\x1b";
+const enter = "\r", down = "\x1b[B", up = "\x1b[A", back = "\x1b[1;3D", escape = "\x1b";
 function harness(root: Record<string, unknown> = {}, save?: (draft: SetupDraft, key?: string) => Promise<void>, diagnostics: { inspect?: () => Promise<DiagnosticReport>; testRender?: (signal: AbortSignal) => Promise<RenderProbeResult> } = {}) {
   const snapshot: SetupSnapshot = { agentDir: "/tmp/not-used", root, config: parseConfig(root, "/tmp/not-used") };
   const saves: Array<{ draft: SetupDraft; key?: string }> = [];
@@ -199,7 +199,21 @@ test("configured confirm and selection keybindings are honored", () => {
   assert.match(stripVTControlCharacters(panel.render(72).join("\n")), /gpt-5-mini/);
 });
 
-const diagnosticTab = "\x1b[1;5C";
+const diagnosticTab = "\t";
+test("Tab and Shift+Tab switch sections, never wizard steps or provider selection", async () => {
+  const h = harness(); await tick();
+  h.input(down, diagnosticTab);
+  assert.match(h.text(), /Refresh checks/);
+  h.input("\x1b[Z");
+  assert.match(h.text(), /Search provider/);
+  h.input(enter, enter);
+  assert.match(h.text(), /gpt-5-mini/); // OpenAI selection survived both tab switches.
+  h.input("\x1b[Z"); assert.match(h.text(), /Refresh checks/);
+  h.input(diagnosticTab); assert.match(h.text(), /Native search model/);
+  h.input(back); assert.match(h.text(), /Web access tools/);
+  assert.equal(h.saves.length, 0);
+  h.input(escape);
+});
 test("masked secret survives Diagnostic tab switches without being rendered or saved early", async () => {
   const h = harness(); toKey(h); h.input("fixture-private-key"); await tick();
   h.input(diagnosticTab); assert.doesNotMatch(h.text(), /fixture-private-key/);

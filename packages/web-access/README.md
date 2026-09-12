@@ -66,7 +66,7 @@ YouTube's sandbox only discovers `yt-dlp` at `/usr/bin/yt-dlp` or `/usr/local/bi
 
 ### Diagnostic tab (recommended)
 
-Open `/web-access` and use **Ctrl+Right / Ctrl+Left** to switch between **Setup** and **Diagnostic**. Opening the wizard reads only bounded local metadata: Linux support, executable bwrap, native ELF browser under `/usr` or `/opt`, namespace sysctls and AppArmor profile hints. It makes **no network request**, launches **no browser or subprocess**, reads no credential values and writes no settings. Executable detection is not version/library/runtime validation. HTTP connectivity is explicitly **untested**, not reported as working just because Node is installed.
+Open `/web-access` and use **Tab / Shift+Tab** to switch between **Setup** and **Diagnostic**. Opening the wizard reads only bounded local metadata: Linux support, executable bwrap, native ELF browser under `/usr` or `/opt`, namespace sysctls and AppArmor profile hints. It makes **no network request**, launches **no browser or subprocess**, reads no credential values and writes no settings. Executable detection is not version/library/runtime validation. HTTP connectivity is explicitly **untested**, not reported as working just because Node is installed.
 
 - **Refresh checks [r]** reruns those inexpensive checks and clears the previous test result.
 - **Test isolated render [t]** is an explicit action, also selectable with Left/Right then Enter. It runs the production `renderPage` launch plan, Chromium sandbox and parent route handler. A synthetic `.invalid` page is supplied by the parent without DNS/HTTP; success requires a JavaScript-created DOM mutation, not just launching Chrome or reading static HTML.
@@ -142,7 +142,7 @@ Check the browser executable separately. A binary on `PATH` doesn't prove it's v
 
 ## Setup wizard
 
-Run `/web-access` (or `/web-access setup` / `/web-access config`) in Pi's interactive terminal. The compact centered overlay follows `/mcp`, not a fullscreen screen. Use Ctrl+Right / Ctrl+Left to switch Setup/Diagnostic tabs. In Setup, use Up/Down to choose, Enter to continue, Shift+Tab to go back, PgUp/PgDn to scroll, and Esc to cancel. Switching tabs preserves staged settings and masked input. On a terminal too small to show a usable form, resize or cancel.
+Run `/web-access` (or `/web-access setup` / `/web-access config`) in Pi's interactive terminal. The compact centered overlay follows `/mcp`, not a fullscreen screen. Use Tab / Shift+Tab to switch Setup/Diagnostic tabs, matching MCP and Subagents. In Setup, use Up/Down to choose, Enter to continue, Alt+Left to go back, PgUp/PgDn to scroll, and Esc to cancel. Switching tabs preserves staged settings and masked input. On a terminal too small to show a usable form, resize or cancel.
 
 Choose a default search provider, enable or disable the tools, and review the model settings. Gemini and OpenAI have separate native search and deep-research model IDs. Brave has no native model settings. Pi synthesis is separate: leave it blank for the current Pi model, or enter `provider/model-id` using Pi's existing authentication and session model allowlist. The wizard doesn't fetch model catalogs or validate provider availability.
 
