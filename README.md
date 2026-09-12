@@ -78,7 +78,7 @@ Create, edit, and deterministically review structured box-and-arrow diagrams fro
 
 ### [`@yteruel31/pi-web-access`](./packages/web-access)
 
-Five tools for web search, content fetching, bounded retrieval, source checking, and native background deep research. Search uses Gemini, Brave or OpenAI; extraction supports local PDF text, isolated Chromium, public GitHub clones and video frames. Research reports stay in local Markdown files. See the [configuration, system dependencies and explicit migration instructions](./packages/web-access/README.md) before replacing an existing web extension. The package is not yet published to npm.
+Eight tools for web search, content fetching, bounded retrieval, source checking, native background deep research, and opt-in authenticated Reddit reads. Search uses Gemini, Brave or OpenAI; extraction supports local PDF text, isolated Chromium, public GitHub clones and video frames. Reddit uses an explicitly configured dedicated native-browser profile, local-only inspection, and an explicit bounded validation before its content tools appear on reload. Research reports stay in local Markdown files. See the [configuration, system dependencies, Reddit profile safety guidance, and explicit migration instructions](./packages/web-access/README.md) before replacing an existing web extension. The package is not yet published to npm.
 
 ### [`@yteruel31/pi-learning`](./packages/pi-learning)
 
