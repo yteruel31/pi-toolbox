@@ -64,6 +64,67 @@ Install a current `yt-dlp` from a trusted distribution package or its [official 
 
 YouTube's sandbox only discovers `yt-dlp` at `/usr/bin/yt-dlp` or `/usr/local/bin/yt-dlp`, Python at `/usr/bin/python3`, and Node at `/usr/bin/node` or `/usr/local/bin/node`. Installations under a user's home directory, including typical pipx/nvm layouts, aren't visible inside it. Use a system installation with its supporting files under the mounted system directories, not a symlink into your home directory. Node installed elsewhere can still run Pi, but won't provide YouTube signature solving inside the sandbox.
 
+### Diagnostic tab (recommended)
+
+Open `/web-access` and use **Ctrl+Right / Ctrl+Left** to switch between **Setup** and **Diagnostic**. Opening the wizard reads only bounded local metadata: Linux support, executable bwrap, native ELF browser under `/usr` or `/opt`, namespace sysctls and AppArmor profile hints. It makes **no network request**, launches **no browser or subprocess**, reads no credential values and writes no settings. Executable detection is not version/library/runtime validation. HTTP connectivity is explicitly **untested**, not reported as working just because Node is installed.
+
+- **Refresh checks [r]** reruns those inexpensive checks and clears the previous test result.
+- **Test isolated render [t]** is an explicit action, also selectable with Left/Right then Enter. It runs the production `renderPage` launch plan, Chromium sandbox and parent route handler. A synthetic `.invalid` page is supplied by the parent without DNS/HTTP; success requires a JavaScript-created DOM mutation, not just launching Chrome or reading static HTML.
+- The render test has a **10-second operation budget**, followed by cleanup. **c** cancels and waits for cleanup; Esc closes the wizard and requests cancellation. An in-flight Playwright launch may take the rest of its bounded launch timeout to terminate. Late launch results are joined and closed before removing the temporary wrapper. Results are not persisted; closed panels ignore late completions.
+- Up/Down or PgUp/PgDn scroll the findings and full manual commands. No displayed installation or repair command is executed by Pi.
+
+A successful synthetic test confirms the isolated browser, parent routing and JS execution on this host, **not** live DNS/TLS/HTTP, external site compatibility, provider API credentials or YouTube support. Test a real URL separately only when desired. `fetch_content({ url: "https://example.com", render: "never" })` exercises actual classic HTTP; `render: "always"` exercises actual rendering for HTML. `raw` mode never renders, and PDF/images/plain text use their own extractors.
+
+Classic HTTP remains available without Linux/browser/bwrap dependencies. With `auto`, nearly empty HTML can trigger the optional renderer; failures stay errors, never a silent success pretending JS was rendered. Choose `render: "never"` (or `fetch.javascript: "never"`) deliberately for HTTP-only extraction.
+
+Browser errors distinguish missing bwrap, missing or incompatible browser, unsupported OS, observed launch namespace/AppArmor denials, parent-request failure, timeout/cancellation and unknown launch/render causes. Only **launch** output is classified as sandbox evidence; page-controlled errors cannot establish an AppArmor denial. Raw browser logs, environment values, configured browser paths and nested error causes are not returned. A generic permission error or `No usable sandbox` is not enough to blame AppArmor.
+
+### Ubuntu 26.04 targeted AppArmor repair
+
+This is a **conditional administrator procedure**, not a general Ubuntu/Linux fix. The observed configuration was Ubuntu 26.04 with Google's native `google-chrome-stable` at `/opt/google/chrome/chrome`, bubblewrap, `unprivileged_userns_clone=1`, `max_user_namespaces=56952`, and `apparmor_restrict_unprivileged_userns=1`. The actual launch was denied `capability sys_admin` by `unpriv_bwrap`. These nonzero sysctls do not rule out a nested namespace denial. Conversely, a generic `unshare` command failing does not prove this specific bwrap/Chrome launch fails.
+
+First run the explicit render test. On failure, inspect **matching** local kernel audit events (access may require an administrator):
+
+```bash
+journalctl -k --since '-5 minutes' --grep='apparmor="DENIED"|unpriv_bwrap|chrome'
+/usr/sbin/sysctl kernel.unprivileged_userns_clone user.max_user_namespaces kernel.apparmor_restrict_unprivileged_userns
+```
+
+Do not paste unredacted system logs into chat. Match timestamps, executable and profiles to the failed test. An administrator must distinguish missing binaries/libraries, AppArmor, kernel policy and container restrictions.
+
+The Diagnostic tab only offers the following candidate recipe when Ubuntu **26.04**, the exact Chrome executable, ABI **5.0** bwrap profile layout with `&bwrap//&unpriv_bwrap`, the local include, a matching `chrome` profile, kernel stacking and `/usr/sbin/apparmor_parser` are detected. Missing/unreadable metadata means compatibility is **not established**. Files do not prove the policy is loaded, and layout detection does not prove parser priority support. Verify the parser offline, **without loading a policy**:
+
+```bash
+printf '%s\n' 'abi <abi/5.0>,' \
+  'profile web_access_priority_check { priority=100 allow px /opt/google/chrome/chrome -> &bwrap//&chrome, }' \
+  | /usr/sbin/apparmor_parser -Q -T
+```
+
+Only after this succeeds and matching audit evidence confirms the `unpriv_bwrap` capability denial, review the packaged profiles `/etc/apparmor.d/bwrap-userns-restrict` and `/etc/apparmor.d/chrome`. Back up the existing local override. Use an administrator editor:
+
+```bash
+sudoedit /etc/apparmor.d/local/bwrap-userns-restrict
+```
+
+Add this exact **narrow executable transition**, only if not already present:
+
+```text
+priority=100 allow px /opt/google/chrome/chrome -> &bwrap//&chrome,
+```
+
+This selects the stacked `bwrap`/`chrome` profiles instead of the capability-stripping `unpriv_bwrap` child profile for this executable. It permits Chrome's nested sandbox while keeping global user namespace restrictions and the production filesystem/network isolation. It changes the AppArmor transition for this system Chrome executable, not just this one Pi process: administrator review is required. Do not extend it to arbitrary executables or another distribution/version.
+
+Compile the complete changed profile offline first; then, only on success, reload it manually and retest:
+
+```bash
+/usr/sbin/apparmor_parser -Q -T /etc/apparmor.d/bwrap-userns-restrict
+sudo /usr/sbin/apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+```
+
+If compilation fails, restore the prior local file and do not reload. To undo an applied change, restore that backup, compile it offline and reload the same profile. Never disable AppArmor globally, switch profiles to complain mode as a workaround, set global restrictions to zero, or use `--no-sandbox`. No system postinstall or automatic browser installation is included. If the targeted rule is already present (as on the validated development host), **do not modify/reload it again merely to run diagnostics**.
+
+On other distributions/versions the wizard provides only applicable package commands (Debian/Ubuntu bubblewrap, Debian native Chromium, Ubuntu amd64 official Chrome `.deb`) and investigation guidance. It does not infer commands from `ID_LIKE` or prescribe the Ubuntu 26.04 exception. Unknown distributions/architectures need their own vendor instructions. Google Chrome amd64 is not a browser-install recipe for Ubuntu arm64.
+
 ### Check before use
 
 This only checks executable availability and versions. It doesn't read credentials or make paid API calls:
@@ -81,13 +142,13 @@ Check the browser executable separately. A binary on `PATH` doesn't prove it's v
 
 ## Setup wizard
 
-Run `/web-access` (or `/web-access setup` / `/web-access config`) in Pi's interactive terminal. The compact centered overlay follows `/mcp`, not a fullscreen screen. Use Up/Down to choose, Enter to continue, Shift+Tab to go back, PgUp/PgDn to scroll, and Esc to cancel. On a terminal too small to show a usable form, resize or cancel.
+Run `/web-access` (or `/web-access setup` / `/web-access config`) in Pi's interactive terminal. The compact centered overlay follows `/mcp`, not a fullscreen screen. Use Ctrl+Right / Ctrl+Left to switch Setup/Diagnostic tabs. In Setup, use Up/Down to choose, Enter to continue, Shift+Tab to go back, PgUp/PgDn to scroll, and Esc to cancel. Switching tabs preserves staged settings and masked input. On a terminal too small to show a usable form, resize or cancel.
 
 Choose a default search provider, enable or disable the tools, and review the model settings. Gemini and OpenAI have separate native search and deep-research model IDs. Brave has no native model settings. Pi synthesis is separate: leave it blank for the current Pi model, or enter `provider/model-id` using Pi's existing authentication and session model allowlist. The wizard doesn't fetch model catalogs or validate provider availability.
 
 Choose **Keep current source**, **Private file (0600)**, or **Linux Secret Service keyring** explicitly. Keeping the source leaves existing environment, literal, file or keyring settings untouched and doesn't read or test the key. For new credentials, enter the key only in the masked field, never in chat, slash-command arguments, tool inputs or shell history. Secret input has no undo stack or kill ring; Ctrl+u clears it. The final review only says whether a key was entered, never its value.
 
-Nothing is written before **Save changes**. Save preserves unrelated settings and other providers' credentials. Settings changes require `/reload`; saving doesn't automatically reload or resume research jobs. No API request or paid credential test is performed. Any later live test needs your explicit approval.
+Nothing is written before **Save changes**. Save preserves unrelated settings and other providers' credentials. Settings changes require `/reload`; saving doesn't automatically reload or resume research jobs. No API request or paid credential test is performed. The Diagnostic tab's explicit synthetic render test needs no API key or live network. Any later live test needs your explicit approval.
 
 Settings and private credentials are written through exclusive temporary files with mode `0600`, fsynced, then atomically renamed individually. The writer rejects symlinks and files owned by another user. Only the credentials file requires an existing mode of `0600`; existing settings and parent directory modes aren't a setup prerequisite. The wizard never changes directory permissions. Directory access remains your responsibility: users who can write to a parent directory may replace files or path components. It uses Pi's file mutation queues, a package-local `web-access.json.lock`, and revision checks to reject stale wizard saves or detected external edits. The lock is advisory for external editors: don't edit these files while saving. After a crash, remove the lock only after checking that no Pi process is saving. Settings and credential storage aren't a single transaction: if storing the key succeeds but saving settings fails, the key may remain stored, and the wizard reports this rather than claiming a rollback. Interrupted saves may also leave private `.tmp` files; remove them only when no save is running.
 
@@ -252,7 +313,7 @@ npm run pack:dry --workspace @yteruel31/pi-web-access
 npm run smoke:extensions
 ```
 
-Provider protocol tests are mocked and do not spend API credits. Tests cover masked entry, wizard navigation/cancel/confirmation, constrained modal dimensions and scrolling, credential storage selection, permissions/symlinks, concurrent settings preservation, sanitized failures, provider payloads, citations, lifecycle/recovery/cancellation, non-overwriting Markdown output, cache bounds, SSRF, extraction and Pi registration. Real credential smoke tests and live Linux browser/YouTube isolation tests need separate approval and installed dependencies.
+Provider protocol tests are mocked and do not spend API credits. Tests cover absent/incompatible browsers and bwrap, unsupported OS, namespace/AppArmor hints and commented-profile rejection, sanitized errors, synthetic JS verification, cancellation/late-launch cleanup, classic HTTP without a browser, Diagnostic loading/success/failure/refresh states, masked entry, wizard navigation/cancel/confirmation, constrained modal dimensions and scrolling, credential storage selection, permissions/symlinks, concurrent settings preservation, sanitized failures, provider payloads, citations, lifecycle/recovery/cancellation, non-overwriting Markdown output, cache bounds, SSRF, extraction and Pi registration. Real credential smoke tests and live Linux browser/YouTube isolation tests need separate approval and installed dependencies.
 
 Protocol references checked during implementation:
 
