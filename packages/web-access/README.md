@@ -1,6 +1,6 @@
 # Pi Web Access
 
-Five Pi tools for web research with bounded context output. This package is independent of `pi-web-access`; it isn't a full clone and doesn't change an existing installation or import its credentials.
+Eight Pi tools for bounded web research and opt-in authenticated Reddit reads. When the enabled package activates without collisions, five core tools and the Reddit diagnostic are available; the two Reddit content tools appear only after the explicitly configured profile has passed validation and Pi has been reloaded. This package is independent of `pi-web-access`; it isn't a full clone and doesn't change an existing installation or import its credentials.
 
 ## Tools
 
@@ -11,14 +11,17 @@ Five Pi tools for web research with bounded context output. This package is inde
 | `get_search_content` | Bounded retrieval by response ID, document selection, character pagination and exact/case-insensitive passage finding |
 | `source_check` | Search, fetch up to five sources, assess a claim with a Pi model, and validate quoted evidence against the retrieved text |
 | `deep_research` | Start, inspect, retrieve or cancel native Gemini/OpenAI background research; save the complete report locally as Markdown |
+| `reddit_profile_diagnostic` | Inspect Reddit readiness using only local filesystem metadata, or explicitly run one bounded search plus one bounded post request; never creates/copies a profile or changes tool availability mid-conversation |
+| `reddit_search` | Search one Reddit result page through the explicitly selected native profile; 1–25 posts, with an `after` cursor returned but never followed automatically |
+| `reddit_fetch_content` | Read one recognized Reddit post URL and a partial comment tree; 1–100 comments and depth 1–10, without fetching `more` children automatically |
 
-No curator browser UI, authenticated browser sessions, OCR, audio transcription, video model calls, hosted extraction services, PR/issue specialization, Perplexity research, or repeated-search research simulation is included.
+No curator browser UI, OCR, audio transcription, video model calls, hosted extraction services, PR/issue specialization, Perplexity research, or repeated-search research simulation is included. The only authenticated browser use is the explicit Reddit profile described below; it does not expose cookies as tool output or make arbitrary authenticated sites available.
 
 ## Installation and collisions
 
 The package is not yet published to npm. It can be loaded from this checkout or through the toolbox's Git package. Runtime TypeScript is the published entrypoint; `npm run build` provides a compile/bundle verification artifact, not a replacement installation directory.
 
-Don't load this extension alongside another extension registering any of its five tool names. Registration happens at `session_start`, after existing tools are visible. If any name is already present, this package registers **none** of its tools and reports an actionable error. It never renames, disables or silently replaces another extension. Extensions that dynamically register conflicting names later must also be disabled by the user.
+Don't load this extension alongside another extension or SDK `customTool` registering any of its eight tool names (`web_search`, `fetch_content`, `get_search_content`, `source_check`, `deep_research`, `reddit_profile_diagnostic`, `reddit_search`, or `reddit_fetch_content`). Registration happens at `session_start`, after existing tools are visible. If any name is already present—even a conditional Reddit content name—activation fails and this package registers **none** of its tools. The conflicting owner remains in place and an actionable error is reported. It never renames, disables or silently replaces another tool. Extensions that dynamically register conflicting names later must also be disabled by the user; collision detection cannot reserve names against later registration.
 
 For migration, use `pi config` to disable the old extension before enabling this one, then `/reload`. Review the configuration below and explicitly recreate the settings you want. Old `~/.pi/web-search.json`, credentials, browser profiles and installed packages are untouched. To leave this package inactive within the toolbox, set `enabled` to `false` in its configuration.
 
@@ -26,7 +29,7 @@ To test a development worktree when the toolbox Git package is already installed
 
 ## Prerequisites
 
-Install the system dependencies on the machine running Pi, not just on the laptop connected to it over SSH. The extension doesn't install OS packages, download browsers, or change security policies. A complete setup needs Linux: isolated JavaScript rendering and YouTube extraction aren't supported on macOS or Windows. Missing optional dependencies affect the corresponding feature, not registration of the five tools.
+Install the system dependencies on the machine running Pi, not just on the laptop connected to it over SSH. The extension doesn't install OS packages, download browsers, create profiles, or change security policies. A complete setup needs Linux: isolated JavaScript rendering, Reddit browser access, and YouTube extraction aren't supported on macOS or Windows. Missing optional dependencies affect the corresponding feature, not registration of the core tools and Reddit diagnostic.
 
 | Capability | Required software or setup |
 | --- | --- |
@@ -37,6 +40,7 @@ Install the system dependencies on the machine running Pi, not just on the lapto
 | Public GitHub repository cloning | `git` and system CA certificates. |
 | Local video frames | `ffmpeg` and `ffprobe`, normally both provided by the `ffmpeg` OS package. |
 | JavaScript-rendered pages | Linux, `bubblewrap` (`bwrap`), a native system Chromium/Chrome, and permitted unprivileged/nested user namespaces. |
+| Authenticated Reddit reads | Linux, `/usr/bin/Xvfb`, `/usr/bin/xauth`, an explicitly selected private user-data root, and a native system Chromium/Chrome under `/usr` or `/opt` whose native sandbox is enabled and passes the runtime check. `bwrap` is not used for this dedicated browser. |
 | YouTube frames | The video dependencies, Linux, `bubblewrap`, system `python3`, CA certificates, and a recent system `yt-dlp`. Signature solving also needs a system Node and yt-dlp's locally installed EJS component. |
 | Optional keyring credentials | `libsecret-tools` (`secret-tool`), a user session D-Bus, and a running Secret Service backend with an unlocked collection, for example GNOME Keyring. |
 
@@ -46,7 +50,7 @@ These commands are examples for an administrator to review and run manually. The
 
 ```bash
 sudo apt-get update
-sudo apt-get install git ca-certificates ffmpeg bubblewrap python3
+sudo apt-get install git ca-certificates ffmpeg bubblewrap python3 xvfb xauth
 
 # Optional: store provider credentials in Linux Secret Service.
 sudo apt-get install libsecret-tools dbus-user-session gnome-keyring
@@ -66,20 +70,28 @@ YouTube's sandbox only discovers `yt-dlp` at `/usr/bin/yt-dlp` or `/usr/local/bi
 
 ### Diagnostic tab (recommended)
 
-Open `/web-access` and use **Tab / Shift+Tab** to switch between **Setup** and **Diagnostic**. Opening setup reads only bounded local metadata: Linux support, executable bwrap, native ELF browser under `/usr` or `/opt`, namespace sysctls and AppArmor profile hints. It makes **no network request**, launches **no browser or subprocess**, reads no credential values and writes no settings. Executable detection is not version/library/runtime validation. HTTP connectivity is explicitly **untested**, not reported as working just because Node is installed.
+Open `/web-access` and use **Tab / Shift+Tab** to switch between **Setup** and **Diagnostic**. The Diagnostic tab initially performs bounded, local-only inspections. General browser inspection reads Linux support, executable bwrap, a native ELF browser under `/usr` or `/opt`, namespace sysctls, and AppArmor profile hints. Reddit inspection reads only the configured path metadata, profile/browser identity, lock presence, and saved validation record. These inspections make **no network request**, launch **no browser, subprocess, or test**, create no state directory or profile, read no credential/cookie values, and write no settings. Executable detection is not version/library/runtime validation. HTTP and Reddit connectivity remain explicitly **not tested** until the corresponding explicit action runs.
 
-- **Refresh checks [r]** reruns those inexpensive checks and clears the previous test result.
-- **Test isolated render [t]** is an explicit action, also selectable with Left/Right then Enter. It runs the production `renderPage` launch plan, Chromium sandbox and parent route handler. A synthetic `.invalid` page is supplied by the parent without DNS/HTTP; success requires a JavaScript-created DOM mutation, not just launching Chrome or reading static HTML.
-- The render test has a **10-second operation budget**, followed by cleanup. **c** cancels and waits for cleanup; Esc closes the Diagnostic tab's overlay and requests cancellation. An in-flight Playwright launch may take the rest of its bounded launch timeout to terminate. Late launch results are joined and closed before removing the temporary wrapper. Results are not persisted; closed panels ignore late completions.
-- Up/Down or PgUp/PgDn scroll the findings and full manual commands. No displayed installation or repair command is executed by Pi.
+The current action buttons are **Refresh [r]**, **Test render [t]**, and **Test Reddit [e]**. Left/Right chooses a button and Enter runs it. **f** moves focus through the `WEB BROWSER`, `REDDIT`, and `ADVANCED [a]` sections; Enter folds the focused section, and **a** toggles Advanced directly. Up/Down and PgUp/PgDn scroll. The footer always shows the active keyboard hints and the view remains bounded to the available terminal width and row count.
+
+- **Refresh [r]** reruns local inspection without clearing prior explicit proofs; a configuration/eligibility change is shown as stale rather than silently treated as validated.
+- **Test render [t]** runs the production `renderPage` launch plan, Chromium sandbox, and parent route handler. A synthetic `.invalid` page is supplied by the parent without DNS/HTTP; success requires a JavaScript-created DOM mutation, not just launching Chrome or reading static HTML.
+- **Test Reddit [e]** explicitly launches the configured native browser twice: one bounded search request, then one bounded post request selected from that result. A successful validation is stored for the exact profile filesystem identity and canonical executable. It does not add tools immediately: run `/reload`; on future reloads, matching readiness exposes `reddit_search` and `reddit_fetch_content`. Tools never disappear mid-conversation, but every call rechecks current readiness and fails closed with guidance if configuration, identity, lock state, or runtime validity changed.
+- **c** requests cancellation of an active render or Reddit test and waits for browser cleanup; Esc closes the overlay and requests cancellation. Some launch/cleanup work can settle late. Reddit keeps its private tool lock until a late browser close succeeds, and deliberately retains that lock if browser close fails because process state is unknown. Results from closed panels are ignored.
+
+No displayed installation or repair command is executed by Pi. A successful synthetic render test is not a Reddit test; a successful Reddit test is two real requests and must be run only when intended.
 
 A successful synthetic test confirms the isolated browser, parent routing and JS execution on this host, **not** live DNS/TLS/HTTP, external site compatibility, provider API credentials or YouTube support. Test a real URL separately only when desired. `fetch_content({ url: "https://example.com", render: "never" })` exercises actual classic HTTP; `render: "always"` exercises actual rendering for HTML. `raw` mode never renders, and PDF/images/plain text use their own extractors.
 
 Classic HTTP remains available without Linux/browser/bwrap dependencies. With `auto`, nearly empty HTML can trigger the optional renderer; failures stay errors, never a silent success pretending JS was rendered. Choose `render: "never"` (or `fetch.javascript: "never"`) deliberately for HTTP-only extraction.
 
-Browser errors distinguish missing bwrap, missing or incompatible browser, unsupported OS, observed launch namespace/AppArmor denials, parent-request failure, timeout/cancellation and unknown launch/render causes. Only **launch** output is classified as sandbox evidence; page-controlled errors cannot establish an AppArmor denial. Raw browser logs, environment values, configured browser paths and nested error causes are not returned. A generic permission error or `No usable sandbox` is not enough to blame AppArmor.
+General-renderer errors distinguish missing bwrap, missing or incompatible browser, unsupported OS, observed launch namespace/AppArmor denials, parent-request failure, timeout/cancellation, and unknown launch/render causes. Only **launch** output is classified as sandbox evidence; page-controlled errors cannot establish an AppArmor denial. Raw browser logs, environment values, configured browser paths, and nested error causes are not returned. A generic permission error or `No usable sandbox` is not enough to blame AppArmor.
+
+Reddit errors separately report unconfigured/unsafe paths, unavailable browser, busy profile, timeout, cancellation, or HTTP 403 access denial. A 403 alone does **not** prove logout, missing cookies, or a missing profile, and the tools do not loop or retry it. Verify Reddit access manually in the selected profile and resolve the reported condition before testing again. For `profile_busy`, close every browser using that user-data root. Chromium `SingletonLock` and `.pi-web-access-reddit.lock` are never recovered automatically: remove a lock manually only after verifying no Chrome/Pi operation uses the profile. A cancellation may finish cleanup later; a retained private lock after browser-close failure is intentional evidence of uncertain process state.
 
 ### Ubuntu 26.04 targeted AppArmor repair
+
+This advanced recipe applies only to the general bwrap renderer. It is not a required Reddit dependency and must not be applied merely to configure Reddit access.
 
 This is a **conditional administrator procedure**, not a general Ubuntu/Linux fix. The observed configuration was Ubuntu 26.04 with Google's native `google-chrome-stable` at `/opt/google/chrome/chrome`, bubblewrap, `unprivileged_userns_clone=1`, `max_user_namespaces=56952`, and `apparmor_restrict_unprivileged_userns=1`. The actual launch was denied `capability sys_admin` by `unpriv_bwrap`. These nonzero sysctls do not rule out a nested namespace denial. Conversely, a generic `unshare` command failing does not prove this specific bwrap/Chrome launch fails.
 
@@ -131,7 +143,7 @@ This only checks executable availability and versions. It doesn't read credentia
 
 ```bash
 node --version
-for binary in git ffmpeg ffprobe bwrap python3 yt-dlp secret-tool; do
+for binary in git ffmpeg ffprobe bwrap python3 yt-dlp secret-tool Xvfb xauth; do
   command -v "$binary" || printf 'Not found: %s\n' "$binary"
 done
 # If installed:
@@ -189,6 +201,10 @@ The current toolbox checkout uses package-owned configuration files under Pi's a
     "maxBytes": 134217728,
     "ttlMs": 3600000,
     "inlineChars": 12000
+  },
+  "reddit": {
+    "profileDir": "/home/you/.local/share/pi-web-access/reddit-profile",
+    "executablePath": "/opt/google/chrome/chrome"
   }
 }
 ```
@@ -197,7 +213,19 @@ All fields are optional. The example's search provider and dedicated synthesis m
 
 Credentials accept literals, `$NAME` or `${NAME}` environment references, and the explicit private-file or Linux keyring references below. They never execute user-provided commands or use ChatGPT/Codex/Gemini consumer subscriptions. Environment references are resolved only for the selected request. Keep the configuration private (`0600`). Pi model synthesis is separate: it uses Pi's model registry and existing authentication, respects the session model allowlist, and adds a model call whose usage is returned to Pi. Search/research provider consumption is reported when supplied; the extension doesn't invent dollar costs.
 
-Research output defaults to `getAgentDir()/web-access/reports`. The content cache defaults to `getAgentDir()/web-access/cache`; `cache.directory` can override it with an absolute path. Research tracking remains under `getAgentDir()/web-access/research`, independently of cache eviction.
+Research output defaults to `getAgentDir()/web-access/reports`. The content cache defaults to `getAgentDir()/web-access/cache`; `cache.directory` can override it with an absolute path. Research tracking remains under `getAgentDir()/web-access/research`, independently of cache eviction. Reddit validation state is automatic and non-configurable at `getAgentDir()/web-access/reddit`; it stores only readiness, timestamp, and profile/executable identity—not cookies or the configured path strings.
+
+### Dedicated Reddit profile
+
+Reddit support is opt-in and configured by manually adding the `reddit` object to the existing `web-access.json`; preserve every unrelated setting. Both values are required together, must be absolute, and are not accepted as tool arguments. `profileDir` is the Chromium **user-data root** passed to `--user-data-dir`, not a nested `Default` or `Profile 1` directory. It must already be a canonical, non-symlink directory owned by the Pi user with mode `0700`. `executablePath` must resolve to a root-owned, executable, non-group/world-writable native browser under `/usr` or `/opt`; `/opt/google/chrome/chrome` is the recommended explicit target when using Google's native package. Snap/Flatpak launchers, downloaded Playwright browsers, `--no-sandbox`, and globally disabling sandbox/user-namespace/AppArmor protections are unsupported.
+
+Use a dedicated Reddit-only profile. Create it and log in manually, outside Pi and outside these tools, on a visible display you control. For example, after creating the directory with `0700`, close Pi's Reddit operations and launch the selected browser yourself with `--user-data-dir=/home/you/.local/share/pi-web-access/reddit-profile`; complete login in that visible browser, close it cleanly, then configure the same absolute root. Never put credentials, cookies, session tokens, or a real machine-specific profile path into chat or tool arguments. The extension does not prompt for login, copy/export cookies, copy profiles, or scan Orca/global browser locations.
+
+On a remote/headless host, the extension's private Xvfb is transport infrastructure, **not** a visible login prompt. It cannot be used to interactively log in through the tool. If manual login is needed, use only a pre-existing, user-controlled graphical display or remote desktop that you already administer, launch the browser there yourself, and close it before testing. This package neither installs nor configures remote desktop software.
+
+Copying an existing multi-site user-data root into a new private directory can be technically possible only when you are authorized to copy all of its contents and the browser is fully closed. It is not automatic and is not recommended: such a copy may contain sessions for unrelated sites. The Reddit transport restricts page routes, request URLs, DNS-pinned proxy egress, WebSockets, downloads, extensions, and permissions, but these native-browser application controls are weaker than a bwrap filesystem/network namespace and do not establish complete session or network isolation. Prefer a newly created Reddit-only profile.
+
+After editing, run `/reload`, open Diagnostic, and choose **Test Reddit [e]**. On success, run `/reload` once more to expose the content tools. Readiness is tied to the profile inode and canonical executable path, so replacing the profile directory or changing the resolved executable path invalidates it. Changes never cause tools to appear or disappear during the current conversation; an already visible content tool fails closed if the current configuration is no longer ready.
 
 ### Private credentials file (recommended for headless servers)
 
@@ -258,7 +286,14 @@ fetch_content({ url: "https://www.youtube.com/watch?v=abcdefghijk", timestamp: "
 get_search_content({ responseId: "returned-id", index: 0, offset: 12000, limit: 12000 })
 get_search_content({ responseId: "returned-id", url: "https://example.com/article", findText: "authentication" })
 source_check({ claim: "The service supports OAuth PKCE", provider: "brave" })
+reddit_profile_diagnostic({ action: "inspect" })
+reddit_profile_diagnostic({ action: "test" })
+reddit_search({ q: "TypeScript", subreddit: "typescript", sort: "new", time: "month", limit: 10 })
+reddit_search({ q: "TypeScript", limit: 10, after: "t3_abc123" })
+reddit_fetch_content({ url: "https://www.reddit.com/r/typescript/comments/abc123/example/", sort: "confidence", limit: 50, depth: 5 })
 ```
+
+`reddit_profile_diagnostic` defaults to local-only `inspect`; only explicit `action: "test"` makes real Reddit requests. `reddit_search` requires `q` (1–500 characters); optional `subreddit` is 2–21 letters/digits/underscores, `sort` is `relevance|hot|top|new|comments`, `time` is `hour|day|week|month|year|all`, `limit` is 1–25 (default 10), and `after` is a returned `t3_…` cursor. It returns exactly one page and stores that page for `get_search_content`; pagination is always an explicit subsequent call. `reddit_fetch_content` accepts canonical HTTPS `reddit.com`/`old.reddit.com` post links or `redd.it` links, discarding only recognized inert tracking parameters. Its `sort` is `confidence|top|new|controversial|old|qa`, `limit` is 1–100 (default 50), and `depth` is 1–10 (default 5). It bounds JSON to 5,000,000 characters, parsed nodes to 2,000, and post/comment text while reporting partial/truncated coverage; it never expands Reddit `more` placeholders automatically.
 
 `fetch_content` accepts one `url` or up to five `urls`. `raw` returns exact decoded textual HTTP bodies, including non-2xx status bodies, without extraction or rendering. Binary raw responses are rejected. `answer` requires a `prompt`; it stores the original extracted text, not just the answer. `answerModel: "provider/model-id"` overrides the synthesis model per call. Answers only see bounded excerpts and must state evidence gaps.
 
@@ -266,7 +301,7 @@ source_check({ claim: "The service supports OAuth PKCE", provider: "brave" })
 
 `source_check` returns a model judgment, not an automated proof. Every accepted quotation must be an exact substring of a fetched document. The artifact includes source offsets and SHA-256 hashes. Missing or invented quotations are rejected, and verdicts without matching support/contradiction are downgraded. Fetch failures remain visible. The stored artifact occupies document index 0; its evidence source indices refer to the accompanying `sources` list, whose documents follow the artifact in cache order.
 
-Tool text is capped at 40,000 bytes / 1,500 lines. Fetch previews share `inlineChars` across the batch; full extracted text stays in the local cache. Finder results contain at most 20 passages within the configured character budget. `findText` cannot be combined with `offset` or `limit`. Cache entries expire after one hour by default and oldest entries are evicted at the configured count/byte limits. Files are created with `0600`, directories with `0700`; symlinked state/output directory paths are refused. Cache IDs don't expose arbitrary filesystem reads.
+Tool text is capped at 40,000 bytes / 1,500 lines. Fetch and Reddit previews use `inlineChars`; full extracted text stays in the local cache and can be retrieved with `get_search_content`. Finder results contain at most 20 passages within the configured character budget. `findText` cannot be combined with `offset` or `limit`. Cache entries expire after one hour by default and oldest entries are evicted at the configured count/byte limits. Files are created with `0600`, directories with `0700`; symlinked state/output directory paths are refused. Cache IDs don't expose arbitrary filesystem reads. Treat the cache as sensitive: authenticated Reddit reads may include requested private-community or otherwise user-accessible content. The cache stores parsed returned content, not cookie jars or secret session values, but it must remain private and must not be shared as if every result were public.
 
 ## Native deep research
 
@@ -296,7 +331,9 @@ Direct fetches accept public HTTP(S) on ports 80/443 only. Every DNS answer must
 
 HTML parsing uses Readability and Turndown without executing JavaScript. Embedded Next.js JSON can provide text before a render is attempted; this isn't a full React Flight decoder. `render: "never"` disables browser fallback, `always` requests it explicitly, and `auto` tries it for a nearly empty HTML extraction.
 
-Chromium rendering requires **Linux**, **bubblewrap**, a **system Chromium**, and working unprivileged/nested user namespaces. It fails closed when these aren't available. It never downloads Chromium or falls back to `--no-sandbox`. The browser runs in a fresh filesystem/network namespace without home directories, personal cookies or host sockets. All page HTTP requests are fulfilled by the parent's checked HTTP client. Native networking, WebSockets, service workers, downloads and permissions aren't available; only GET/HEAD requests are allowed. Requests and aggregate bytes are capped. Sites requiring authenticated sessions, POST requests or persistent connections may not render. `WEB_ACCESS_CHROMIUM_PATH` can select a trusted system binary under `/usr` or `/opt`.
+General Chromium rendering requires **Linux**, **bubblewrap**, a **system Chromium**, and working unprivileged/nested user namespaces. It fails closed when these aren't available. It never downloads Chromium or falls back to `--no-sandbox`. The general renderer in `browser.ts` is unchanged: it runs in a fresh filesystem/network namespace without home directories, personal cookies, or host sockets. All page HTTP requests are fulfilled by the parent's checked HTTP client. Native networking, WebSockets, service workers, downloads, and permissions aren't available; only GET/HEAD requests are allowed. Requests and aggregate bytes are capped. Sites requiring authenticated sessions, POST requests, or persistent connections may not render. `WEB_ACCESS_CHROMIUM_PATH` can select a trusted system binary under `/usr` or `/opt`.
+
+Reddit is an explicit, narrow exception and does **not** use that bwrap renderer or `WEB_ACCESS_CHROMIUM_PATH`. It launches the configured persistent user-data root headfully in a private Xvfb using Chromium's native sandbox, and rejects the launch unless `chrome://sandbox` reports PID namespaces, network namespaces, and Seccomp-BPF sandboxing enabled. The browser is directed through a disabled-by-default local CONNECT gate that is enabled only for a DNS-pinned public `www.reddit.com:443` address during one exact, allowlisted bounded JSON request. Routes reject other requests; WebSockets, service workers, extensions, background networking, sync, downloads, and permissions are disabled. Each operation checks profile locks and closes the browser before releasing the private lock. These are defense-in-depth application controls, not a separate OS network namespace or complete session isolation; the profile itself remains visible to the native browser process. Use the dedicated profile guidance above.
 
 PDF parsing uses `unpdf` in a terminated worker thread, with page/text limits and cancellation. It extracts existing text only. Scanned PDFs without text report that OCR isn't supported; tables and multi-column layouts may lose structure. No PDF is uploaded to Gemini or another extraction service.
 
@@ -313,7 +350,7 @@ npm run pack:dry --workspace @yteruel31/pi-web-access
 npm run smoke:extensions
 ```
 
-Provider protocol tests are mocked and do not spend API credits. Tests cover absent/incompatible browsers and bwrap, unsupported OS, namespace/AppArmor hints and commented-profile rejection, sanitized errors, synthetic JS verification, cancellation/late-launch cleanup, classic HTTP without a browser, Diagnostic loading/success/failure/refresh states, masked entry, tab/form navigation, edit cancellation and save confirmation, constrained modal dimensions and scrolling, credential storage selection, permissions/symlinks, concurrent settings preservation, sanitized failures, provider payloads, citations, lifecycle/recovery/cancellation, non-overwriting Markdown output, cache bounds, SSRF, extraction and Pi registration. Real credential smoke tests and live Linux browser/YouTube isolation tests need separate approval and installed dependencies.
+Provider and Reddit protocol tests are mocked and do not spend API credits or access a real profile. Tests cover absent/incompatible browsers and bwrap, unsupported OS, namespace/AppArmor hints and commented-profile rejection, sanitized errors, synthetic JS verification, Reddit URL/schema bounds, local-only inspection, exact two-call validation, profile identity/readiness persistence, lock and cancellation/late-close behavior, classic HTTP without a browser, Diagnostic loading/success/failure/refresh states and bounded keyboard rendering, masked entry, tab/form navigation, edit cancellation and save confirmation, credential storage selection, permissions/symlinks, concurrent settings preservation, provider payloads, citations, lifecycle/recovery/cancellation, non-overwriting Markdown output, cache bounds, SSRF, extraction, and Pi registration. Actual Pi SDK tests verify all-or-nothing collision ownership and reload-based Reddit tool availability. Real credentials, a private browser profile, and live Linux browser/Reddit/YouTube requests require separate explicit approval and installed dependencies.
 
 Protocol references checked during implementation:
 
