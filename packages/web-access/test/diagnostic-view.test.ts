@@ -8,9 +8,9 @@ import { DiagnosticView } from "../src/tui/diagnostic-view.js";
 const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
 const kb = { matches: (data: string, id: string) => matchesKey(data, ({ "tui.select.confirm": "enter", "tui.select.up": "up", "tui.select.down": "down" } as Record<string, string>)[id] as never) } as never;
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-const reddit = (status: RedditDiagnosticResult["diagnostic"]["status"], options: { enabled?: boolean; at?: string } = {}): RedditDiagnosticResult => ({
+const reddit = (status: RedditDiagnosticResult["diagnostic"]["status"], options: { enabled?: boolean; at?: string; eligible?: boolean } = {}): RedditDiagnosticResult => ({
   enabled: options.enabled ?? true,
-  diagnostic: { status, eligible: status === "ready", message: `Safe ${status} guidance.`, lastValidatedAt: options.at },
+  diagnostic: { status, eligible: options.eligible ?? status === "ready", message: `Safe ${status} guidance.`, lastValidatedAt: options.at },
 });
 const report = (remedies = 0): DiagnosticReport => ({
   checks: [
@@ -77,14 +77,14 @@ test("refresh is parallel and independent, preserves proofs, and marks changed R
 });
 
 test("current Reddit observation supersedes historical failures after refresh", async () => {
-  for (const [after, expected] of [["not_configured", /NOT CONFIGURED.*Configure the Reddit profile/], ["ready", /✓ READY.*current profile/]] as const) {
+  for (const [after, expected] of [["not_configured", /NOT CONFIGURED.*Configure the Reddit profile/], ["ready", /✓ CACHED READY.*current profile/]] as const) {
     let inspections = 0;
     const h = harness({
       inspectReddit: async () => reddit(inspections++ === 0 ? "untested" : after),
       testReddit: async () => reddit("access_denied"),
     });
     await tick(); h.view.handleInput("e"); await tick(); assert.match(h.text(), /ACCESS DENIED/);
-    h.view.handleInput("r"); await tick(); assert.match(h.text(), expected); assert.doesNotMatch(h.text(), /ACCESS DENIED/);
+    h.view.handleInput("r"); await tick(); assert.match(h.text(), expected); assert.match(h.text(), /Latest test: ACCESS DENIED/);
     h.view.handleInput("a"); h.view.handleInput("\x1b[F");
     assert.match(h.text(), /Latest Reddit action[^]*access_denied/);
     h.view.dispose();
@@ -94,8 +94,33 @@ test("current Reddit observation supersedes historical failures after refresh", 
 test("cancelled Reddit action remains separate from current eligibility", async () => {
   const h = harness({ inspectReddit: async () => reddit("ready", { at: "2026-09-17T01:02:03Z" }), testReddit: async () => reddit("cancelled") });
   await tick(); h.view.handleInput("e"); await tick();
-  assert.match(h.text(), /✓ READY/); assert.match(h.text(), /Latest test cancelled/); assert.match(h.text(), /Last validation: 2026-09-17 01:02Z/);
+  assert.match(h.text(), /✓ CACHED READY/); assert.match(h.text(), /Latest test: CANCELLED/); assert.match(h.text(), /Last validation: 2026-09-17 01:02Z/);
   h.view.dispose();
+});
+
+test("busy cached readiness remains eligible and a waiting test says it may be queued", async () => {
+  let finish!: (value: RedditDiagnosticResult) => void;
+  const h = harness({
+    inspectReddit: async () => reddit("profile_busy", { eligible: true, at: "2026-09-17T01:02:03Z" }),
+    testReddit: async () => new Promise((resolve) => { finish = resolve; }),
+  });
+  await tick();
+  assert.match(h.text(72, 22), /! IN USE.*Calls wait their turn; cached validation remains valid/);
+  assert.doesNotMatch(h.text(72, 22), /STALE|NOT CONFIGURED|Fix/);
+  h.view.handleInput("e");
+  assert.match(h.text(72, 22), /waiting for profile or running bounded request/);
+  finish(reddit("ready", { at: "2026-09-18T12:34:56Z" })); await tick();
+  assert.match(h.text(72, 22), /✓ READY/); h.view.dispose();
+});
+
+test("temporary rate limit preserves cached readiness while showing the failed test", async () => {
+  const h = harness({
+    inspectReddit: async () => reddit("ready", { at: "2026-09-17T01:02:03Z" }),
+    testReddit: async () => reddit("rate_limited"),
+  });
+  await tick(); h.view.handleInput("e"); await tick();
+  assert.match(h.text(), /✓ CACHED READY/); assert.match(h.text(), /✗ Latest test: RATE LIMITED/);
+  assert.doesNotMatch(h.text(), /reload.*RATE LIMITED|NOT CONFIGURED/); h.view.dispose();
 });
 
 test("actions are single-flight; cancellation and disposal suppress late completion updates", async () => {

@@ -79,7 +79,7 @@ test("actual SDK preserves customTools ownership when a startup collision is det
   } finally { if (previousOffline === undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE = previousOffline; }
 }));
 
-test("actual SDK recreates startup registration from persisted readiness on reload", () => isolated(async (directory) => {
+test("actual SDK recreates startup registration from persisted readiness, including transient busy, on reload", () => isolated(async (directory) => {
   const previousOffline = process.env.PI_OFFLINE; process.env.PI_OFFLINE = "1";
   try {
     const loader = new DefaultResourceLoader({ cwd: directory, agentDir: directory, settingsManager: SettingsManager.inMemory(), extensionFactories: [{ name: "web-access-test", factory: webAccess }], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
@@ -93,6 +93,9 @@ test("actual SDK recreates startup registration from persisted readiness on relo
     const config = parseConfig({ reddit: { profileDir: profile, executablePath: "/bin/true" } }, directory);
     const validated = await validateRedditConfig(config);
     await writeFile(join(validated.stateDir, "validation.json"), JSON.stringify({ version: 1, identity: validated.identity, status: "ready", validatedAt: new Date(0).toISOString() }), { mode: 0o600 });
+    // A tool session may already hold the profile when another session starts.
+    // Cached readiness still permits registration; runtime calls join the queue.
+    await writeFile(join(profile, ".pi-web-access-reddit.lock"), "busy\n", { mode: 0o600 });
     await session.reload();
     assert.deepEqual(extensionErrors, []);
     const tools = session.getAllTools().filter((tool) => tool.sourceInfo.source !== "builtin");
