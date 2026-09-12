@@ -206,19 +206,18 @@ export async function requestRedditJson(config: ValidatedRedditConfig, url: stri
         else await route.abort("blockedbyclient");
       };
       await context.route("**/*", routeHandler); await context.routeWebSocket("**/*", (socket) => socket.close());
-      for (const restored of context.pages()) await restored.close().catch(() => {});
       controller.signal.throwIfAborted(); acceptingControlledPage = true;
-      const sandboxPage = await context.newPage(); controlledPage = sandboxPage; acceptingControlledPage = false;
-      await sandboxPage.goto("chrome://sandbox", { waitUntil: "domcontentloaded", timeout: timeoutMs });
-      const sandboxReport = await sandboxPage.locator("body").innerText();
-      await sandboxPage.close();
+      const controlled = await context.newPage(); controlledPage = controlled; acceptingControlledPage = false;
+      // Never leave a headed persistent context with zero pages: native Chrome may
+      // exit before a replacement tab can be created. Keep this controlled page
+      // alive while closing restored tabs and reuse it for the bounded request.
+      for (const restored of context.pages()) if (restored !== controlled) await restored.close().catch(() => {});
+      await controlled.goto("chrome://sandbox", { waitUntil: "domcontentloaded", timeout: timeoutMs });
+      const sandboxReport = await controlled.locator("body").innerText();
       if (!sandboxActive(sandboxReport)) throw new RedditBrowserError("browser_unavailable");
-      controlledPage = undefined;
-      for (const unexpected of context.pages()) await unexpected.close().catch(() => {});
-      controller.signal.throwIfAborted(); gate.enable(address); acceptingControlledPage = true;
-      const createdPage = await context.newPage(); controlledPage = createdPage; acceptingControlledPage = false;
-      await createdPage.goto(landingUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs }); controller.signal.throwIfAborted();
-      const result = await createdPage.evaluate(async ({ expectedUrl, maxBytes }) => {
+      controller.signal.throwIfAborted(); gate.enable(address);
+      await controlled.goto(landingUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs }); controller.signal.throwIfAborted();
+      const result = await controlled.evaluate(async ({ expectedUrl, maxBytes }) => {
         const response = await fetch(expectedUrl, { method: "GET", credentials: "include", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(15_000) });
         const declared = Number(response.headers.get("content-length"));
         if (Number.isFinite(declared) && declared > maxBytes) throw new Error("response too large");
