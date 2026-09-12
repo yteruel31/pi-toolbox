@@ -9,14 +9,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ipaddr from "ipaddr.js";
 import type { BrowserContext, BrowserType, Page, Route } from "playwright-core";
-import { acquireRedditProfileLock, type RedditProfileLock, type ValidatedRedditConfig } from "./reddit-config.js";
+import { type RedditProfileLock, type ValidatedRedditConfig } from "./reddit-config.js";
+import { acquireQueuedRedditProfileLock, RedditQueueError } from "./reddit-queue.js";
 import { buildRedditPostUrl, buildRedditSearchUrl } from "./reddit-parser.js";
 
-export type RedditBrowserFailureCode = "profile_busy" | "browser_unavailable" | "access_denied" | "cancelled" | "timeout";
+export type RedditBrowserFailureCode = "profile_busy" | "queue_full" | "queue_timeout" | "browser_unavailable" | "access_denied" | "authentication_required" | "not_found" | "post_unavailable" | "rate_limited" | "upstream_unavailable" | "invalid_response" | "request_failed" | "configuration_changed" | "cancelled" | "timeout";
 export class RedditBrowserError extends Error {
-  constructor(readonly code: RedditBrowserFailureCode) {
-    super(code === "profile_busy" ? "The configured Reddit profile is in use; close its browser or remove only a lock you have verified is stale."
-      : code === "access_denied" ? "Reddit denied the authenticated browser request (HTTP 403). Verify Reddit access in the configured profile."
+  constructor(readonly code: RedditBrowserFailureCode, readonly phase?: "queue" | "launch" | "sandbox" | "request" | "close") {
+    super(code === "profile_busy" ? "The configured Reddit profile is in use by Chromium; close that browser and try again."
+      : code === "queue_full" ? "Too many Reddit operations are already waiting for this profile."
+      : code === "queue_timeout" ? "Timed out waiting for another Reddit tool operation to release this profile."
+      : code === "access_denied" ? "Reddit denied this request (HTTP 403)."
+      : code === "authentication_required" ? "Reddit authentication is required for this request (HTTP 401)."
+      : code === "not_found" ? "The requested Reddit resource was not found."
+      : code === "post_unavailable" ? "The requested Reddit post is unavailable."
+      : code === "rate_limited" ? "Reddit rate limited this request (HTTP 429)."
+      : code === "upstream_unavailable" ? "Reddit is temporarily unavailable."
+      : code === "invalid_response" ? "Reddit returned an invalid JSON response."
+      : code === "request_failed" ? "The Reddit request failed before a response was received."
+      : code === "configuration_changed" ? "The Reddit profile identity changed while the operation was waiting."
       : code === "cancelled" ? "Reddit browser validation was cancelled."
       : code === "timeout" ? "Reddit browser request timed out."
       : "The dedicated Reddit browser could not be started. Verify the executable, Xvfb, and native Chromium sandbox support.");
@@ -148,7 +159,7 @@ export interface RedditBrowserDependencies {
 }
 const defaults: RedditBrowserDependencies = { loadEngine: async () => (await import("playwright-core")).chromium, createGate: createRedditNetworkGate, resolveAddress: redditAddress, startDisplay: startRedditDisplay };
 export interface RedditBrowserResponse { status: number; body: string }
-export interface RedditBrowserRequestOptions { signal?: AbortSignal; timeoutMs?: number; profileLock?: RedditProfileLock }
+export interface RedditBrowserRequestOptions { signal?: AbortSignal; timeoutMs?: number; waitTimeoutMs?: number; profileLock?: RedditProfileLock }
 
 const sandboxActive = (report: string): boolean => ["PID namespaces", "Network namespaces", "Seccomp-BPF sandbox"].every((label) => new RegExp(`${label}\\s+(?:Yes|Enabled)`, "i").test(report));
 
@@ -156,9 +167,11 @@ const sandboxActive = (report: string): boolean => ["PID namespaces", "Network n
 export async function requestRedditJson(config: ValidatedRedditConfig, url: string, options: RedditBrowserRequestOptions = {}, dependencies = defaults): Promise<RedditBrowserResponse> {
   assertRedditRequestUrl(url);
   if (options.signal?.aborted) throw new RedditBrowserError("cancelled");
-  const ownLock = options.profileLock ? undefined : await acquireRedditProfileLock(config);
+  let ownLock: RedditProfileLock | undefined;
+  try { ownLock = options.profileLock ? undefined : await acquireQueuedRedditProfileLock(config, { signal: options.signal, waitTimeoutMs: options.waitTimeoutMs }); }
+  catch (error) { if (error instanceof RedditQueueError) throw new RedditBrowserError(error.code, "queue"); throw error; }
   const lock = options.profileLock ?? ownLock;
-  if (!lock) throw new RedditBrowserError("profile_busy");
+  if (!lock) throw new RedditBrowserError("profile_busy", "queue");
   const profileLease = lock.borrow();
   if (!profileLease) throw new RedditBrowserError("profile_busy");
   if (ownLock) await ownLock.release();
@@ -167,6 +180,7 @@ export async function requestRedditJson(config: ValidatedRedditConfig, url: stri
   if (options.signal?.aborted) abort();
   const timer = setTimeout(() => controller.abort(new RedditBrowserError("timeout")), timeoutMs);
   let gate: RedditNetworkGate | undefined, display: RedditDisplay | undefined, context: BrowserContext | undefined;
+  const failure: { phase: "launch" | "sandbox" | "request" } = { phase: "launch" };
   let contextClose: Promise<unknown> | undefined, gateClose: Promise<unknown> | undefined, displayClose: Promise<unknown> | undefined;
   let browserCloseFailed = false, closing = false;
   const closeKnown = async (): Promise<boolean> => {
@@ -184,14 +198,17 @@ export async function requestRedditJson(config: ValidatedRedditConfig, url: stri
     try {
       gate = await dependencies.createGate(); controller.signal.throwIfAborted();
       display = await dependencies.startDisplay(controller.signal); controller.signal.throwIfAborted();
+      failure.phase = "request";
       const address = await dependencies.resolveAddress(); controller.signal.throwIfAborted();
+      failure.phase = "launch";
       const engine = await dependencies.loadEngine(); controller.signal.throwIfAborted();
       context = await engine.launchPersistentContext(config.profileDir, {
         executablePath: config.executablePath, headless: false, chromiumSandbox: true, serviceWorkers: "block", acceptDownloads: false, permissions: [], timeout: timeoutMs,
         env: { ...process.env, DISPLAY: display.value, XAUTHORITY: display.authPath },
         args: ["--disable-extensions", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-quic", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", `--proxy-server=http://127.0.0.1:${gate.port}`, "--proxy-bypass-list=<-loopback>"],
       });
-      context.browser()?.once("disconnected", () => { if (!closing) controller.abort(new RedditBrowserError("browser_unavailable")); });
+      failure.phase = "sandbox";
+      context.browser()?.once("disconnected", () => { if (!closing) controller.abort(new RedditBrowserError("browser_unavailable", "launch")); });
       let controlledPage: Page | undefined, acceptingControlledPage = false;
       context.on("page", (opened) => {
         if (acceptingControlledPage && !controlledPage) controlledPage = opened;
@@ -214,8 +231,8 @@ export async function requestRedditJson(config: ValidatedRedditConfig, url: stri
       for (const restored of context.pages()) if (restored !== controlled) await restored.close().catch(() => {});
       await controlled.goto("chrome://sandbox", { waitUntil: "domcontentloaded", timeout: timeoutMs });
       const sandboxReport = await controlled.locator("body").innerText();
-      if (!sandboxActive(sandboxReport)) throw new RedditBrowserError("browser_unavailable");
-      controller.signal.throwIfAborted(); gate.enable(address);
+      if (!sandboxActive(sandboxReport)) throw new RedditBrowserError("browser_unavailable", "sandbox");
+      controller.signal.throwIfAborted(); failure.phase = "request"; gate.enable(address);
       await controlled.goto(landingUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs }); controller.signal.throwIfAborted();
       const result = await controlled.evaluate(async ({ expectedUrl, maxBytes }) => {
         const response = await fetch(expectedUrl, { method: "GET", credentials: "include", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(15_000) });
@@ -234,8 +251,13 @@ export async function requestRedditJson(config: ValidatedRedditConfig, url: stri
         return { status: response.status, body };
       }, { expectedUrl: url, maxBytes: 5 * 1024 * 1024 });
       controller.signal.throwIfAborted();
-      if (result.status === 403) throw new RedditBrowserError("access_denied");
-      if (result.status < 200 || result.status >= 300) throw new RedditBrowserError("browser_unavailable");
+      if (result.status === 401) throw new RedditBrowserError("authentication_required", "request");
+      if (result.status === 403) throw new RedditBrowserError("access_denied", "request");
+      if (result.status === 404) throw new RedditBrowserError(url.includes("/comments/") ? "post_unavailable" : "not_found", "request");
+      if (result.status === 410) throw new RedditBrowserError("post_unavailable", "request");
+      if (result.status === 429) throw new RedditBrowserError("rate_limited", "request");
+      if (result.status >= 500) throw new RedditBrowserError("upstream_unavailable", "request");
+      if (result.status < 200 || result.status >= 300) throw new RedditBrowserError("request_failed", "request");
       return result;
     } finally { await cleanup(); }
   })();
@@ -246,8 +268,9 @@ export async function requestRedditJson(config: ValidatedRedditConfig, url: stri
     if (controller.signal.aborted) throw controller.signal.reason;
     if (error instanceof RedditBrowserError) throw error;
     const raw = error instanceof Error ? error.message.slice(0, 32_768) : "";
-    if (/ProcessSingleton|SingletonLock|profile[^\n]{0,80}(?:in use|already.*open)/i.test(raw)) throw new RedditBrowserError("profile_busy");
-    throw new RedditBrowserError("browser_unavailable");
+    if (/ProcessSingleton|SingletonLock|profile[^\n]{0,80}(?:in use|already.*open)/i.test(raw)) throw new RedditBrowserError("profile_busy", "launch");
+    if (failure.phase === "request") throw new RedditBrowserError("request_failed", "request");
+    throw new RedditBrowserError("browser_unavailable", failure.phase);
   } finally {
     clearTimeout(timer); options.signal?.removeEventListener("abort", abort);
     if (!controller.signal.aborted) controller.abort(new RedditBrowserError("cancelled"));

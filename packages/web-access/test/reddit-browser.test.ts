@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { BrowserContext } from "playwright-core";
 import { assertRedditRequestUrl, createRedditNetworkGate, RedditBrowserError, requestRedditJson, type RedditBrowserDependencies } from "../src/reddit-browser.js";
 import { redditProfileLockPath, type ValidatedRedditConfig } from "../src/reddit-config.js";
-import { buildRedditSearchUrl } from "../src/reddit-parser.js";
+import { buildRedditPostUrl, buildRedditSearchUrl } from "../src/reddit-parser.js";
 
 const TEST_URL = buildRedditSearchUrl({ q: "x" });
 
@@ -16,13 +16,13 @@ async function fixture(t: test.TestContext): Promise<ValidatedRedditConfig> {
   const stateDir = join(root, "state"), profileDir = join(root, "profile"); await mkdir(stateDir, { mode: 0o700 }); await mkdir(profileDir, { mode: 0o700 });
   return { profileDir, executablePath: "/opt/google/chrome/chrome", stateDir, identity: "identity" };
 }
-function harness(launchWait?: Promise<void>, overrides: Partial<RedditBrowserDependencies> = {}, closeWait?: Promise<void>, sandbox = "PID namespaces Yes\nNetwork namespaces Yes\nSeccomp-BPF sandbox Yes", evaluateWait?: Promise<void>) {
+function harness(launchWait?: Promise<void>, overrides: Partial<RedditBrowserDependencies> = {}, closeWait?: Promise<void>, sandbox = "PID namespaces Yes\nNetwork namespaces Yes\nSeccomp-BPF sandbox Yes", evaluateWait?: Promise<void>, response = { status: 200, body: "{}" }) {
   const events: string[] = []; let closes = 0, launchOptions: any;
   const restored = { close: async () => { events.push("restored-close"); } };
   const controlledPage = {
     goto: async (url: string) => { events.push(url === "chrome://sandbox" ? `goto:${url}` : "goto:root"); },
     locator: () => ({ innerText: async () => sandbox }),
-    evaluate: async () => { await evaluateWait; return { status: 200, body: "{}" }; },
+    evaluate: async () => { await evaluateWait; return response; },
     close: async () => {},
   };
   let pages = 0; const browserEvents = new Map<string, () => void>();
@@ -148,6 +148,21 @@ test("cancellation destroys an existing tunnel before a pending browser close se
   await Promise.race([tunnelClosed, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("tunnel stayed open")), 500))]);
   assert.ok(h.closes() > 0); finishEvaluate(); finishClose();
   await waitFor(() => access(redditProfileLockPath(config)).then(() => false, () => true));
+});
+
+test("HTTP statuses and request failures are classified without retry", async (t) => {
+  const cases = [[401, "authentication_required"], [403, "access_denied"], [404, "not_found"], [429, "rate_limited"], [503, "upstream_unavailable"]] as const;
+  for (const [status, code] of cases) {
+    const config = await fixture(t), h = harness(undefined, {}, undefined, undefined, undefined, { status, body: "secret response body" });
+    await assert.rejects(requestRedditJson(config, TEST_URL, {}, h.deps), (error: RedditBrowserError) => error.code === code && !error.message.includes("secret"));
+    assert.equal(h.pages(), 1);
+  }
+  const postConfig = await fixture(t), postHarness = harness(undefined, {}, undefined, undefined, undefined, { status: 404, body: "" });
+  const postUrl = buildRedditPostUrl("https://www.reddit.com/comments/abc123");
+  await assert.rejects(requestRedditJson(postConfig, postUrl, {}, postHarness.deps), (error: RedditBrowserError) => error.code === "post_unavailable");
+  const failedConfig = await fixture(t), rejected = Promise.reject(new Error("network secret")); rejected.catch(() => {});
+  const failed = harness(undefined, {}, undefined, undefined, rejected);
+  await assert.rejects(requestRedditJson(failedConfig, TEST_URL, {}, failed.deps), (error: RedditBrowserError) => error.code === "request_failed" && !error.message.includes("secret"));
 });
 
 test("display failure closes gate and timeout differs from cancellation", async (t) => {
