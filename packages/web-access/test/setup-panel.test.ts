@@ -6,16 +6,17 @@ import { parseConfig } from "../src/config.js";
 import { SetupError, type SetupDraft, type SetupSnapshot } from "../src/setup-store.js";
 import { SecretInput } from "../src/tui/secret-input.js";
 import { SETUP_OVERLAY, SetupPanel, setupRows } from "../src/tui/setup-panel.js";
+import type { DiagnosticReport, RenderProbeResult } from "../src/diagnostics.js";
 
 const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
 const kb = { matches: (data: string, id: string) => matchesKey(data, ({ "tui.select.confirm": "enter", "tui.select.cancel": "escape", "tui.select.up": "up", "tui.select.down": "down" } as Record<string, string>)[id] as never) } as never;
 const enter = "\r", down = "\x1b[B", up = "\x1b[A", back = "\x1b[Z", escape = "\x1b";
-function harness(root: Record<string, unknown> = {}, save?: (draft: SetupDraft, key?: string) => Promise<void>) {
+function harness(root: Record<string, unknown> = {}, save?: (draft: SetupDraft, key?: string) => Promise<void>, diagnostics: { inspect?: () => Promise<DiagnosticReport>; testRender?: (signal: AbortSignal) => Promise<RenderProbeResult> } = {}) {
   const snapshot: SetupSnapshot = { agentDir: "/tmp/not-used", root, config: parseConfig(root, "/tmp/not-used") };
   const saves: Array<{ draft: SetupDraft; key?: string }> = [];
   const done: boolean[] = [];
   let rows = 22;
-  const panel = new SetupPanel({ theme, keybindings: kb, snapshot, maxRows: () => rows, onRender: () => {}, onDone: (saved) => done.push(saved), onSave: async (draft, key) => { saves.push({ draft, key }); await save?.(draft, key); } });
+  const panel = new SetupPanel({ inspect: async () => ({ checks: [], remedies: [] }), ...diagnostics, theme, keybindings: kb, snapshot, maxRows: () => rows, onRender: () => {}, onDone: (saved) => done.push(saved), onSave: async (draft, key) => { saves.push({ draft, key }); await save?.(draft, key); } });
   panel.focused = true;
   const input = (...keys: string[]) => { for (const key of keys) { panel.render(72); panel.handleInput(key); } };
   const text = (width = 72) => stripVTControlCharacters(panel.render(width).join("\n")).replaceAll("\x1b_pi:c\x07", "");
@@ -196,4 +197,63 @@ test("configured confirm and selection keybindings are honored", () => {
   const panel = new SetupPanel({ theme, snapshot, keybindings: { matches: (data: string, id: string) => data === ({ "tui.select.down": "j", "tui.select.confirm": "f" } as Record<string, string>)[id] } as never, maxRows: () => 22, onRender: () => {}, onSave: async () => {}, onDone: () => {} });
   panel.handleInput("j"); panel.handleInput("f"); panel.handleInput("f");
   assert.match(stripVTControlCharacters(panel.render(72).join("\n")), /gpt-5-mini/);
+});
+
+const diagnosticTab = "\x1b[1;5C";
+test("masked secret survives Diagnostic tab switches without being rendered or saved early", async () => {
+  const h = harness(); toKey(h); h.input("fixture-private-key"); await tick();
+  h.input(diagnosticTab); assert.doesNotMatch(h.text(), /fixture-private-key/);
+  h.input(diagnosticTab); assert.doesNotMatch(h.text(), /fixture-private-key/);
+  assert.match(h.text(), /API key/); assert.equal(h.saves.length, 0);
+  h.input(enter, enter); await tick();
+  assert.equal(h.saves[0]?.key, "fixture-private-key"); assert.deepEqual(h.done, [true]);
+});
+test("Diagnostic opens with lightweight checks only, refreshes and runs a test only on explicit action", async () => {
+  let inspections = 0, tests = 0;
+  let finish!: (result: RenderProbeResult) => void;
+  const h = harness({}, undefined, {
+    inspect: async () => { inspections++; return { checks: [{ label: "Classic HTTP", state: "untested", summary: "No HTTP request made" }], remedies: ["manual command"] }; },
+    testRender: () => { tests++; return new Promise((resolve) => { finish = resolve; }); },
+  });
+  await tick(); assert.equal(inspections, 1); assert.equal(tests, 0);
+  h.input(diagnosticTab); assert.match(h.text(), /No HTTP request made/);
+  h.input(enter); await tick(); assert.equal(inspections, 2); assert.equal(tests, 0);
+  h.input("\x1b[200~", "t\r", "\x1b[201~"); assert.equal(tests, 0);
+  h.input("t", "t", "r", enter); assert.equal(tests, 1); assert.equal(inspections, 2);
+  assert.match(h.text(), /Testing isolated rendering/);
+  finish({ state: "passed", summary: "Synthetic JS passed; HTTP untested" }); await tick();
+  assert.match(h.text(), /PASSED: Synthetic JS/);
+  h.input("r"); await tick(); assert.doesNotMatch(h.text(), /PASSED/);
+  h.input(diagnosticTab); assert.match(h.text(), /Search provider/);
+  assert.equal(h.saves.length, 0);
+});
+test("Diagnostic cancellation/disposal aborts test and suppresses late completion; draft survives tab switch", async () => {
+  let signal!: AbortSignal, finish!: (result: RenderProbeResult) => void;
+  const h = harness({}, undefined, { testRender: (s) => { signal = s; return new Promise((resolve) => { finish = resolve; }); } });
+  h.input(down, enter, enter, "\x15", "custom-model"); await tick();
+  h.input(diagnosticTab, "t", "c"); assert.equal(signal.aborted, true);
+  assert.match(h.text(), /Cancelling/);
+  finish({ state: "passed", summary: "late success" }); await tick();
+  assert.match(h.text(), /CANCELLED/); assert.doesNotMatch(h.text(), /late success/);
+  h.input(diagnosticTab); assert.match(h.text(), /custom-model/);
+  h.input(diagnosticTab, "t", escape); assert.equal(signal.aborted, true); assert.deepEqual(h.done, [false]);
+  finish({ state: "passed", summary: "late success" }); await tick(); assert.doesNotMatch(h.text(), /late success/);
+});
+test("Diagnostic failures are sanitized, refresh is recoverable, bounds and scrolling hold", async () => {
+  let fail = true;
+  const h = harness({}, undefined, {
+    inspect: async () => { if (fail) throw new Error("private-host-secret"); return { checks: [], remedies: Array.from({ length: 20 }, (_, i) => `Manual command ${i}`) }; },
+    testRender: async () => { throw new Error("private-render-secret"); },
+  });
+  h.input(diagnosticTab); await tick(); assert.match(h.text(), /Local inspection failed/); assert.doesNotMatch(h.text(), /private-host/);
+  fail = false; h.input("r"); await tick();
+  h.input("t"); await tick(); assert.match(h.text(), /cause unknown/); assert.doesNotMatch(h.text(), /private-render/);
+  for (const width of [32, 40, 72]) for (const rows of [12, 16, 22]) {
+    h.rows(rows); const lines = h.panel.render(width);
+    assert.ok(lines.length <= rows, `${width}x${rows}: ${lines.length}`);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width));
+  }
+  h.rows(22); for (let i = 0; i < 100; i++) h.input(down);
+  assert.match(h.text(), /Manual command 19/);
+  h.input(escape);
 });

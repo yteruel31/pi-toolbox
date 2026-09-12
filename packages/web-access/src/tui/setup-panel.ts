@@ -2,6 +2,7 @@ import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type OverlayOptions } from "@earendil-works/pi-tui";
 import { SetupError, setupErrorMessage, validModel, type Provider, type SetupDraft, type SetupSnapshot, type Storage } from "../setup-store.js";
 import { SecretInput } from "./secret-input.js";
+import { inspectWebAccess, testIsolatedRendering, type DiagnosticReport, type RenderProbeResult } from "../diagnostics.js";
 
 export const SETUP_OVERLAY: OverlayOptions = { width: 72, minWidth: 32, maxHeight: "85%", anchor: "center", margin: 1 };
 export function setupRows(terminalRows: number): number { return Math.max(1, Math.min(22, Math.floor(terminalRows * 0.85) - 2)); }
@@ -14,6 +15,8 @@ interface Options {
   onRender: () => void;
   onDone: (saved: boolean) => void;
   onSave: (draft: SetupDraft, key?: string) => Promise<void>;
+  inspect?: () => Promise<DiagnosticReport>;
+  testRender?: (signal: AbortSignal) => Promise<RenderProbeResult>;
 }
 const providers: Provider[] = ["gemini", "openai", "brave"];
 const stores: Storage[] = ["keep", "file", "keyring"];
@@ -35,6 +38,14 @@ export class SetupPanel implements Component, Focusable {
   #draft: SetupDraft;
   #secret = new SecretInput();
   #input = new Input();
+  private section: "Setup" | "Diagnostic" = "Setup";
+  private diagnostic?: DiagnosticReport;
+  private diagnosticError?: string;
+  private probe?: RenderProbeResult;
+  private diagnosticBusy?: "checks" | "render";
+  private diagnosticController?: AbortController;
+  private diagnosticScroll = 0;
+  private diagnosticAction = 0;
   private step: Step = "provider";
   private selected = 0;
   private scroll = 0;
@@ -53,6 +64,50 @@ export class SetupPanel implements Component, Focusable {
     this.#draft = { provider: config.search.provider ?? "gemini", enabled: config.enabled, synthesisModel: config.synthesisModel, storage: "keep" };
     this.setProvider(this.#draft.provider);
     this.enter("provider");
+    void this.refreshDiagnostics();
+  }
+  private async refreshDiagnostics(): Promise<void> {
+    if (this.diagnosticBusy || this.closed) return;
+    this.diagnosticBusy = "checks"; this.diagnosticError = undefined; this.probe = undefined;
+    this.diagnosticScroll = 0; this.redraw();
+    try { const report = await (this.#options.inspect ?? inspectWebAccess)(); if (!this.closed) this.diagnostic = report; }
+    catch { if (!this.closed) { this.diagnostic = undefined; this.diagnosticError = "Local inspection failed; cause unknown. No browser or HTTP test was made. Press r to retry."; } }
+    finally { this.diagnosticBusy = undefined; this.redraw(); }
+  }
+  private async runRenderTest(): Promise<void> {
+    if (this.diagnosticBusy || this.closed) return;
+    this.diagnosticBusy = "render"; this.probe = undefined; this.diagnosticScroll = 0;
+    const controller = new AbortController(); this.diagnosticController = controller; this.redraw();
+    try {
+      const result = await (this.#options.testRender ?? testIsolatedRendering)(controller.signal);
+      if (!this.closed) this.probe = controller.signal.aborted && result.state === "passed" ? { state: "cancelled", summary: "Render test cancelled; cleanup finished." } : result;
+    } catch { if (!this.closed) this.probe = { state: "failed", summary: "Render test failed; cause unknown. No raw diagnostics are displayed." }; }
+    finally { this.diagnosticController = undefined; this.diagnosticBusy = undefined; this.redraw(); }
+  }
+  private diagnosticInput(data: string): void {
+    const kb = this.#options.keybindings;
+    if (this.diagnosticBusy) {
+      if (data === "c") { this.diagnosticController?.abort(); this.redraw(); }
+      return;
+    }
+    if (data === "r") void this.refreshDiagnostics();
+    else if (data === "t") void this.runRenderTest();
+    else if (matchesKey(data, "left") || matchesKey(data, "right")) this.diagnosticAction = 1 - this.diagnosticAction;
+    else if (kb.matches(data, "tui.select.confirm") || matchesKey(data, "enter")) {
+      if (this.diagnosticAction === 0) void this.refreshDiagnostics(); else void this.runRenderTest();
+    } else if (kb.matches(data, "tui.select.down") || matchesKey(data, "pageDown")) this.diagnosticScroll++;
+    else if (kb.matches(data, "tui.select.up") || matchesKey(data, "pageUp")) this.diagnosticScroll = Math.max(0, this.diagnosticScroll - 1);
+    this.redraw();
+  }
+  private diagnosticBody(width: number): string[] {
+    const lines: string[] = [];
+    if (this.diagnosticBusy) lines.push(this.diagnosticBusy === "checks" ? "Reading local metadata only…" : this.diagnosticController?.signal.aborted ? "Cancelling; waiting for browser cleanup…" : "Testing isolated rendering (10s budget + cleanup); no external network. c cancels.");
+    if (this.probe) lines.push(`${this.probe.state.toUpperCase()}: ${this.probe.summary}`, "");
+    if (this.diagnosticError) lines.push(this.diagnosticError);
+    if (this.probe && this.diagnostic) lines.push("Local preflight snapshot (separate from the explicit test above):", "");
+    for (const check of this.diagnostic?.checks ?? []) lines.push(`${check.label} [${check.state}]: ${check.summary}`, "");
+    if (this.diagnostic?.remedies.length) lines.push("Manual remedies / investigation — displayed only, never executed:", ...this.diagnostic.remedies.flatMap((line) => [line, ""]));
+    return lines.flatMap((line) => wrapTextWithAnsi(safeText(line), width));
   }
   private setProvider(provider: Provider): void {
     this.#draft.provider = provider;
@@ -81,7 +136,7 @@ export class SetupPanel implements Component, Focusable {
     if (this.closed) return;
     this.dispose(); this.#options.onDone(saved);
   }
-  dispose(): void { this.closed = true; this.#secret.dispose(); this.#input = new Input(); this.#modelPaste = undefined; }
+  dispose(): void { this.closed = true; this.diagnosticController?.abort(); this.#secret.dispose(); this.#input = new Input(); this.#modelPaste = undefined; }
   private back(): void {
     const steps = this.steps();
     this.enter(steps[Math.max(0, steps.indexOf(this.step) - 1)]!);
@@ -126,9 +181,15 @@ export class SetupPanel implements Component, Focusable {
   }
   handleInput(data: string): void {
     if (this.closed || this.busy) return;
+    // Diagnostic has no text fields. Pasted actions must never start a test.
+    if (this.section === "Diagnostic" && (this.#modelPaste !== undefined || data.startsWith("\x1b[200~"))) {
+      const combined = (this.#modelPaste ?? "") + data;
+      this.#modelPaste = combined.includes("\x1b[201~") ? undefined : combined.slice(-5);
+      return;
+    }
     // Never interpret pasted newlines or escape sequences as navigation or confirmation.
-    if (this.step === "key" && this.#secret.consumePaste(data)) { this.redraw(); return; }
-    if (this.isText() && (this.#modelPaste !== undefined || data.startsWith("\x1b[200~"))) {
+    if (this.section === "Setup" && this.step === "key" && this.#secret.consumePaste(data)) { this.redraw(); return; }
+    if (this.section === "Setup" && this.isText() && (this.#modelPaste !== undefined || data.startsWith("\x1b[200~"))) {
       const combined = (this.#modelPaste ?? "") + (this.#modelPaste === undefined ? data.slice(6) : data);
       if (combined.includes("\x1b[201~")) {
         const text = combined.slice(0, combined.indexOf("\x1b[201~"));
@@ -144,6 +205,10 @@ export class SetupPanel implements Component, Focusable {
     const kb = this.#options.keybindings;
     if (kb.matches(data, "tui.select.cancel") || matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) { this.finish(false); return; }
     if (this.tooSmall) return;
+    if (matchesKey(data, "ctrl+right") || matchesKey(data, "ctrl+left")) {
+      this.section = this.section === "Setup" ? "Diagnostic" : "Setup"; this.redraw(); return;
+    }
+    if (this.section === "Diagnostic") { this.diagnosticInput(data); return; }
     if (matchesKey(data, "pageDown") || matchesKey(data, "pageUp")) {
       this.manualScroll = true;
       this.scroll = Math.max(0, this.scroll + (matchesKey(data, "pageDown") ? 1 : -1));
@@ -239,33 +304,38 @@ export class SetupPanel implements Component, Focusable {
     if (this.tooSmall) return ["Web access: resize terminal", "Minimum panel: 32 x 12", "Esc cancel"].slice(0, rows).map((line) => truncateToWidth(line, width, ""));
     const inner = width - 4;
     const steps = this.steps();
-    const title = ` Web access ${steps.indexOf(this.step) + 1}/${steps.length} `;
-    const footer = this.busy ? ["Saving locally. Please wait..."] : this.failure ?
+    const diagnostic = this.section === "Diagnostic";
+    const title = ` Web access · ${diagnostic ? "Setup | [Diagnostic]" : "[Setup] | Diagnostic"} `;
+    const footer = diagnostic ? [this.diagnosticBusy === "render" ? "c cancel test (wait cleanup)" : "Left/Right action | Enter run", "Up/Down/PgUp/PgDn scroll", "Ctrl+Right tab | Esc cancel"] : this.busy ? ["Saving locally. Please wait..."] : this.failure ?
       [this.failure === "storage" ? "Enter choose storage again" : "Enter close; reopen setup to retry", "Up/Down scroll | Esc close"] :
       [this.step === "review" ? "Enter save changes | Up/Down scroll" : this.isText() || this.step === "key" ? "Enter next | Ctrl+u clear" : "Up/Down select | Enter next",
-        "Shift+Tab back | Esc cancel", "PgUp/PgDn scroll"];
+        "Shift+Tab back | Esc cancel", "Ctrl+Right tab | PgUp/PgDn scroll"];
     const wrappedFooter = footer.flatMap((line) => wrapTextWithAnsi(line, inner));
-    const body = this.body(inner);
-    const budget = Math.max(1, rows - wrappedFooter.length - 5);
+    const body = diagnostic ? this.diagnosticBody(inner) : this.body(inner);
+    const actions = diagnostic ? wrapTextWithAnsi(["Refresh checks [r]", "Test isolated render [t]"].map((label, index) => index === this.diagnosticAction ? `▸ ${label}` : label).join(" | "), inner) : [];
+    const budget = Math.max(1, rows - wrappedFooter.length - 5 - actions.length);
     // Form fields and selected rows must remain visible even when explanatory copy wraps.
-    if (this.step !== "review" && !this.failure && !this.manualScroll) {
+    if (!diagnostic && this.step !== "review" && !this.failure && !this.manualScroll) {
       const focus = this.isText() || this.step === "key" ? body.findIndex((line) => line.includes("\x1b[7m"))
         : body.findIndex((line) => line.includes("▸"));
       this.scroll = Math.max(0, focus >= budget ? focus - budget + 1 : 0);
       if (this.notice) this.scroll = Math.max(this.scroll, body.length - budget);
     }
-    this.scroll = Math.min(this.scroll, Math.max(0, body.length - budget));
-    const content = body.slice(this.scroll, this.scroll + budget);
+    if (diagnostic) this.diagnosticScroll = Math.min(this.diagnosticScroll, Math.max(0, body.length - budget));
+    else this.scroll = Math.min(this.scroll, Math.max(0, body.length - budget));
+    const scroll = diagnostic ? this.diagnosticScroll : this.scroll;
+    const content = body.slice(scroll, scroll + budget);
     const clipped = (line: string, size: number) => truncateToWidth(line, size, "");
     const row = (line: string) => {
       const text = clipped(line, inner);
       return theme.fg("borderMuted", "│ ") + text + " ".repeat(Math.max(0, inner - visibleWidth(text))) + theme.fg("borderMuted", " │");
     };
     const heading = theme.fg("accent", theme.bold(clipped(title, width - 2)));
-    const progress = body.length > budget ? ` (${this.scroll + 1}-${this.scroll + content.length}/${body.length})` : "";
+    const progress = body.length > budget ? ` (${scroll + 1}-${scroll + content.length}/${body.length})` : "";
     return [
       theme.fg("borderAccent", "╭") + heading + theme.fg("borderAccent", "─".repeat(Math.max(0, width - visibleWidth(heading) - 2)) + "╮"),
-      row(theme.bold(titles[this.step]) + theme.fg("dim", progress)),
+      row(theme.bold(diagnostic ? "Diagnostic" : `${titles[this.step]} ${steps.indexOf(this.step) + 1}/${steps.length}`) + theme.fg("dim", progress)),
+      ...actions.map((line) => row(theme.fg("accent", line))),
       ...content.map(row),
       theme.fg("borderMuted", `├${"─".repeat(width - 2)}┤`),
       ...wrappedFooter.map((line) => row(theme.fg("dim", line))),
