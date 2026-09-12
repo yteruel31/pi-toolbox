@@ -14,6 +14,8 @@ export interface WebConfig {
   research: { outputDir: string; geminiModel: string; openaiModel: string; pollIntervalMs: number };
   fetch: { timeoutMs: number; maxBytes: number; maxPdfPages: number; javascript: "auto" | "never" };
   cache: { directory: string; maxEntries: number; maxBytes: number; ttlMs: number; inlineChars: number };
+  /** Dedicated persistent Reddit browser. Both paths must be explicitly configured. */
+  reddit: { profileDir?: string; executablePath?: string; stateDir: string };
 }
 export function configPath(agentDir = getAgentDir()): string { return join(agentDir, "web-access.json"); }
 function object(value: unknown, label: string, keys: string[]): Record<string, unknown> {
@@ -33,18 +35,23 @@ function number(value: unknown, fallback: number, min: number, max: number, labe
   return value as number;
 }
 export function parseConfig(value: unknown, agentDir: string): WebConfig {
-  const root = object(value, "web-access", ["enabled", "search", "credentials", "synthesisModel", "research", "fetch", "cache"]);
+  const root = object(value, "web-access", ["enabled", "search", "credentials", "synthesisModel", "research", "fetch", "cache", "reddit"]);
   const search = object(root.search ?? {}, "search", ["provider", "geminiModel", "openaiModel"]);
   const credentials = object(root.credentials ?? {}, "credentials", ["gemini", "openai", "brave"]);
   const research = object(root.research ?? {}, "research", ["outputDir", "geminiModel", "openaiModel", "pollIntervalMs"]);
   const fetch = object(root.fetch ?? {}, "fetch", ["timeoutMs", "maxBytes", "maxPdfPages", "javascript"]);
   const cache = object(root.cache ?? {}, "cache", ["directory", "maxEntries", "maxBytes", "ttlMs", "inlineChars"]);
+  const reddit = object(root.reddit ?? {}, "reddit", ["profileDir", "executablePath"]);
   if (root.enabled !== undefined && typeof root.enabled !== "boolean") throw new Error("enabled must be boolean");
   if (search.provider !== undefined && !["gemini", "openai", "brave"].includes(search.provider as string)) throw new Error("search.provider must be gemini, openai or brave");
   if (fetch.javascript !== undefined && !["auto", "never"].includes(fetch.javascript as string)) throw new Error("fetch.javascript must be auto or never");
   const outputDir = text(research.outputDir, join(agentDir, "web-access", "reports"), "research.outputDir");
   const directory = text(cache.directory, join(agentDir, "web-access", "cache"), "cache.directory");
   if (!isAbsolute(outputDir) || !isAbsolute(directory)) throw new Error("Configured output and cache directories must be absolute paths");
+  const profileDir = reddit.profileDir === undefined ? undefined : text(reddit.profileDir, "", "reddit.profileDir");
+  const executablePath = reddit.executablePath === undefined ? undefined : text(reddit.executablePath, "", "reddit.executablePath");
+  if ((profileDir === undefined) !== (executablePath === undefined)) throw new Error("reddit.profileDir and reddit.executablePath must be configured together");
+  if ((profileDir && !isAbsolute(profileDir)) || (executablePath && !isAbsolute(executablePath))) throw new Error("Reddit profile and executable paths must be absolute");
   return {
     enabled: root.enabled !== false,
     credentialsFile: join(agentDir, "web-access.credentials.json"),
@@ -54,6 +61,7 @@ export function parseConfig(value: unknown, agentDir: string): WebConfig {
     research: { outputDir, geminiModel: text(research.geminiModel, "deep-research-preview-04-2026", "research.geminiModel"), openaiModel: text(research.openaiModel, "o4-mini-deep-research", "research.openaiModel"), pollIntervalMs: number(research.pollIntervalMs, 10_000, 5_000, 300_000, "research.pollIntervalMs") },
     fetch: { timeoutMs: number(fetch.timeoutMs, 30_000, 1_000, 300_000, "fetch.timeoutMs"), maxBytes: number(fetch.maxBytes, 5 * 1024 * 1024, 1024, 20 * 1024 * 1024, "fetch.maxBytes"), maxPdfPages: number(fetch.maxPdfPages, 100, 1, 500, "fetch.maxPdfPages"), javascript: (fetch.javascript as "auto" | "never") ?? "auto" },
     cache: { directory, maxEntries: number(cache.maxEntries, 128, 1, 1024, "cache.maxEntries"), maxBytes: number(cache.maxBytes, 128 * 1024 * 1024, 1024, 512 * 1024 * 1024, "cache.maxBytes"), ttlMs: number(cache.ttlMs, 3_600_000, 1_000, 86_400_000, "cache.ttlMs"), inlineChars: number(cache.inlineChars, 12_000, 100, 30_000, "cache.inlineChars") },
+    reddit: { profileDir, executablePath, stateDir: join(agentDir, "web-access", "reddit") },
   };
 }
 export async function loadConfig(agentDir = getAgentDir()): Promise<WebConfig> {
