@@ -60,7 +60,7 @@ test("unsupported modes and accidental credential arguments are never echoed", (
   await h.run("setup private-fixture");
   await h.commands.get("web-access")!.handler("setup", { ...h.ctx, mode: "rpc" });
   assert.equal(h.customCalls(), 0);
-  assert.match(h.messages.join("\n"), /masked wizard/);
+  assert.match(h.messages.join("\n"), /masked setup/);
   assert.match(h.messages.join("\n"), /interactive terminal UI/);
   assert.doesNotMatch(h.messages.join("\n"), /private-fixture/);
   assert.deepEqual(await readdir(dir), []);
@@ -68,10 +68,11 @@ test("unsupported modes and accidental credential arguments are never echoed", (
 
 test("confirmed setup persists only private config and credential files, never the secret in notifications", () => fixture(async (dir) => {
   const h = harness((panel) => {
-    for (let i = 0; i < 5; i++) panel.handleInput("\r");
-    panel.handleInput("\x1b[B"); panel.handleInput("\r");
-    panel.handleInput("\x1b[200~fixture-private-key\x1b[201~");
-    panel.handleInput("\r"); panel.handleInput("\r");
+    for (let i = 0; i < 5; i++) panel.handleInput("\x1b[B"); // Storage field.
+    panel.handleInput("\r"); panel.handleInput("\x1b[B"); panel.handleInput("\r"); // Apply file storage.
+    panel.handleInput("\x1b[B"); panel.handleInput("\r"); // Edit key.
+    panel.handleInput("\x1b[200~fixture-private-key\x1b[201~"); panel.handleInput("\r");
+    panel.handleInput("\x1b[B"); panel.handleInput("\r"); panel.handleInput("\r"); // Review, then save.
   });
   await h.run("setup");
   assert.match(h.messages.join("\n"), /saved.*\/reload/);

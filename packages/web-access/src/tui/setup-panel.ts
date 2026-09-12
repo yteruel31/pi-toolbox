@@ -32,11 +32,13 @@ function sourceLabel(source: string): string {
   return "existing literal (hidden)";
 }
 
-/** A staged, package-local wizard in the same centered frame as /mcp. */
+/** Tabbed configuration with a staged settings form and explicit save. */
 export class SetupPanel implements Component, Focusable {
   #options: Options;
   #draft: SetupDraft;
+  #providerModels: Partial<Record<Provider, Pick<SetupDraft, "searchModel" | "researchModel">>> = {};
   #secret = new SecretInput();
+  #keyBeforeEdit = "";
   #input = new Input();
   private section: "Setup" | "Diagnostic" = "Setup";
   private diagnostic?: DiagnosticReport;
@@ -47,6 +49,7 @@ export class SetupPanel implements Component, Focusable {
   private diagnosticScroll = 0;
   private diagnosticAction = 0;
   private step: Step = "provider";
+  private editing = false;
   private selected = 0;
   private scroll = 0;
   private manualScroll = false;
@@ -110,11 +113,14 @@ export class SetupPanel implements Component, Focusable {
     return lines.flatMap((line) => wrapTextWithAnsi(safeText(line), width));
   }
   private setProvider(provider: Provider): void {
+    if (this.#draft.provider !== provider) {
+      this.#providerModels[this.#draft.provider] = { searchModel: this.#draft.searchModel, researchModel: this.#draft.researchModel };
+    }
     this.#draft.provider = provider;
     this.#secret.clear();
     const field = provider === "gemini" ? "geminiModel" : "openaiModel";
-    this.#draft.searchModel = provider === "brave" ? undefined : this.#options.snapshot.config.search[field];
-    this.#draft.researchModel = provider === "brave" ? undefined : this.#options.snapshot.config.research[field];
+    this.#draft.searchModel = provider === "brave" ? undefined : this.#providerModels[provider]?.searchModel ?? this.#options.snapshot.config.search[field];
+    this.#draft.researchModel = provider === "brave" ? undefined : this.#providerModels[provider]?.researchModel ?? this.#options.snapshot.config.research[field];
   }
   private steps(): Step[] {
     return ["provider", "enabled", ...(this.#draft.provider === "brave" ? [] : ["search", "research"] as Step[]), "synthesis", "storage", ...(this.#draft.storage === "keep" ? [] : ["key"] as Step[]), "review"];
@@ -136,13 +142,9 @@ export class SetupPanel implements Component, Focusable {
     if (this.closed) return;
     this.dispose(); this.#options.onDone(saved);
   }
-  dispose(): void { this.closed = true; this.diagnosticController?.abort(); this.#secret.dispose(); this.#input = new Input(); this.#modelPaste = undefined; }
-  private back(): void {
-    const steps = this.steps();
-    this.enter(steps[Math.max(0, steps.indexOf(this.step) - 1)]!);
-  }
+  dispose(): void { this.closed = true; this.diagnosticController?.abort(); this.#secret.dispose(); this.#keyBeforeEdit = ""; this.#input = new Input(); this.#modelPaste = undefined; }
   private isText(): boolean { return ["search", "research", "synthesis"].includes(this.step); }
-  private next(): void {
+  private applyField(): void {
     if (this.step === "provider") {
       const selected = providers[this.selected]!;
       if (selected !== this.#draft.provider) this.setProvider(selected);
@@ -165,10 +167,16 @@ export class SetupPanel implements Component, Focusable {
       this.notice = "Enter a non-empty API key without whitespace. Ctrl+u clears the field.";
       return;
     }
-    const steps = this.steps();
-    this.enter(steps[Math.min(steps.length - 1, steps.indexOf(this.step) + 1)]!);
+    this.#keyBeforeEdit = "";
+    this.editing = false;
+    this.enter(this.step);
   }
   private async save(): Promise<void> {
+    if (this.#draft.storage !== "keep" && (!this.#secret.getValue() || this.#secret.invalid)) {
+      this.enter("key"); this.#keyBeforeEdit = this.#secret.getValue();
+      this.notice = "Enter a non-empty API key without whitespace. Ctrl+u clears the field.";
+      this.redraw(); return;
+    }
     this.busy = true; this.notice = undefined; this.redraw();
     try {
       await this.#options.onSave({ ...this.#draft }, this.#draft.storage === "keep" ? undefined : this.#secret.getValue());
@@ -181,15 +189,15 @@ export class SetupPanel implements Component, Focusable {
   }
   handleInput(data: string): void {
     if (this.closed || this.busy) return;
-    // Diagnostic has no text fields. Pasted actions must never start a test.
-    if (this.section === "Diagnostic" && (this.#modelPaste !== undefined || data.startsWith("\x1b[200~"))) {
+    // Menus have no text fields. Pasted actions must never navigate or confirm.
+    if ((this.section === "Diagnostic" || !this.editing || (!this.isText() && this.step !== "key")) && (this.#modelPaste !== undefined || data.startsWith("\x1b[200~"))) {
       const combined = (this.#modelPaste ?? "") + data;
       this.#modelPaste = combined.includes("\x1b[201~") ? undefined : combined.slice(-5);
       return;
     }
     // Never interpret pasted newlines or escape sequences as navigation or confirmation.
-    if (this.section === "Setup" && this.step === "key" && this.#secret.consumePaste(data)) { this.redraw(); return; }
-    if (this.section === "Setup" && this.isText() && (this.#modelPaste !== undefined || data.startsWith("\x1b[200~"))) {
+    if (this.section === "Setup" && this.editing && this.step === "key" && this.#secret.consumePaste(data)) { this.redraw(); return; }
+    if (this.section === "Setup" && this.editing && this.isText() && (this.#modelPaste !== undefined || data.startsWith("\x1b[200~"))) {
       const combined = (this.#modelPaste ?? "") + (this.#modelPaste === undefined ? data.slice(6) : data);
       if (combined.includes("\x1b[201~")) {
         const text = combined.slice(0, combined.indexOf("\x1b[201~"));
@@ -203,7 +211,14 @@ export class SetupPanel implements Component, Focusable {
       this.redraw(); return;
     }
     const kb = this.#options.keybindings;
-    if (kb.matches(data, "tui.select.cancel") || matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) { this.finish(false); return; }
+    if (kb.matches(data, "tui.select.cancel") || matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+      if (this.section === "Setup" && this.editing && !this.failure) {
+        if (this.step === "key") { this.#secret.clear(); if (this.#keyBeforeEdit) this.#secret.handleInput(this.#keyBeforeEdit); }
+        this.#keyBeforeEdit = ""; this.editing = false; this.enter(this.step); this.redraw();
+      }
+      else this.finish(false);
+      return;
+    }
     if (this.tooSmall) return;
     if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
       this.section = this.section === "Setup" ? "Diagnostic" : "Setup"; this.redraw(); return;
@@ -218,17 +233,23 @@ export class SetupPanel implements Component, Focusable {
     if (this.failure) {
       if (confirm) {
         if (this.failure === "close") { this.finish(false); return; }
-        this.failure = undefined; this.enter("storage");
+        this.failure = undefined; this.editing = true; this.enter("storage");
       } else if (matchesKey(data, "down")) this.scroll++;
       else if (matchesKey(data, "up")) this.scroll = Math.max(0, this.scroll - 1);
       this.redraw(); return;
     }
-    if (matchesKey(data, "alt+left")) this.back();
-    else if (this.step === "review") {
+    if (!this.editing) {
+      const fields = this.steps();
+      const direction = kb.matches(data, "tui.select.down") || matchesKey(data, "down") ? 1 : kb.matches(data, "tui.select.up") || matchesKey(data, "up") ? -1 : 0;
+      if (direction) this.enter(fields[(fields.indexOf(this.step) + direction + fields.length) % fields.length]!);
+      else if (confirm) { this.editing = true; this.enter(this.step); this.#keyBeforeEdit = this.#secret.getValue(); }
+      this.redraw(); return;
+    }
+    if (this.step === "review") {
       if (confirm || matchesKey(data, "ctrl+s")) { void this.save(); return; }
       if (matchesKey(data, "down") || matchesKey(data, "pageDown")) this.scroll++;
       else if (matchesKey(data, "up") || matchesKey(data, "pageUp")) this.scroll = Math.max(0, this.scroll - 1);
-    } else if (confirm) this.next();
+    } else if (confirm) this.applyField();
     else if (this.step === "key") {
       this.#secret.handleInput(data);
       this.notice = this.#secret.invalid ? "Key not accepted: use printable characters without spaces (max 16384). Ctrl+u clears." : undefined;
@@ -249,6 +270,19 @@ export class SetupPanel implements Component, Focusable {
     const theme = this.#options.theme;
     const wrap = (value: string) => wrapTextWithAnsi(value, width);
     if (this.failure) return wrap(theme.fg("error", this.notice!));
+    if (!this.editing) {
+      const values: Record<Step, string> = {
+        provider: this.#draft.provider, enabled: this.#draft.enabled ? "Enabled" : "Disabled",
+        search: safeText(this.#draft.searchModel ?? ""), research: safeText(this.#draft.researchModel ?? ""),
+        synthesis: safeText(this.#draft.synthesisModel ?? "current Pi model"),
+        storage: this.#draft.storage === "keep" ? "Keep current source" : this.#draft.storage === "file" ? "Private file (0600)" : "Linux Secret Service keyring",
+        key: this.#secret.getValue() ? "Entered (hidden)" : "Not entered", review: "Review and save…",
+      };
+      return ["Edit any setting. Nothing is saved until final confirmation.", "", ...this.steps().map((field) => {
+        const line = `${field === this.step ? "▸" : " "} ${titles[field]}: ${values[field]}`;
+        return field === this.step ? theme.bg("selectedBg", theme.fg("accent", line)) : line;
+      })].flatMap(wrap);
+    }
     const { provider, storage } = this.#draft;
     const lines: string[] = [];
     const menu = (labels: string[]) => labels.forEach((label, index) => {
@@ -288,7 +322,7 @@ export class SetupPanel implements Component, Focusable {
       else lines.push("Brave: no native model settings");
       lines.push(`Pi synthesis: ${safeText(this.#draft.synthesisModel ?? "current Pi model")}`,
         `Credentials: ${storage === "keep" ? "keep current source (not checked)" : storage === "file" ? "private file (0600)" : "Linux Secret Service"}`,
-        `API key: ${storage === "keep" ? "unchanged" : "entered (hidden); replaces this provider's stored key"}`, "",
+        `API key: ${storage === "keep" ? "unchanged" : this.#secret.getValue() ? "entered (hidden); replaces this provider's stored key" : "not entered (required before saving)"}`, "",
         "Unrelated settings and other providers' keys are preserved. Old credential sources are not deleted when switching storage.",
         "Save does not test the key or call a paid API. If storing the key succeeds but saving settings fails, the key can remain stored; the error will say so.");
       return lines.flatMap(wrap);
@@ -303,7 +337,6 @@ export class SetupPanel implements Component, Focusable {
     this.tooSmall = width < 32 || rows < 12;
     if (this.tooSmall) return ["Web access: resize terminal", "Minimum panel: 32 x 12", "Esc cancel"].slice(0, rows).map((line) => truncateToWidth(line, width, ""));
     const inner = width - 4;
-    const steps = this.steps();
     const diagnostic = this.section === "Diagnostic";
     const title = " Web access ";
     const tabs = ["Setup", "Diagnostic"].map((name) => name === this.section
@@ -311,15 +344,15 @@ export class SetupPanel implements Component, Focusable {
       : theme.fg("muted", ` ${name} `)).join(" ");
     const footer = diagnostic ? [this.diagnosticBusy === "render" ? "c cancel test (wait cleanup)" : "Left/Right action | Enter run", "Up/Down/PgUp/PgDn scroll", "Tab/Shift+Tab | Esc cancel"] : this.busy ? ["Saving locally. Please wait..."] : this.failure ?
       [this.failure === "storage" ? "Enter choose storage again" : "Enter close; reopen setup to retry", "Up/Down scroll | Esc close"] :
-      [this.step === "review" ? "Enter save changes | Up/Down scroll" : this.isText() || this.step === "key" ? "Enter next | Ctrl+u clear" : "Up/Down select | Enter next",
-        "Alt+Left back | Esc cancel", "Tab/Shift+Tab tabs | PgUp/PgDn scroll"];
+      [!this.editing ? "Up/Down field | Enter edit" : this.step === "review" ? "Enter save changes | Up/Down scroll" : this.isText() || this.step === "key" ? "Enter apply | Ctrl+u clear" : "Up/Down select | Enter apply",
+        this.editing ? "Esc cancel edit" : "Esc cancel", "Tab/Shift+Tab tabs | PgUp/PgDn scroll"];
     const wrappedFooter = footer.flatMap((line) => wrapTextWithAnsi(line, inner));
     const body = diagnostic ? this.diagnosticBody(inner) : this.body(inner);
     const actions = diagnostic ? wrapTextWithAnsi(["Refresh checks [r]", "Test isolated render [t]"].map((label, index) => index === this.diagnosticAction ? `▸ ${label}` : label).join(" | "), inner) : [];
     const budget = Math.max(1, rows - wrappedFooter.length - 6 - actions.length);
     // Form fields and selected rows must remain visible even when explanatory copy wraps.
-    if (!diagnostic && this.step !== "review" && !this.failure && !this.manualScroll) {
-      const focus = this.isText() || this.step === "key" ? body.findIndex((line) => line.includes("\x1b[7m"))
+    if (!diagnostic && (!this.editing || this.step !== "review") && !this.failure && !this.manualScroll) {
+      const focus = this.editing && (this.isText() || this.step === "key") ? body.findIndex((line) => line.includes("\x1b[7m"))
         : body.findIndex((line) => line.includes("▸"));
       this.scroll = Math.max(0, focus >= budget ? focus - budget + 1 : 0);
       if (this.notice) this.scroll = Math.max(this.scroll, body.length - budget);
@@ -338,7 +371,7 @@ export class SetupPanel implements Component, Focusable {
     return [
       theme.fg("borderAccent", "╭") + heading + theme.fg("borderAccent", "─".repeat(Math.max(0, width - visibleWidth(heading) - 2)) + "╮"),
       row(tabs),
-      row(theme.bold(diagnostic ? "Diagnostic" : `${titles[this.step]} ${steps.indexOf(this.step) + 1}/${steps.length}`) + theme.fg("dim", progress)),
+      row(theme.bold(diagnostic ? "Diagnostic" : this.editing ? titles[this.step] : "Settings") + theme.fg("dim", progress)),
       ...actions.map((line) => row(theme.fg("accent", line))),
       ...content.map(row),
       theme.fg("borderMuted", `├${"─".repeat(width - 2)}┤`),

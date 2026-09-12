@@ -9,7 +9,7 @@ export function registerSetupCommand(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       // Never echo arguments: someone could accidentally put a key after the command.
       if (!["", "setup", "config"].includes(args.trim())) {
-        ctx.ui.notify("Use /web-access setup or /web-access config. Enter API keys only in the masked wizard field, never as command arguments.", "warning");
+        ctx.ui.notify("Use /web-access setup or /web-access config. Enter API keys only in the masked setup field, never as command arguments.", "warning");
         return;
       }
       if (ctx.mode !== "tui") {
