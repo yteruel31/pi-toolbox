@@ -6,16 +6,20 @@ import { parseConfig } from "../src/config.js";
 import { SetupError, type SetupDraft, type SetupSnapshot } from "../src/setup-store.js";
 import { SecretInput } from "../src/tui/secret-input.js";
 import { SETUP_OVERLAY, SetupPanel, setupRows } from "../src/tui/setup-panel.js";
-import type { DiagnosticReport, RenderProbeResult } from "../src/diagnostics.js";
+import type { DiagnosticReport, RedditDiagnosticResult, RenderProbeResult } from "../src/diagnostics.js";
 
 const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
 const kb = { matches: (data: string, id: string) => matchesKey(data, ({ "tui.select.confirm": "enter", "tui.select.cancel": "escape", "tui.select.up": "up", "tui.select.down": "down" } as Record<string, string>)[id] as never) } as never;
 const enter = "\r", down = "\x1b[B", up = "\x1b[A", escape = "\x1b", tab = "\t", reverseTab = "\x1b[Z";
-function harness(root: Record<string, unknown> = {}, save?: (draft: SetupDraft, key?: string) => Promise<void>, diagnostics: { inspect?: () => Promise<DiagnosticReport>; testRender?: (signal: AbortSignal) => Promise<RenderProbeResult> } = {}) {
+function harness(root: Record<string, unknown> = {}, save?: (draft: SetupDraft, key?: string) => Promise<void>, diagnostics: { inspect?: () => Promise<DiagnosticReport>; inspectReddit?: () => Promise<RedditDiagnosticResult>; testRender?: (signal: AbortSignal) => Promise<RenderProbeResult>; testReddit?: (signal: AbortSignal) => Promise<RedditDiagnosticResult> } = {}) {
   const snapshot: SetupSnapshot = { agentDir: "/tmp/not-used", root, config: parseConfig(root, "/tmp/not-used") };
   const saves: Array<{ draft: SetupDraft; key?: string }> = [], done: boolean[] = [];
   let rows = 22;
-  const panel = new SetupPanel({ inspect: async () => ({ checks: [], remedies: [] }), ...diagnostics, theme, keybindings: kb, snapshot, maxRows: () => rows, onRender: () => {}, onDone: (saved) => done.push(saved), onSave: async (draft, key) => { saves.push({ draft, key }); await save?.(draft, key); } });
+  const panel = new SetupPanel({
+    inspect: async () => ({ checks: [], remedies: [] }),
+    inspectReddit: async () => ({ enabled: true, diagnostic: { status: "not_configured", eligible: false, message: "Configure Reddit." } }),
+    ...diagnostics, theme, keybindings: kb, snapshot, maxRows: () => rows, onRender: () => {}, onDone: (saved) => done.push(saved), onSave: async (draft, key) => { saves.push({ draft, key }); await save?.(draft, key); },
+  });
   panel.focused = true;
   const input = (...keys: string[]) => { for (const key of keys) { panel.render(72); panel.handleInput(key); } };
   const text = (width = 72) => stripVTControlCharacters(panel.render(width).join("\n")).replaceAll("\x1b_pi:c\x07", "");
@@ -59,13 +63,13 @@ test("Setup is a selectable form, not a sequence; Tab and Shift+Tab only switch 
   assert.match(h.text(), /Settings/); assert.match(h.text(), /Search provider: gemini/);
   assert.doesNotMatch(h.text(), /Alt\+Left|Enter next|\d\/\d/);
   h.select("Native deep research model");
-  h.input(tab); assert.match(h.text(), /Refresh checks/);
+  h.input(tab); assert.match(h.text(), /Refresh r/);
   h.input(reverseTab); assert.match(h.text(), /▸ Native deep research model:/);
   assert.equal(h.saves.length, 0); h.input(escape);
 });
 test("fields can be edited in any order, tab switches preserve editing, Esc cancels a field", async () => {
   const h = harness(); await tick(); h.edit("Native deep research model");
-  h.input("\x15", "custom-research", tab); assert.match(h.text(), /Refresh checks/);
+  h.input("\x15", "custom-research", tab); assert.match(h.text(), /Refresh r/);
   h.input(reverseTab); assert.match(h.text(), /custom-research/);
   h.input(enter); assert.match(h.text(), /Settings/);
   h.edit("Search provider"); h.input(down, escape); // Discard OpenAI selection.
@@ -167,38 +171,62 @@ test("form, editors, review and Diagnostic fit small terminals with visible tab 
 });
 test("configured field selection and confirm keys are honored", () => {
   const snapshot: SetupSnapshot = { root: {}, agentDir: "/tmp", config: parseConfig({}, "/tmp") };
-  const panel = new SetupPanel({ theme, snapshot, inspect: async () => ({ checks: [], remedies: [] }), keybindings: { matches: (data: string, id: string) => data === ({ "tui.select.down": "j", "tui.select.confirm": "f" } as Record<string, string>)[id] } as never, maxRows: () => 22, onRender: () => {}, onSave: async () => {}, onDone: () => {} });
+  const panel = new SetupPanel({ theme, snapshot, inspect: async () => ({ checks: [], remedies: [] }), inspectReddit: async () => ({ enabled: true, diagnostic: { status: "not_configured", eligible: false, message: "Configure Reddit." } }), keybindings: { matches: (data: string, id: string) => data === ({ "tui.select.down": "j", "tui.select.confirm": "f" } as Record<string, string>)[id] } as never, maxRows: () => 22, onRender: () => {}, onSave: async () => {}, onDone: () => {} });
   panel.handleInput("f"); panel.handleInput("j"); panel.handleInput("f");
   assert.match(stripVTControlCharacters(panel.render(72).join("\n")), /Search provider: openai/); panel.dispose();
 });
-test("Diagnostic only launches a render on explicit action, prevents repeats, and refresh clears results", async () => {
+test("Diagnostic launches tests only explicitly and refresh preserves the latest proof", async () => {
   let inspections = 0, tests = 0, finish!: (result: RenderProbeResult) => void;
   const h = harness({}, undefined, {
     inspect: async () => { inspections++; return { checks: [{ label: "Classic HTTP", state: "untested", summary: "No HTTP request made" }], remedies: [] }; },
     testRender: () => { tests++; return new Promise((resolve) => { finish = resolve; }); },
   });
-  await tick(); assert.equal(inspections, 1); assert.equal(tests, 0); h.input(tab); assert.match(h.text(), /No HTTP request made/);
-  h.input(enter); await tick(); assert.equal(inspections, 2);
+  await tick(); await tick(); assert.equal(inspections, 1); assert.equal(tests, 0); h.input(tab); assert.match(h.text(), /Test render t/);
+  h.input(enter); await tick(); await tick(); assert.equal(inspections, 2);
   h.input("\x1b[200~", "t\r\t", "\x1b[201~"); assert.equal(tests, 0);
-  h.input("t", "t", "r", enter); assert.equal(tests, 1); assert.equal(inspections, 2); assert.match(h.text(), /Testing isolated rendering/);
-  finish({ state: "passed", summary: "Synthetic JS passed; HTTP untested" }); await tick(); assert.match(h.text(), /PASSED: Synthetic JS/);
-  h.input("r"); await tick(); assert.doesNotMatch(h.text(), /PASSED/); h.input(tab, escape);
+  h.input("t", "t", "r", enter); assert.equal(tests, 1); assert.equal(inspections, 2); assert.match(h.text(), /Testing synthetic render/);
+  finish({ state: "passed", summary: "Synthetic JS passed; HTTP untested" }); await tick(); assert.match(h.text(), /✓ PASSED/);
+  h.input("r"); await tick(); await tick(); assert.match(h.text(), /✓ PASSED/); h.input(tab, escape);
 });
-test("Diagnostic cancellation and disposal abort the test and ignore late success", async () => {
+test("full 72x22 Diagnostic overlay keeps every default section, action and footer visible", async () => {
+  const required = (text: string) => {
+    for (const token of ["Refresh r", "Test render t", "Test Reddit e", "WEB BROWSER", "REDDIT", "ADVANCED [a]", "Tab/Shift+Tab", "Enter run"]) assert.ok(text.includes(token), `missing ${token}`);
+  };
+  const initial = harness(); await tick(); await tick(); initial.input(tab);
+  const notConfigured = stripVTControlCharacters(initial.panel.render(72).join("\n"));
+  assert.ok(initial.panel.render(72).length <= 22); required(notConfigured); assert.match(notConfigured, /NOT CONFIGURED/); assert.doesNotMatch(notConfigured, / \d+-\d+\/\d+/);
+
+  const long = "ORIGINAL screenshot paragraph ".repeat(30);
+  const passed = harness({}, undefined, {
+    inspect: async () => ({ checks: [{ label: "Proof detail", state: "observed", summary: long }], remedies: [long] }),
+    inspectReddit: async () => ({ enabled: true, diagnostic: { status: "ready", eligible: true, message: long, lastValidatedAt: "2026-09-17T01:02:03.000Z" } }),
+    testRender: async () => ({ state: "passed", summary: long }),
+    testReddit: async () => ({ enabled: true, diagnostic: { status: "ready", eligible: true, message: long, lastValidatedAt: "2026-09-18T12:34:56.000Z" } }),
+  });
+  await tick(); await tick(); passed.input(tab, "t"); await tick(); passed.input("e"); await tick();
+  const successLines = passed.panel.render(72);
+  const success = stripVTControlCharacters(successLines.join("\n"));
+  assert.ok(successLines.length <= 22); required(success); assert.doesNotMatch(success, / \d+-\d+\/\d+/);
+  assert.match(success, /✓ PASSED/); assert.match(success, /✓ READY/);
+  assert.doesNotMatch(success, /ORIGINAL screenshot paragraph|Local config\/profile observed|2026-09-18T12:34:56/);
+  initial.panel.dispose(); passed.panel.dispose();
+});
+
+test("Diagnostic cancellation and disposal abort tests and ignore late success", async () => {
   let signal!: AbortSignal, finish!: (result: RenderProbeResult) => void;
   const h = harness({}, undefined, { testRender: (s) => { signal = s; return new Promise((resolve) => { finish = resolve; }); } });
-  await tick(); h.input(tab, "t", "c"); assert.equal(signal.aborted, true); assert.match(h.text(), /Cancelling/);
+  await tick(); await tick(); h.input(tab, "t", "c"); assert.equal(signal.aborted, true); assert.match(h.text(), /Cancelling/);
   finish({ state: "passed", summary: "late success" }); await tick(); assert.match(h.text(), /CANCELLED/); assert.doesNotMatch(h.text(), /late success/);
   h.input("t", escape); assert.equal(signal.aborted, true); assert.deepEqual(h.done, [false]);
   finish({ state: "passed", summary: "late success" }); await tick(); assert.doesNotMatch(h.text(), /late success/);
 });
-test("Diagnostic failures are sanitized and recoverable, remedies scroll", async () => {
+test("Diagnostic failures are sanitized and advanced remedies remain reachable", async () => {
   let fail = true;
   const h = harness({}, undefined, {
     inspect: async () => { if (fail) throw new Error("private-host-secret"); return { checks: [], remedies: Array.from({ length: 20 }, (_, i) => `Manual command ${i}`) }; },
     testRender: async () => { throw new Error("private-render-secret"); },
   });
-  h.input(tab); await tick(); assert.match(h.text(), /Local inspection failed/); assert.doesNotMatch(h.text(), /private-host/);
-  fail = false; h.input("r"); await tick(); h.input("t"); await tick(); assert.match(h.text(), /cause unknown/); assert.doesNotMatch(h.text(), /private-render/);
-  for (let i = 0; i < 100; i++) h.input(down); assert.match(h.text(), /Manual command 19/); h.input(escape);
+  h.input(tab); await tick(); await tick(); h.input("a", "\x1b[F"); assert.match(h.text(), /inspection failed/); assert.doesNotMatch(h.text(), /private-host/);
+  fail = false; h.input("r"); await tick(); await tick(); h.input("t"); await tick(); assert.doesNotMatch(h.text(), /private-render/);
+  h.input("a", "a"); for (let i = 0; i < 100; i++) h.input(down); assert.match(h.text(), /Manual command 19/); h.input(escape);
 });

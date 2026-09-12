@@ -1,9 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { BrowserFailure, inspectBrowserRuntime, systemBrowserHost, type BrowserRuntime } from "./browser-environment.js";
 import { renderPage } from "./browser.js";
+import { loadConfig, type WebConfig } from "./config.js";
+import { RedditService, type RedditDiagnostic } from "./reddit-service.js";
 
 export interface DiagnosticCheck { label: string; state: "observed" | "warning" | "unavailable" | "untested"; summary: string }
 export interface DiagnosticReport { checks: DiagnosticCheck[]; remedies: string[] }
+export interface RedditDiagnosticResult { enabled: boolean; diagnostic: RedditDiagnostic }
+
+/** Fresh shared-config Reddit inspection. Local files only; never launches a browser or network request. */
+export async function inspectRedditAccess(): Promise<RedditDiagnosticResult> {
+  const config = await loadConfig();
+  return { enabled: config.enabled, diagnostic: await new RedditService(config).inspect() };
+}
+
+interface RedditDiagnosticDependencies {
+  loadConfig(): Promise<WebConfig>;
+  createService(config: WebConfig): Pick<RedditService, "inspect" | "test">;
+}
+const redditDependencies: RedditDiagnosticDependencies = { loadConfig, createService: (config) => new RedditService(config) };
+/** Fresh shared-config explicit Reddit test. A disabled package never launches its browser. */
+export async function testRedditAccess(signal?: AbortSignal, dependencies: RedditDiagnosticDependencies = redditDependencies): Promise<RedditDiagnosticResult> {
+  const config = await dependencies.loadConfig();
+  const service = dependencies.createService(config);
+  if (!config.enabled) return { enabled: false, diagnostic: await service.inspect() };
+  return { enabled: true, diagnostic: await service.test(signal) };
+}
 const value = (text?: string) => text?.trim().match(/^\d{1,12}$/)?.[0] ?? "unknown";
 function osField(text: string | undefined, key: string): string | undefined {
   return text?.match(new RegExp(`^${key}=["']?([a-zA-Z0-9._-]+)["']?$`, "m"))?.[1];

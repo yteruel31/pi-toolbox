@@ -6,7 +6,8 @@ import { dirname } from "node:path";
 import type { Browser } from "playwright-core";
 import { BrowserFailure, classifyBrowserLaunch, inspectBrowserRuntime, type BrowserHost } from "../src/browser-environment.js";
 import { renderPage, type BrowserDependencies } from "../src/browser.js";
-import { inspectWebAccess, testIsolatedRendering } from "../src/diagnostics.js";
+import { parseConfig } from "../src/config.js";
+import { inspectWebAccess, testIsolatedRendering, testRedditAccess } from "../src/diagnostics.js";
 
 function host(options: { platform?: string; arch?: string; browserPath?: string; binaries?: string[]; wrappers?: string[]; files?: Record<string, string> } = {}): BrowserHost {
   return { platform: options.platform ?? "linux", arch: options.arch ?? "x64", browserPath: options.browserPath,
@@ -76,6 +77,20 @@ test("launch errors are classified conservatively and raw diagnostics/causes nev
     assert.doesNotMatch(failure.stack!, /private-token|secret.test/);
     assert.match(failure.message, /render: "never"/);
   }
+});
+
+test("disabled config Reddit test uses only shared local inspection and never launches validation", async () => {
+  const config = parseConfig({ enabled: false }, "/agent");
+  let inspections = 0, tests = 0;
+  const result = await testRedditAccess(undefined, {
+    loadConfig: async () => config,
+    createService: () => ({
+      inspect: async () => { inspections++; return { status: "not_configured", eligible: false, message: "Configure Reddit." }; },
+      test: async () => { tests++; throw new Error("must not launch"); },
+    }),
+  });
+  assert.equal(result.enabled, false); assert.equal(result.diagnostic.status, "not_configured");
+  assert.equal(inspections, 1); assert.equal(tests, 0);
 });
 
 test("synthetic probe verifies routing AND DOM execution, never accepts unchanged HTML or arbitrary errors", async () => {
