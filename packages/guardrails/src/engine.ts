@@ -5,7 +5,7 @@ import type { CompletionBridge } from "./judge.js";
 import { bounded, judge } from "./judge.js";
 import { HistoryStore, relevantHistory } from "./history.js";
 import { evaluatePolicies } from "./policies.js";
-import { candidateView, sanitize } from "./sanitize.js";
+import { candidateView, sanitize, sanitizePath } from "./sanitize.js";
 
 export type Approval = (entry: HistoryEntry, signal: AbortSignal) => Promise<"allow-once" | "deny" | "deny-stop">;
 export interface EngineOptions {
@@ -42,7 +42,7 @@ export class GuardrailsEngine {
       const described = evaluatePolicies(c, snapshot.policies, this.options.protectedPaths);
       const view = candidateView(c, described.target, described.operation);
       entry = this.options.history.put({
-        id: randomUUID(), at: Date.now(), updatedAt: Date.now(), sessionId: sanitize(c.sessionId, 200), project: sanitize(c.project, 4096),
+        id: randomUUID(), at: Date.now(), updatedAt: Date.now(), sessionId: sanitize(c.sessionId, 200), project: sanitizePath(c.project),
         cwd: view.cwd, actor: view.actor as HistoryEntry["actor"], callId: sanitize(c.callId, 200), leafId: c.leafId,
         tool: c.tool, summary: c.tool === "bash" ? String((view.args as { command: string }).command) : `${c.tool} ${view.target}`,
         target: view.target, operation: view.operation,
