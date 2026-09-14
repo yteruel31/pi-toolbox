@@ -1,4 +1,7 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { AuthorizationDenied } from "@yteruel31/pi-operation-hooks";
+import { authorized, inAuthorizationScope, providerUrls } from "./authorization.js";
 import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { StringEnum, type ImageContent, type Usage } from "@earendil-works/pi-ai";
@@ -55,9 +58,28 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
       async execute(id, params, signal, update, ctx) {
         // Pi event hooks can mutate arguments after schema validation.
         if (!Value.Check(schema, params)) throw new Error(`Invalid ${name} arguments`);
+        params = structuredClone(params);
         signal?.throwIfAborted();
         update?.(output("Working...", { summary: "Working...", phase: "working" }));
-        return execute(id, params, signal, update, ctx);
+        return inAuthorizationScope({ bus: pi.events, context: ctx, rootToolCallId: id, toolName: name }, async () => {
+          // Research describes the actual saved provider/output path at its method boundary.
+          if (name === "deep_research") return execute(id, params, signal, update, ctx);
+          const args: Record<string, unknown> = { ...params };
+          let urls: string[] | undefined;
+          if (name === "web_search" || name === "source_check") {
+            const provider = (args.provider as string | undefined) ?? config.search.provider;
+            args.provider = provider; args.destinationKind = "provider"; args.opaquePageDestinations = true;
+            urls = provider ? [providerUrls[provider]!] : undefined;
+          } else if (name === "fetch_content") {
+            const targets = selected(args.url as string | undefined, args.urls as string[] | undefined, "url");
+            urls = targets.map((url) => /^https?:\/\//i.test(url) ? url : pathToFileURL(resolve(ctx.cwd, url.replace(/^@/, ""))).href);
+            args.paths = targets.filter((url) => !/^https?:\/\//i.test(url)).map((path) => resolve(ctx.cwd, path.replace(/^@/, "")));
+            args.render = args.render ?? config.fetch.javascript;
+            args.destinationKind = "page";
+            args.sideEffects = ["local-read", "cache-write", "optional-git-clone", "optional-media-process", "optional-browser"];
+          } else args.localOnly = true;
+          return authorized(name, args, urls, signal, () => execute(id, params, signal, update, ctx));
+        });
       },
       renderCall(args, theme) {
         const data = args as Record<string, unknown>;
@@ -84,7 +106,7 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
     const warnings: string[] = [];
     if (params.includeContent) {
       const urls = [...new Set(results.flatMap((result) => result.sources.map((source) => source.url)))].slice(0, 5);
-      await mapBounded(urls, async (url) => { try { documents.push(await service.fetch({ url, render: "never" }, ctx.cwd, signal)); } catch { warnings.push(`Could not fetch source: ${url}`); } });
+      await authorized("fetch_content", { urls, render: "never", internal: true, destinationKind: "page" }, urls, signal, () => mapBounded(urls, async (url) => { try { documents.push(await service.fetch({ url, render: "never" }, ctx.cwd, signal)); } catch (error) { signal?.throwIfAborted(); if (error instanceof AuthorizationDenied) throw error; warnings.push(`Could not fetch source: ${url}`); } }));
     }
     let usage: Usage | undefined;
     if (params.synthesize) {
@@ -126,7 +148,7 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
     const results = await service.search(params.queries ?? [params.claim.slice(0, 500)], params, signal);
     const urls = [...new Set(results.flatMap((result) => result.sources.map((source) => source.url)))].slice(0, 5);
     const documents: Document[] = []; const errors: Array<{ url: string; error: string }> = [];
-    await mapBounded(urls, async (url) => { try { documents.push(await service.fetch({ url, render: "never" }, ctx.cwd, signal)); } catch { errors.push({ url, error: "Source extraction failed" }); } });
+    await authorized("fetch_content", { urls, render: "never", internal: true, destinationKind: "page" }, urls, signal, () => mapBounded(urls, async (url) => { try { documents.push(await service.fetch({ url, render: "never" }, ctx.cwd, signal)); } catch (error) { signal?.throwIfAborted(); if (error instanceof AuthorizationDenied) throw error; errors.push({ url, error: "Source extraction failed" }); } }));
     let usage: Usage | undefined;
     let assessment: unknown = { status: "missing-evidence", explanation: "No source text was retrieved", evidence: [] };
     if (documents.length) {
@@ -138,21 +160,21 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
     const responseId = await service.store.put([{ title: "Source check", content: artifactText }, ...documents]);
     return output(`responseId: ${responseId}\n${artifactText}`, { summary: `Checked ${documents.length} sources`, responseId }, [], usage);
   });
-  register("deep_research", "Start, inspect, retrieve or cancel native Gemini/OpenAI background research. API-key billing only. Returns a local Markdown report path and short preview, never the full report. status without researchId lists jobs. Starts are deduplicated; requestKey explicitly creates a distinct run.", schemas.deep_research, async (_id, params, _signal, _update, ctx) => {
+  register("deep_research", "Start, inspect, retrieve or cancel native Gemini/OpenAI background research. API-key billing only. Returns a local Markdown report path and short preview, never the full report. status without researchId lists jobs. Starts are deduplicated; requestKey explicitly creates a distinct run.", schemas.deep_research, async (_id, params, signal, _update, ctx) => {
     if (params.action === "start") {
       if (!params.subject || !params.provider) throw new Error("start requires subject and provider");
       if (params.researchId || params.upstreamId) throw new Error("start does not accept an existing research ID");
-      return jobOutput(await research.start({ ...params, subject: params.subject, provider: params.provider }, ctx.cwd));
+      return jobOutput(await research.start({ ...params, subject: params.subject, provider: params.provider }, ctx.cwd, signal));
     }
     if (params.subject || params.provider || params.model || params.requestKey) throw new Error("subject, provider, model and requestKey are accepted only for start");
     if (params.upstreamId && params.action !== "status") throw new Error("upstreamId recovery is accepted only for status");
     if (params.outputPath && params.action !== "result") throw new Error("outputPath is accepted only for start or result");
     if (!params.researchId) {
       if (params.action !== "status" || params.upstreamId) throw new Error("researchId is required");
-      const jobs = await research.list();
+      const jobs = await authorized("deep_research.status", { localOnly: true }, undefined, signal, () => research.list());
       return output(JSON.stringify(jobs.slice(0, 20).map(({ researchId, status, provider, model, createdAt, outputWritten, outputPath }) => ({ researchId, status, provider, model, createdAt, path: outputWritten ? outputPath : undefined })), null, 2), { summary: `${jobs.length} tracked research jobs (latest 20)` });
     }
-    return jobOutput(params.action === "cancel" ? await research.cancel(params.researchId) : params.action === "result" ? await research.result(params.researchId, params.outputPath, ctx.cwd) : await research.refresh(params.researchId, params.upstreamId));
+    return jobOutput(params.action === "cancel" ? await research.cancel(params.researchId, signal) : params.action === "result" ? await research.result(params.researchId, params.outputPath, ctx.cwd, signal) : await research.refresh(params.researchId, params.upstreamId, signal));
   });
   registerWebDiagnosticTool(pi, lifetime);
 }
@@ -182,7 +204,7 @@ export default function webAccess(pi: ExtensionAPI): void {
       registerTools(pi, config, service, research, lifetime.signal);
       registerRedditTools(pi, config, service, reddit, redditDiagnostic, lifetime.signal, defaultRedditToolDependencies);
       registered = true;
-      await research.recover();
+      await inAuthorizationScope({ bus: pi.events, context: { ...ctx, hasUI: false, ui: undefined }, rootToolCallId: "web-access-recovery", toolName: "deep_research" }, () => research!.recover());
     } catch (error) {
       lifetime?.abort(); lifetime = undefined;
       await research?.stop().catch(() => undefined); await service?.close().catch(() => undefined);

@@ -11,6 +11,7 @@ export interface RequestOptions {
   method?: string; body?: Buffer; headers?: Record<string, string>; signal?: AbortSignal;
   timeoutMs?: number; maxBytes?: number; redirects?: number; lookup?: Lookup;
   transport?: typeof httpRequest;
+  authorize?: <T>(url: string, signal: AbortSignal | undefined, action: () => Promise<T>) => Promise<T>;
 }
 export class NetworkError extends Error {}
 export function publicAddress(address: string): boolean {
@@ -61,6 +62,10 @@ export async function readBounded(stream: Readable, maxBytes: number, signal: Ab
   } finally { signal.removeEventListener("abort", abort); }
 }
 export async function request(input: string, options: RequestOptions = {}): Promise<HttpResult> {
+  const url = remoteUrl(input).href;
+  return options.authorize ? options.authorize(url, options.signal, () => requestUnchecked(url, options)) : requestUnchecked(url, options);
+}
+async function requestUnchecked(input: string, options: RequestOptions): Promise<HttpResult> {
   const signal = AbortSignal.any([AbortSignal.timeout(options.timeoutMs ?? 30_000), ...(options.signal ? [options.signal] : [])]);
   let url = remoteUrl(input);
   let headers = { "user-agent": "pi-web-access/0.0", "accept-encoding": "gzip, deflate, br", ...options.headers };
@@ -87,7 +92,7 @@ export async function request(input: string, options: RequestOptions = {}): Prom
       const next = remoteUrl(new URL(response.headers.location, url).href);
       if (url.protocol === "https:" && next.protocol !== "https:") throw new NetworkError("HTTPS downgrade refused");
       if (next.origin !== url.origin) headers = { "user-agent": "pi-web-access/0.0", "accept-encoding": "gzip, deflate, br" };
-      url = next; continue;
+      return request(next.href, { ...options, headers, signal, redirects: maxRedirects - 1 });
     }
     if (Number(response.headers["content-length"]) > maxBytes) { response.destroy(); throw new NetworkError(`Response exceeds ${maxBytes} bytes`); }
     const encoding = response.headers["content-encoding"];

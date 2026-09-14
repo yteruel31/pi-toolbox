@@ -3,19 +3,28 @@ import { constants } from "node:fs";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { boundedJson, safeArgumentPath, validDomain, validUrlPrefix } from "./operations.js";
 
 const text = (max: number) => z.string().min(1).max(max).refine((v) => !/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(v), "Control characters are not allowed");
 export const conditionSchema = z.object({
   preset: z.enum(["git", "files", "system", "production", "secrets"]).optional(),
   pathPrefix: text(4096).optional(),
   command: text(4096).optional(),
-}).strict();
+  operation: text(200).optional(),
+  server: text(200).optional(),
+  toolName: text(200).optional(),
+  domain: text(253).refine(validDomain, "Expected a hostname without scheme, port or wildcards").optional(),
+  includeSubdomains: z.boolean().optional(),
+  urlPrefix: text(4096).refine(validUrlPrefix, "Expected an HTTP(S) URL without credentials, query or fragment").optional(),
+  argumentMatches: z.record(z.string().refine(safeArgumentPath, "Unsafe argument path"), z.union([z.string().max(2000), z.number().finite(), z.boolean(), z.null()]))
+    .refine((v) => Object.keys(v).length > 0 && Object.keys(v).length <= 32 && boundedJson(v), "Expected 1-32 bounded scalar comparisons").optional(),
+}).strict().refine((c) => c.includeSubdomains === undefined || c.domain !== undefined, "includeSubdomains requires domain");
 export const policySchema = z.object({
   id: text(80).regex(/^[a-zA-Z0-9._-]+$/),
   name: text(120),
   enabled: z.boolean(),
   scope: z.enum(["main", "subagent", "both"]),
-  tools: z.array(z.enum(["bash", "read", "write", "edit"])).min(1).max(4),
+  tools: z.array(z.enum(["bash", "read", "write", "edit", "mcp", "web-access"])).min(1).max(6),
   conditions: conditionSchema,
   action: z.enum(["Allow", "Ask", "Deny"]),
   description: text(2000).optional(),
@@ -41,6 +50,12 @@ export const presets: Policy[] = [
   { id: "production", name: "Production operations", conditions: { preset: "production" }, tools: ["bash"] },
   { id: "secrets", name: "Secret access", conditions: { preset: "secrets" }, tools: ["bash", "read", "write", "edit"] },
 ].map((p) => ({ ...p, enabled: true, scope: "both", kind: "structured", action: "Ask" })) as Policy[];
+/** Opt-in templates only: never merged into defaults or existing configurations. */
+export const operationPresets: Policy[] = [
+  { id: "review-mcp", name: "Review MCP operations", tools: ["mcp"], conditions: {} },
+  { id: "review-web", name: "Review web operations", tools: ["web-access"], conditions: {} },
+].map((p) => ({ ...p, enabled: true, scope: "both", kind: "structured", action: "Ask" })) as Policy[];
+export const availablePresets: Policy[] = [...presets, ...operationPresets];
 export function defaultConfig(): Config {
   return { version: 1, enabled: false, thinking: "off", model: "", timeoutMs: 15000, maxOutputTokens: 1024, errorBehavior: "ask", policies: structuredClone(presets) };
 }

@@ -2,7 +2,7 @@ import { chmodSync, lstatSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import type { Candidate, HistoryEntry } from "./types.js";
+import { isSupportedTool, type Candidate, type HistoryEntry } from "./types.js";
 import { sanitize } from "./sanitize.js";
 
 const s = (max: number) => z.string().max(max).transform((v) => sanitize(v, max));
@@ -10,7 +10,7 @@ const entrySchema = z.object({
   id: z.uuid(), at: z.number(), updatedAt: z.number(),
   sessionId: s(200), project: s(4096), cwd: s(4096), callId: s(200), leafId: s(100).optional(),
   actor: z.discriminatedUnion("kind", [z.object({ kind: z.literal("main") }), z.object({ kind: z.literal("subagent"), runId: s(100), profile: s(100).optional(), childSessionId: s(100).optional() })]),
-  tool: z.enum(["bash", "read", "write", "edit"]), summary: s(4000), target: s(4096), operation: s(100),
+  tool: z.custom<HistoryEntry["tool"]>((v) => typeof v === "string" && isSupportedTool(v)), summary: s(4000), target: s(4096), operation: s(100),
   action: z.enum(["Allow", "Ask", "Deny"]), origin: z.enum(["policy", "model", "error"]), reason: s(2000),
   policyIds: z.array(s(100)).max(200), historyIds: z.array(z.uuid()).max(16),
   model: z.object({ route: s(200), thinking: s(20), durationMs: z.number().nonnegative() }).optional(),
@@ -85,7 +85,7 @@ export function filterHistory(entries: HistoryEntry[], filter: HistoryFilter): H
   return entries.filter((e) => (!filter.sessionId || e.sessionId === filter.sessionId)
     && (!filter.actor || e.actor.kind === filter.actor)
     && (!filter.decision || decisionCategory(e) === filter.decision)
-    && (!query || [e.summary, e.reason, e.tool, e.project, e.sessionId, e.actor.kind === "subagent" ? `${e.actor.profile ?? ""} ${e.actor.runId}` : "Main"].join(" ").toLowerCase().includes(query)));
+    && (!query || [e.summary, e.reason, e.tool, e.target, e.operation, e.project, e.sessionId, e.actor.kind === "subagent" ? `${e.actor.profile ?? ""} ${e.actor.runId}` : "Main"].join(" ").toLowerCase().includes(query)));
 }
 export function relevantHistory(entries: HistoryEntry[], c: Candidate, target: string, operation: string, policyIds: string[]): HistoryEntry[] {
   const sameProject = entries.filter((e) => e.project === c.project && e.callId !== c.callId && e.state !== "assessing" && e.state !== "review");

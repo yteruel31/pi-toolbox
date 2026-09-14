@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { inAuthorizationScope, pageRequestAuthorization } from "../src/authorization.js";
+import { registerOperationProvider } from "@yteruel31/pi-operation-hooks";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ClientRequest, IncomingMessage, RequestOptions as NodeRequestOptions } from "node:http";
@@ -23,6 +25,15 @@ function transport(replies: Array<{ status?: number; headers?: Record<string, st
   return { fn, calls };
 }
 const lookup = async () => [{ address: "8.8.8.8", family: 4 }];
+test("redirect authorization denies before destination DNS or transport", async () => {
+  const emitter = new EventEmitter();
+  const bus = { emit: (name: string, data: unknown) => { emitter.emit(name, data); }, on: (name: string, listener: (data: unknown) => void) => { emitter.on(name, listener); return () => { emitter.off(name, listener); }; } };
+  registerOperationProvider(bus, () => ({ assess: async () => ({ block: true, reason: "redirect denied" }) }));
+  const authorize = inAuthorizationScope({ bus, context: {}, rootToolCallId: "root", toolName: "fetch_content" }, () => pageRequestAuthorization(["https://example.com/"]));
+  const t = transport([{ status: 302, headers: { location: "https://denied.example/" } }]); const hosts: string[] = [];
+  await assert.rejects(request("https://example.com/", { authorize, transport: t.fn, lookup: async (host) => { hosts.push(host); return lookup(); } }), /redirect denied/);
+  assert.deepEqual(hosts, ["example.com"]); assert.equal(t.calls.length, 1);
+});
 test("redirects revalidate before connecting and strip cross-origin credentials", async () => {
   const t = transport([{ status: 302, headers: { location: "https://other.example/" } }, { body: Buffer.from("final") }]);
   const result = await request("https://example.com", { transport: t.fn, lookup, headers: { Authorization: "secret" } });

@@ -1,3 +1,4 @@
+import { authorized, pageRequestAuthorization } from './authorization.js';
 import { constants } from 'node:fs';
 import { access, chmod, copyFile, mkdtemp, open, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -98,6 +99,7 @@ export interface ProxyOptions {
 
 /** TLS remains end-to-end: the host proxy only checks/pins destinations and meters wire bytes. */
 export async function startYouTubeProxy(path: string, options: ProxyOptions): Promise<{ close: () => Promise<void>; check: () => void }> {
+  const authorizeConnect = pageRequestAuthorization([]);
   options.signal.throwIfAborted();
   for (const value of [options.timeoutMs, options.maxConnections ?? 50, options.maxBytes ?? 10 * 1024 * 1024]) {
     if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) throw new Error('Invalid YouTube proxy limits.');
@@ -134,6 +136,7 @@ export async function startYouTubeProxy(path: string, options: ProxyOptions): Pr
     client.pause();
     void (async () => {
       const target = youtubeProxyTarget(req.url ?? '');
+      await authorizeConnect(target.origin, controller.signal, async () => {
       const address = await (options.resolve ?? resolvePublic)(target, controller.signal);
       controller.signal.throwIfAborted();
       if (!publicAddress(address.address) || ![4, 6].includes(address.family)) throw new Error('Blocked proxy address.');
@@ -150,6 +153,7 @@ export async function startYouTubeProxy(path: string, options: ProxyOptions): Pr
         client.write(response);
         if (head.length) upstream.write(head);
         client.pipe(upstream); upstream.pipe(client); client.resume();
+      });
       });
     })().catch((error: unknown) => fail(error instanceof Error ? error : new Error('Proxy failed.')));
   });
@@ -178,7 +182,8 @@ export async function startYouTubeProxy(path: string, options: ProxyOptions): Pr
 /** No metadata-provided headers, cookies, redirects, or alternative sources are trusted. */
 export async function downloadYouTubeMedia(url: string, options: { directory: string; timeoutMs: number; signal?: AbortSignal }, fetch: typeof request = request): Promise<string> {
   const source = youtubeMediaUrl(url);
-  const result = await fetch(source, { signal: options.signal, timeoutMs: options.timeoutMs, maxBytes: MAX_YOUTUBE_BYTES, redirects: 0 });
+  // Signed media query parameters are resolved transport credentials, not operation metadata.
+  const result = await authorized("fetch_content.media", { destinationKind: "page", internal: true }, [new URL(source).origin], options.signal, () => fetch(source, { signal: options.signal, timeoutMs: options.timeoutMs, maxBytes: MAX_YOUTUBE_BYTES, redirects: 0 }));
   if (result.status !== 200 || youtubeMediaUrl(result.url) !== source || result.body.length > MAX_YOUTUBE_BYTES ||
       result.body.length < 12 || result.body.toString('ascii', 4, 8) !== 'ftyp' ||
       !/^video\/mp4(?:;|$)/i.test(result.headers['content-type'] ?? '')) throw new Error('YouTube media is not a bounded MP4 response.');

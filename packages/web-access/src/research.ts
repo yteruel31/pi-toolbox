@@ -1,3 +1,4 @@
+import { authorized, providerUrls } from "./authorization.js";
 import { lstat, readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { WebConfig } from "./config.js";
@@ -20,6 +21,7 @@ const RUNNING = new Set(["queued", "in_progress"]);
 const TERMINAL = new Set(["completed", "cancelled", "failed", "incomplete", "budget_exceeded", "requires_action"]);
 export class ResearchManager {
   private stopped = false;
+  private readonly pollingAllowed = new Set<string>();
   private readonly tasks = new Map<string, Promise<void>>();
   private timer?: ReturnType<typeof setTimeout>;
   private pollTask?: Promise<void>;
@@ -52,12 +54,25 @@ export class ResearchManager {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     return absolute;
   }
-  async start(input: StartInput, cwd: string): Promise<Job> {
+  async start(input: StartInput, cwd: string, signal?: AbortSignal): Promise<Job> {
+    input = structuredClone(input);
+    const model = input.model ?? (input.provider === "gemini" ? this.config.research.geminiModel : this.config.research.openaiModel);
+    const requestedPath = input.outputPath ? resolve(cwd, input.outputPath.replace(/^@/, "")) : undefined;
+    const destination = requestedPath ? { file: requestedPath } : { directory: resolve(this.config.research.outputDir) };
+    const id = hash(JSON.stringify([input.provider, model, input.subject, destination, input.requestKey ?? ""]));
+    return authorized("deep_research.start", { ...input, model, outputPath: requestedPath ?? resolve(this.config.research.outputDir, `${id}.md`), lifecyclePolling: true, opaquePageDestinations: true }, [providerUrls[input.provider]!], signal, async () => {
+      const job = await this.startUnchecked(input, cwd, signal);
+      this.pollingAllowed.add(job.researchId);
+      return job;
+    }, jobFailed);
+  }
+  private async startUnchecked(input: StartInput, cwd: string, signal?: AbortSignal): Promise<Job> {
     if (this.stopped) throw new Error("Research runtime is shutting down");
     if (!input.subject.trim() || input.subject.length > 50_000) throw new Error("Research subject must contain 1 to 50000 characters");
     const model = input.model ?? (input.provider === "gemini" ? this.config.research.geminiModel : this.config.research.openaiModel);
     if (!model.trim() || model.length > 200) throw new Error("Invalid research model/agent");
     const apiKey = await this.deps.key(input.provider); // Fail before creating a job when API auth is unavailable.
+    signal?.throwIfAborted();
     if (this.stopped) throw new Error("Research runtime is shutting down");
     const requestedPath = input.outputPath ? resolve(cwd, input.outputPath.replace(/^@/, "")) : undefined;
     const destination = requestedPath ? { file: requestedPath } : { directory: resolve(this.config.research.outputDir) };
@@ -73,6 +88,10 @@ export class ResearchManager {
       const result: Job = { version: 1, researchId, provider: input.provider, model, subject: input.subject, createdAt: now, updatedAt: now, status: "submitting", outputPath, submittingPid: process.pid };
       await atomicWrite(this.path(researchId), JSON.stringify(result)); created = true; return result;
     });
+    if (signal?.aborted) {
+      if (created) { job.status = "failed"; job.error = "Research cancelled before provider submission"; delete job.submittingPid; await this.save(job); }
+      signal.throwIfAborted();
+    }
     if (created) this.schedule(job.researchId, () => this.submit(job, apiKey));
     this.arm();
     return job;
@@ -122,7 +141,20 @@ export class ResearchManager {
     try { await atomicWrite(job.outputPath, text); job.outputWritten = true; delete job.outputError; }
     catch { job.outputError = "Report retained locally, but output could not be published without overwriting. Use result with a new outputPath."; }
   }
-  async refresh(id: string, upstreamId?: string): Promise<Job> {
+  private async jobOperation<T>(action: string, id: string, args: Record<string, unknown>, signal: AbortSignal | undefined, run: () => Promise<T>, isError: (value: T) => boolean = () => false): Promise<T> {
+    signal?.throwIfAborted();
+    // Read only the private tracking record before the gate; never resolve credentials here.
+    const job = await this.read(id);
+    return authorized(`deep_research.${action}`, { researchId: id, provider: job.provider, model: job.model, outputPath: job.outputPath, localOnly: !needsRetrieval(job), ...args }, [providerUrls[job.provider]!], signal, run, isError);
+  }
+  async refresh(id: string, upstreamId?: string, signal?: AbortSignal): Promise<Job> {
+    return this.jobOperation("status", id, { lifecyclePolling: true, ...(upstreamId ? { upstreamId, localOnly: false } : {}) }, signal, async () => {
+      const job = await this.refreshUnchecked(id, upstreamId, signal);
+      this.pollingAllowed.add(id);
+      return job;
+    }, jobFailed);
+  }
+  private async refreshUnchecked(id: string, upstreamId?: string, signal?: AbortSignal): Promise<Job> {
     if (this.tasks.has(id)) return this.read(id);
     return withLock(join(this.directory, validId(id)), async () => {
       const job = await this.read(id);
@@ -130,43 +162,57 @@ export class ResearchManager {
         if (!/^[A-Za-z0-9_-]{1,512}$/.test(upstreamId) || (job.upstreamId && job.upstreamId !== upstreamId)) throw new Error("Invalid or conflicting provider research ID");
         job.upstreamId = upstreamId; job.status = "in_progress"; delete job.error; await this.save(job);
       }
-      if (!needsRetrieval(job)) return job;
-      try { await this.accept(job, await this.deps.get(job.provider, job.upstreamId!, { apiKey: await this.deps.key(job.provider), model: job.model, signal: this.shutdown.signal })); }
-      catch (error) { job.error = safeError(error); await this.save(job); }
-      return job;
+      return this.refreshJob(job, signal);
     });
   }
-  async cancel(id: string): Promise<Job> {
+  // Caller holds the job lock; result can replace the destination before any publish.
+  private async refreshJob(job: Job, signal?: AbortSignal): Promise<Job> {
+    if (!needsRetrieval(job)) return job;
+    try { const apiKey = await this.deps.key(job.provider); signal?.throwIfAborted(); await this.accept(job, await this.deps.get(job.provider, job.upstreamId!, { apiKey, model: job.model, signal: signal ? AbortSignal.any([signal, this.shutdown.signal]) : this.shutdown.signal })); }
+    catch (error) { job.error = safeError(error); await this.save(job); }
+    return job;
+  }
+  async cancel(id: string, signal?: AbortSignal): Promise<Job> {
+    return this.jobOperation("cancel", id, { localOnly: false }, signal, () => this.cancelUnchecked(id, signal), jobFailed);
+  }
+  private async cancelUnchecked(id: string, signal?: AbortSignal): Promise<Job> {
     const task = this.tasks.get(id); if (task) await task;
     return withLock(join(this.directory, validId(id)), async () => {
       const job = await this.read(id);
       if (TERMINAL.has(job.status)) return job;
       if (!job.upstreamId) throw new Error("Cannot confirm cancellation without a provider ID. Recover the ID first; local stop is not upstream cancellation.");
-      const snapshot = await this.deps.cancel(job.provider, job.upstreamId, { apiKey: await this.deps.key(job.provider), model: job.model, signal: this.shutdown.signal });
+      const apiKey = await this.deps.key(job.provider); signal?.throwIfAborted();
+      const snapshot = await this.deps.cancel(job.provider, job.upstreamId, { apiKey, model: job.model, signal: signal ? AbortSignal.any([signal, this.shutdown.signal]) : this.shutdown.signal });
       await this.accept(job, snapshot); return job;
     });
   }
-  async result(id: string, outputPath?: string, cwd = process.cwd()): Promise<Job> {
-    await this.refresh(id);
-    return withLock(join(this.directory, validId(id)), async () => {
-      const job = await this.read(id);
-      if (outputPath) {
-        if (job.outputWritten) throw new Error("Report has already been published; use the returned path");
-        job.outputPath = await this.outputPath(resolve(cwd, outputPath)); await this.save(job);
-      }
-      if (TERMINAL.has(job.status) && !job.outputWritten) {
-        try { const snapshot = JSON.parse(await readPrivate(join(this.directory, id, "result.json"))) as ResearchSnapshot; if (snapshot.report) await this.publish(job, snapshot); await this.save(job); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          if (job.upstreamId) {
-            job.resultStored = false;
-            await this.save(job);
-            await this.accept(job, await this.deps.get(job.provider, job.upstreamId, { apiKey: await this.deps.key(job.provider), model: job.model, signal: this.shutdown.signal }));
-          }
+  async result(id: string, outputPath?: string, cwd = process.cwd(), signal?: AbortSignal): Promise<Job> {
+    const path = outputPath ? resolve(cwd, outputPath.replace(/^@/, "")) : undefined;
+    const task = this.tasks.get(id); if (task) await task;
+    // Hold the same lock across assessment, replacement and refresh. A poll cannot
+    // publish between an approved replacement and applying it to the saved job.
+    return withLock(join(this.directory, validId(id)), () => this.jobOperation("result", id, { localOnly: false, ...(path ? { outputPath: path } : {}) }, signal, () => this.resultUnchecked(id, path, cwd, signal), jobFailed));
+  }
+  private async resultUnchecked(id: string, outputPath: string | undefined, cwd: string, signal?: AbortSignal): Promise<Job> {
+    const job = await this.read(id);
+    if (outputPath) {
+      if (job.outputWritten) throw new Error("Report has already been published; use the returned path");
+      job.outputPath = await this.outputPath(resolve(cwd, outputPath)); await this.save(job);
+    }
+    await this.refreshJob(job, signal);
+    if (TERMINAL.has(job.status) && !job.outputWritten) {
+      try { const snapshot = JSON.parse(await readPrivate(join(this.directory, id, "result.json"))) as ResearchSnapshot; if (snapshot.report) await this.publish(job, snapshot); await this.save(job); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (job.upstreamId) {
+          job.resultStored = false;
+          await this.save(job);
+          const apiKey = await this.deps.key(job.provider); signal?.throwIfAborted();
+          await this.accept(job, await this.deps.get(job.provider, job.upstreamId, { apiKey, model: job.model, signal: signal ? AbortSignal.any([signal, this.shutdown.signal]) : this.shutdown.signal }));
         }
       }
-      return job;
-    });
+    }
+    return job;
   }
   async content(id: string): Promise<string> {
     const job = await this.read(id);
@@ -175,6 +221,11 @@ export class ResearchManager {
   }
   async recover(): Promise<void> {
     for (const job of await this.list()) {
+      if (needsRetrieval(job)) {
+        // Recovery runs with a noninteractive context: never open an orphan approval popup.
+        try { await this.jobOperation("resume", job.researchId, { lifecyclePolling: true }, this.shutdown.signal, async () => { this.pollingAllowed.add(job.researchId); }); }
+        catch { /* Explicit status can authorize resuming this job in a live tool context. */ }
+      }
       if (job.status === "submitting" && !this.tasks.has(job.researchId) && !processAlive(job.submittingPid)) {
         job.status = "submission_unknown"; job.error = "Pi stopped during submission. Recover the provider ID rather than creating another paid job."; await this.save(job);
       }
@@ -186,13 +237,16 @@ export class ResearchManager {
     this.timer = setTimeout(() => {
       this.timer = undefined;
       this.pollTask = this.list().then(async (jobs) => {
-        for (const job of jobs) if (needsRetrieval(job)) await this.refresh(job.researchId);
+        for (const job of jobs) if (needsRetrieval(job) && this.pollingAllowed.has(job.researchId)) await this.refreshUnchecked(job.researchId);
       }).catch(() => {}).finally(() => this.arm());
     }, this.config.research.pollIntervalMs);
     this.timer.unref();
   }
   async idle(): Promise<void> { await Promise.all(this.tasks.values()); }
   async stop(): Promise<void> { this.stopped = true; if (this.timer) clearTimeout(this.timer); this.shutdown.abort(); await this.idle(); await this.pollTask; }
+}
+function jobFailed(job: Job): boolean {
+  return !!(job.error || job.outputError) || ["failed", "incomplete", "budget_exceeded", "requires_action", "submission_unknown"].includes(job.status);
 }
 function needsRetrieval(job: Job): boolean {
   return !!job.upstreamId && (RUNNING.has(job.status) || (TERMINAL.has(job.status) && !job.resultStored));

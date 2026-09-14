@@ -9,7 +9,7 @@ import { DEFAULT_UI_SETTINGS, loadMcpConfig } from "../src/config.js";
 import { writeMcpGatewaySettings } from "../src/config-writer.js";
 import { GatewayClient } from "../src/gateway/client.js";
 import { startGatewayServer } from "../src/gateway/server.js";
-import { registerMcpTool } from "../src/runtime.js";
+import { McpRuntime, registerMcpTool } from "../src/runtime.js";
 
 async function freePort(): Promise<number> {
 	const server = createServer();
@@ -52,7 +52,7 @@ test("agent custom configuration verifies a real capability before protected per
 		tailscale: { async status() { throw new Error("Tailscale must not run"); }, async hostname() { throw new Error("Tailscale must not run"); }, async setup() { throw new Error("Tailscale must not run"); }, async remove() { throw new Error("Tailscale must not run"); } },
 	});
 	let tool: any;
-	registerMcpTool({ registerTool: (value: unknown) => { tool = value; } } as never, () => ({}) as never, service);
+	registerMcpTool({ registerTool: (value: unknown) => { tool = value; } } as never, () => ({ authorize: McpRuntime.prototype.authorize }) as never, service);
 	const context = { hasUI: true, ui: { async confirm() { calls.push("confirm"); return true; } } };
 	const originalFetch = globalThis.fetch;
 	globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {

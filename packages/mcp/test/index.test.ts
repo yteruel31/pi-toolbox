@@ -62,7 +62,7 @@ test("extension lifecycle stays network-idle until an MCP operation needs a conn
 		assert.ok(statuses.some((status) => status.id === "mcp-status" && status.value === "MCP 0/0 · 1 off"));
 		assert.equal(statuses.at(-1)?.id, "mcp-status");
 		assert.equal(statuses.at(-1)?.value, undefined);
-		assert.ok(emitted.every((event) => event.channel === "pi-toolbox:mcp:status"));
+		assert.ok(emitted.every((event) => ["pi-toolbox:mcp:status", "pi-toolbox:operation-authorization:v1"].includes(event.channel)));
 		assert.deepEqual(emitted[0]?.data, { v: 1, counts: null }, "session start clears stale counts before the new runtime exists");
 		assert.deepEqual(emitted[1]?.data, { v: 1, counts: { total: 1, enabled: 0, connected: 0, authRequired: 0, errors: 0, disabled: 1 } });
 		assert.deepEqual(emitted.at(-1)?.data, { v: 1, counts: null }, "shutdown clears counts");
