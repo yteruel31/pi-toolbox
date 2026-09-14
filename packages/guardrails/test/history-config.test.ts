@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { ConfigStore } from "../src/config.js";
+import { ConfigStore, configSchema, defaultConfig } from "../src/config.js";
 import { HistoryStore, filterHistory, relevantHistory } from "../src/history.js";
 import { candidateView, safeCommand, sanitize } from "../src/sanitize.js";
 import { candidate, config, entry, policy } from "./helpers.js";
@@ -18,14 +18,37 @@ test("config is global-authoritative; project policies only add enabled restrict
     assert.equal((await stat(store.globalPath)).mode & 0o777, 0o600);
     await assert.rejects(store.save(config(), initial.revision));
     await mkdir(join(root, "project/.pi"), { recursive: true });
-    for (const local of [{ version: 1, enabled: false, policies: [] }, { version: 1, policies: [policy({ action: "Allow" })] }, { version: 1, policies: [policy({ enabled: false })] }]) {
+    for (const local of [{ version: 1, coverage: { bash: false }, policies: [] }, { version: 1, judgeEnabled: false, policies: [] }, { version: 1, model: "fake/judge", policies: [] }, { version: 1, thinking: "high", policies: [] }, { version: 1, enabled: false, policies: [] }, { version: 1, policies: [policy({ action: "Allow" })] }, { version: 1, policies: [policy({ enabled: false })] }]) {
       await writeFile(store.projectPath, JSON.stringify(local)); assert.ok((await store.load(true)).error); assert.equal((await store.load(false)).error, undefined);
     }
     await writeFile(store.projectPath, JSON.stringify({ version: 1, policies: [policy({ action: "Deny" })] }));
     const merged = await store.load(true); assert.equal(merged.error, undefined); assert.equal(merged.policies.at(-1)?.source, "project");
+    await store.save(config({ judgeEnabled: false, errorBehavior: "deny" }), merged.revision);
+    await writeFile(store.projectPath, "{broken");
+    const rejected = await store.load(true);
+    assert.ok(rejected.error); assert.equal(rejected.config.errorBehavior, "deny"); assert.equal(rejected.config.judgeEnabled, false);
     await writeFile(store.globalPath, "{broken"); assert.equal((await store.load(true)).config.enabled, true);
   } finally { await rm(root, { recursive: true }); }
 });
+test("old configs retain all coverage and model behavior; staged settings persist only on save", async () => {
+  const { coverage, judgeEnabled, ...old } = defaultConfig();
+  assert.deepEqual(configSchema.parse(old), defaultConfig());
+  assert.ok(Object.values(coverage).every(Boolean)); assert.equal(judgeEnabled, true); assert.equal(old.enabled, false);
+  assert.equal(configSchema.safeParse({ ...old, judgeEnabled: "off" }).success, false);
+  assert.equal(configSchema.safeParse({ ...old, coverage: { unknown: false } }).success, false);
+  const root = await mkdtemp(join(tmpdir(), "guardrails-staged-"));
+  try {
+    const store = new ConfigStore(root, join(root, "project"));
+    await writeFile(store.globalPath, JSON.stringify(old));
+    const snapshot = await store.load(false);
+    const draft = structuredClone(snapshot.config);
+    draft.coverage.read = false; draft.judgeEnabled = false; draft.model = "missing/saved"; draft.thinking = "max";
+    assert.deepEqual(JSON.parse(await readFile(store.globalPath, "utf8")), old, "cancel discards local draft");
+    await store.save(draft, snapshot.revision);
+    assert.deepEqual((await store.load(false)).config, draft);
+  } finally { await rm(root, { recursive: true }); }
+});
+
 test("history redacts credentials, escape sequences and file bodies before persistence", async () => {
   const root = await mkdtemp(join(tmpdir(), "guardrails-history-"));
   const path = join(root, "private/history.sqlite");

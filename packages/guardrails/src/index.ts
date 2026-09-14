@@ -5,10 +5,11 @@ import { registerOperationProvider } from "@yteruel31/pi-operation-hooks";
 import { provideOperationGate } from "./operation-bridge.js";
 import { parseDryRunInput } from "./operations.js";
 import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ConfigStore, configSchema, policySchema, availablePresets, type Config } from "./config.js";
+import { ConfigStore, configSchema, policySchema, availablePresets, bypasses, type Config } from "./config.js";
 import { GuardrailsEngine, type Approval } from "./engine.js";
 import { HistoryStore } from "./history.js";
 import { piBridge, type CompletionBridge } from "./judge.js";
+import { judgeCatalog } from "./model-catalog.js";
 import { canonicalPath } from "./policies.js";
 import { isTool, type Candidate } from "./types.js";
 import { sanitize } from "./sanitize.js";
@@ -58,9 +59,9 @@ export function createGuardrailsExtension(deps: Dependencies = {}) {
         // Register an unavailable gate as well: installing guardrails must not fail open for workers.
         current.unsubscribe = pi.events.on(CHILD_CHANNEL, (data) => {
           const r = data as { v?: number; parentSessionId?: string; provide?: (gate: unknown) => void };
-          if (r?.v === 1 && r.parentSessionId === current.sessionId && typeof r.provide === "function") r.provide({ assess: async () => {
+          if (r?.v === 1 && r.parentSessionId === current.sessionId && typeof r.provide === "function") r.provide({ assess: async (event: { toolName: string }) => {
             const snapshot = await store.load(current.ctx.isProjectTrusted());
-            if (!snapshot.error && !snapshot.config.enabled && !current.controller.signal.aborted) return undefined;
+            if (isTool(event.toolName) && bypasses(snapshot, event.toolName) && !current.controller.signal.aborted) return undefined;
             return { block: true, reason: "Guardrails storage is unavailable. Repair it in the parent session." };
           }, result() {} });
         });
@@ -94,7 +95,7 @@ export function createGuardrailsExtension(deps: Dependencies = {}) {
       current.ctx = ctx;
       if (!current.engine) {
         const snapshot = await current.store.load(ctx.isProjectTrusted());
-        if (!snapshot.error && !snapshot.config.enabled && !current.controller.signal.aborted) return;
+        if (bypasses(snapshot, event.toolName) && !current.controller.signal.aborted) return;
         return { block: true, reason: "Guardrails storage is unavailable. Repair it before enabling protection." };
       }
       const block = await current.engine.assess(mainCandidate(ctx, event.toolName, event.input, event.toolCallId), approval(ctx), ctx.signal);
@@ -121,7 +122,7 @@ export function createGuardrailsExtension(deps: Dependencies = {}) {
         while (!current.controller.signal.aborted) {
           const action = await ctx.ui.custom<PanelAction>((tui, theme, keybindings, done) => new GuardrailsPanel({
             theme, keybindings, snapshot, draft, state, sessionId: current.sessionId, history: current.history!,
-            model: () => { try { return current.bridge.resolve(draft).route; } catch { return "Unavailable (will require approval or block)"; } },
+            catalog: () => judgeCatalog(current.ctx),
             maxRows: () => panelRows(tui.terminal.rows), onRender: () => tui.requestRender(), onDone: done,
           }), { overlay: true, overlayOptions: GUARDRAILS_OVERLAY });
           if (!action || action.type === "close" || current.controller.signal.aborted) break;
@@ -131,9 +132,6 @@ export function createGuardrailsExtension(deps: Dependencies = {}) {
               await current.store.save(configSchema.parse(draft), snapshot.revision);
               snapshot = await current.store.load(ctx.isProjectTrusted()); draft = structuredClone(snapshot.config);
               state.notice = "Global configuration saved. Applies to subsequent main and Pi worker calls.";
-            } else if (action.type === "model") {
-              const value = await ctx.ui.input("Judge provider/model-id (blank follows the active parent model)", draft.model);
-              if (value !== undefined) { configSchema.parse({ ...draft, model: value }); draft.model = value; }
             } else if (action.type === "new" || action.type === "edit") {
               const previous = action.type === "edit" ? draft.policies.find((p) => p.id === action.id) : undefined;
               const value = await ctx.ui.editor("Policy JSON (staged until Ctrl+s). Conditions AND together. No shell execution.", JSON.stringify(previous ?? {

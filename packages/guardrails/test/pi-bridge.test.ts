@@ -7,7 +7,7 @@ import { candidate, config, response } from "./helpers.js";
 function registryFixture(delta: string) {
   let supplied: any;
   const reply = response({ action: "Allow", reason: "Routine", policyIds: [], historyIds: [] });
-  const ctx = { model: { provider: "fake", id: "model" }, scopedModels: [], modelRegistry: {
+  const ctx = { model: { provider: "fake", id: "model", reasoning: true }, scopedModels: [], modelRegistry: {
     getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "credential-from-registry", headers: { "x-test": "registry" }, baseUrl: "https://example.invalid", env: { PROVIDER_ENV: "value" } }),
     getProvider: () => ({ streamSimple: (_model: unknown, context: unknown, options: unknown) => {
       supplied = { context, options };

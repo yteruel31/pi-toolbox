@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import type { Tool } from "./types.js";
 import { boundedJson, safeArgumentPath, validDomain, validUrlPrefix } from "./operations.js";
 
 const text = (max: number) => z.string().min(1).max(max).refine((v) => !/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(v), "Control characters are not allowed");
@@ -32,9 +33,16 @@ export const policySchema = z.object({
 }).strict().refine((p) => p.kind !== "natural" || Boolean(p.description), "Natural policies need a description");
 export type Policy = z.infer<typeof policySchema> & { source?: "global" | "project" };
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const coverageSchema = z.object({
+  bash: z.boolean().default(true), read: z.boolean().default(true),
+  write: z.boolean().default(true), edit: z.boolean().default(true),
+  mcp: z.boolean().default(true), "web-access": z.boolean().default(true),
+}).strict();
 export const configSchema = z.object({
   version: z.literal(1),
   enabled: z.boolean(),
+  coverage: coverageSchema.default(() => coverageSchema.parse({})),
+  judgeEnabled: z.boolean().default(true),
   thinking: z.enum(thinkingLevels),
   model: z.string().max(200).refine((s) => s === "" || /^[^\s/]+\/[^\s]+$/.test(s)),
   timeoutMs: z.number().int().min(100).max(60000),
@@ -57,9 +65,13 @@ export const operationPresets: Policy[] = [
 ].map((p) => ({ ...p, enabled: true, scope: "both", kind: "structured", action: "Ask" })) as Policy[];
 export const availablePresets: Policy[] = [...presets, ...operationPresets];
 export function defaultConfig(): Config {
-  return { version: 1, enabled: false, thinking: "off", model: "", timeoutMs: 15000, maxOutputTokens: 1024, errorBehavior: "ask", policies: structuredClone(presets) };
+  return { version: 1, enabled: false, coverage: coverageSchema.parse({}), judgeEnabled: true, thinking: "off", model: "", timeoutMs: 15000, maxOutputTokens: 1024, errorBehavior: "ask", policies: structuredClone(presets) };
 }
 export interface ConfigSnapshot { config: Config; policies: Policy[]; revision: string; error?: string; projectStatus: string }
+/** Invalid snapshots never qualify for a bypass. Shared by storage-unavailable gates. */
+export function bypasses(snapshot: ConfigSnapshot, tool: Tool): boolean {
+  return !snapshot.error && (!snapshot.config.enabled || !snapshot.config.coverage[tool]);
+}
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 async function readConfig(path: string): Promise<string> {
   let file;
@@ -79,9 +91,10 @@ export class ConfigStore {
   }
   async load(trusted: boolean): Promise<ConfigSnapshot> {
     let raw = "";
+    let config = defaultConfig();
     try {
       raw = await readConfig(this.globalPath);
-      const config = raw ? configSchema.parse(JSON.parse(raw)) : defaultConfig();
+      config = raw ? configSchema.parse(JSON.parse(raw)) : defaultConfig();
       const policies: Policy[] = config.policies.map((p) => ({ ...p, source: "global" }));
       let projectStatus = trusted ? "No project policies" : "Project policies ignored (untrusted)";
       if (trusted) {
@@ -98,7 +111,7 @@ export class ConfigStore {
       return { config, policies, revision: hash(raw), projectStatus };
     } catch {
       // Invalid configuration must not turn protection off, including malformed project input.
-      return { config: { ...defaultConfig(), enabled: true }, policies: [], revision: hash(raw), error: "Invalid or unreadable guardrails configuration. Repair it outside agent tools.", projectStatus: "Configuration rejected" };
+      return { config: { ...config, enabled: true }, policies: [], revision: hash(raw), error: "Invalid or unreadable guardrails configuration. Repair it outside agent tools.", projectStatus: "Configuration rejected" };
     }
   }
   async save(config: Config, expectedRevision: string): Promise<void> {

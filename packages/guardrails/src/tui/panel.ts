@@ -1,14 +1,15 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { Input, SettingsList, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type OverlayOptions } from "@earendil-works/pi-tui";
+import { Input, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type OverlayOptions } from "@earendil-works/pi-tui";
 import type { Config, ConfigSnapshot, Policy } from "../config.js";
-import { thinkingLevels } from "../config.js";
+import type { JudgeCatalog } from "../model-catalog.js";
+import { SetupSettings } from "./setup.js";
 import { decisionCategory, filterHistory, type HistoryFilter, type HistoryStore } from "../history.js";
 import type { HistoryEntry } from "../types.js";
 import { sanitize } from "../sanitize.js";
 
 export const GUARDRAILS_OVERLAY: OverlayOptions = { width: "90%", maxHeight: "95%", anchor: "center", margin: 1 };
 export const panelRows = (rows: number) => Math.max(1, Math.min(rows - 2, Math.floor(rows * 0.95)));
-export type PanelAction = { type: "close" | "save" | "model" | "new" | "presets" | "test" } | { type: "edit"; id: string };
+export type PanelAction = { type: "close" | "save" | "new" | "presets" | "test" } | { type: "edit"; id: string };
 export interface PanelState {
   tab: "Setup" | "Policies" | "History";
   global: boolean;
@@ -18,6 +19,7 @@ export interface PanelState {
   detail: boolean;
   scroll: number;
   notice?: string;
+  setupIndex?: number;
 }
 export const initialPanelState = (): PanelState => ({ tab: "Setup", global: false, filter: {}, detail: false, scroll: 0 });
 interface Options {
@@ -27,7 +29,7 @@ interface Options {
   draft: Config;
   history: HistoryStore;
   sessionId: string;
-  model: () => string;
+  catalog: () => JudgeCatalog;
   state: PanelState;
   maxRows: () => number;
   onRender: () => void;
@@ -62,7 +64,7 @@ export class GuardrailsPanel implements Component, Focusable {
   private newCount = 0;
   private seen: Set<string>;
   private unsubscribe: () => void;
-  private settings: SettingsList;
+  private settings: SetupSettings;
   private paste = false;
   focused = false;
   constructor(private o: Options) {
@@ -70,22 +72,7 @@ export class GuardrailsPanel implements Component, Focusable {
     this.seen = new Set(this.rows.map((e) => e.id));
     this.unsubscribe = o.history.subscribe(() => this.update());
     this.input.setValue(o.state.filter.search ?? "");
-    const theme = o.theme;
-    this.settings = new SettingsList([
-      { id: "enabled", label: "Protection", currentValue: o.draft.enabled ? "enabled" : "disabled", values: ["disabled", "enabled"] },
-      { id: "thinking", label: "Judge thinking", currentValue: o.draft.thinking, values: [...thinkingLevels] },
-      { id: "errorBehavior", label: "On judge error", currentValue: o.draft.errorBehavior, values: ["ask", "deny"] },
-      { id: "timeoutMs", label: "Judge timeout (ms)", currentValue: String(o.draft.timeoutMs), values: ["5000", "15000", "30000", "60000"] },
-      { id: "maxOutputTokens", label: "Output token cap", currentValue: String(o.draft.maxOutputTokens), values: ["512", "1024", "2048", "4096"] },
-    ], 5, {
-      label: (t, selected) => theme.fg(selected ? "accent" : "text", t), value: (t) => theme.fg("muted", t),
-      description: (t) => theme.fg("muted", t), cursor: theme.fg("accent", "▸ "), hint: (t) => theme.fg("dim", t),
-    }, (id, value) => {
-      if (id === "enabled") o.draft.enabled = value === "enabled";
-      else if (id === "thinking") o.draft.thinking = value as Config["thinking"];
-      else if (id === "errorBehavior") o.draft.errorBehavior = value as Config["errorBehavior"];
-      else if (id === "timeoutMs" || id === "maxOutputTokens") o.draft[id] = Number(value);
-    }, () => this.finish({ type: "close" }));
+    this.settings = new SetupSettings({ draft: o.draft, state: o.state, theme: o.theme, keybindings: o.keybindings, catalog: o.catalog, save: () => this.finish({ type: "save" }) });
   }
   private update(): void {
     if (this.closed) return;
@@ -115,6 +102,10 @@ export class GuardrailsPanel implements Component, Focusable {
     const s = this.o.state;
     const kb = this.o.keybindings;
     const esc = matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || kb.matches(data, "tui.select.cancel");
+    if (s.tab === "Setup" && this.settings.inSubmenu) {
+      if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) this.settings.cancelSubmenu();
+      else { this.settings.handleInput(data); this.o.onRender(); return; }
+    }
     if (this.searching) {
       if (esc || matchesKey(data, "enter")) this.searching = false;
       else { this.input.handleInput(data); this.input.setValue(sanitize(this.input.getValue(), 200)); s.filter.search = this.input.getValue(); this.listOffset = 0; }
@@ -126,7 +117,6 @@ export class GuardrailsPanel implements Component, Focusable {
       s.tab = tabs[(tabs.indexOf(s.tab) + (matchesKey(data, "tab") ? 1 : 2)) % 3]; s.detail = false; s.scroll = 0; this.listOffset = 0;
     } else if (matchesKey(data, "ctrl+s")) { this.finish({ type: "save" }); return; }
     else if (s.tab === "Setup") {
-      if (data === "m") { this.finish({ type: "model" }); return; }
       if (matchesKey(data, "pageDown")) s.scroll++;
       else if (matchesKey(data, "pageUp")) s.scroll = Math.max(0, s.scroll - 1);
       else { this.settings.handleInput(data); s.scroll = 0; }
@@ -190,14 +180,19 @@ export class GuardrailsPanel implements Component, Focusable {
     this.wide = inner >= 100;
     const { theme, state: s } = this.o;
     const header = tabs.map((t) => t === s.tab ? theme.bg("selectedBg", theme.fg("accent", theme.bold(` ${t} `))) : theme.fg("muted", ` ${t} `)).join(" ");
-    const foot = ["Tab section · Ctrl+s save · Esc back/close",
-      s.tab === "Setup" ? "↑↓ setting · Enter change · m model · PgDn more" : s.tab === "Policies" ? "↑↓ select · Enter detail · e edit · n new · p presets · t test" : "↑↓ select · Enter detail · / search · g current/global",
-      s.tab === "Policies" ? "Space enabled · a action · s actor · PgUp/PgDn detail" : s.tab === "History" ? "a actor · d decision · n new events · PgUp/PgDn detail" : "Changes are staged until Ctrl+s."].flatMap((l) => wrapTextWithAnsi(l, inner));
+    const foot = (width < 60 && s.tab === "Setup" ? (this.settings.inSubmenu
+      ? ["Type to search · Enter choose", "Esc cancel · Tab section"]
+      : ["Tab section · Ctrl+s save", "↑↓ move · Enter · Esc back", "PgUp/PgDn help · Unsaved"])
+      : ["Tab section · Ctrl+s save · Esc back/close",
+      s.tab === "Setup" ? "↑↓ setting · Enter change · PgDn more" : s.tab === "Policies" ? "↑↓ select · Enter detail · e edit · n new · p presets · t test" : "↑↓ select · Enter detail · / search · g current/global",
+      s.tab === "Policies" ? "Space enabled · a action · s actor · PgUp/PgDn detail" : s.tab === "History" ? "a actor · d decision · n new events · PgUp/PgDn detail" : "Changes are staged until Ctrl+s."]).flatMap((l) => wrapTextWithAnsi(l, inner));
     const bodyRows = Math.max(1, rows - foot.length - 5);
     let body: string[];
     if (s.tab === "Setup") {
-      const lines = [...this.settings.render(inner), "", `Resolved model: ${sanitize(this.o.model(), 220)}`,
-        `Model route: ${this.o.draft.model || "active parent Pi model"}`, "Independent judge thinking defaults to off.",
+      this.settings.focused = this.focused;
+      const mode = this.o.draft.judgeEnabled ? "Model judgment On" : "Rule-only: no match ALLOWS. Natural policies inactive.";
+      const status = this.settings.inSubmenu ? [] : wrapTextWithAnsi(theme.fg(this.o.draft.judgeEnabled ? "muted" : "warning", mode), inner);
+      const lines = [...status, ...this.settings.render(inner, bodyRows - status.length), "",
         "Worker Ask and headless Ask always block. Main Ask requires approval.", `Configuration: ${this.o.snapshot.error ?? "valid"}`, this.o.snapshot.projectStatus,
         "Global settings own activation, model and policies. Project config only adds restrictions.",
         "Coverage: native bash/read/write/edit plus integrated MCP/web operations. No new worker tools. Not an OS sandbox. Claude is unchanged.",
@@ -207,8 +202,8 @@ export class GuardrailsPanel implements Component, Focusable {
       const policies = this.policies();
       const selected = policies.find((p) => p.id === s.policyId) ?? policies[0];
       if (selected) s.policyId = selected.id;
-      const details = selected ? [sanitize(selected.name), `Source: ${selected.source ?? "global"}`, `Enabled: ${selected.enabled}`, `Actor: ${selected.scope}`, `Action: ${selected.action}`, `Tools: ${selected.tools.join(", ")}`, `Kind: ${selected.kind}`, `Conditions: ${sanitize(JSON.stringify(selected.conditions))}`, sanitize(selected.description ?? ""), "Deny > Ask > Allow. Hard restrictions cannot be weakened by the model.", "Persistent exceptions are explicit Allow policies. They never override Ask/Deny.", ...(s.notice ? ["", sanitize(s.notice)] : [])] : ["No policies. Press p for presets or n to add a policy.", sanitize(s.notice ?? "")];
-      body = this.listAndDetail(policies.map((p) => ({ id: p.id, lines: [`${p.enabled ? "●" : "○"} ${sanitize(p.name)}`, `${p.action} · ${p.scope} · ${p.source ?? "global"}`] })), s.policyId, details, inner, bodyRows);
+      const details = selected ? [sanitize(selected.name), `Source: ${selected.source ?? "global"}`, `Enabled: ${selected.enabled}`, `Actor: ${selected.scope}`, `Action: ${selected.action}`, `Tools: ${selected.tools.join(", ")}`, `Kind: ${selected.kind}${selected.kind === "natural" && !this.o.draft.judgeEnabled ? " (inactive: judge model is off)" : ""}`, `Conditions: ${sanitize(JSON.stringify(selected.conditions))}`, sanitize(selected.description ?? ""), "Deny > Ask > Allow. Hard restrictions cannot be weakened by the model.", "Persistent exceptions are explicit Allow policies. They never override Ask/Deny.", ...(s.notice ? ["", sanitize(s.notice)] : [])] : ["No policies. Press p for presets or n to add a policy.", sanitize(s.notice ?? "")];
+      body = this.listAndDetail(policies.map((p) => ({ id: p.id, lines: [`${p.enabled ? "●" : "○"} ${sanitize(p.name)}`, `${p.action} · ${p.scope} · ${p.source ?? "global"}${p.kind === "natural" && !this.o.draft.judgeEnabled ? " · inactive (model off)" : ""}`] })), s.policyId, details, inner, bodyRows);
     } else {
       const filtered = this.filtered();
       const selected = filtered.find((e) => e.id === s.selectedId) ?? filtered[0];

@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { OperationGate, OperationRequest } from "@yteruel31/pi-operation-hooks";
 import type { Approval, GuardrailsEngine } from "./engine.js";
 import type { Candidate } from "./types.js";
-import type { ConfigStore } from "./config.js";
+import { bypasses, type ConfigStore } from "./config.js";
 
 export interface OperationRuntime {
   sessionId: string;
@@ -27,7 +27,7 @@ export function provideOperationGate(
   if (!engine) return { assess: async () => {
     // Explicit Off remains usable even when history storage needs repair.
     const snapshot = await current.store?.load(ctx.isProjectTrusted());
-    if (snapshot && !snapshot.error && !snapshot.config.enabled && !current.controller.signal.aborted) return undefined;
+    if (snapshot && bypasses(snapshot, request.operation.package) && !current.controller.signal.aborted) return undefined;
     return { block: true, reason: "Guardrails storage is unavailable. Repair it before enabling protection." };
   } };
   const op = request.operation;

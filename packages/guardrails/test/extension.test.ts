@@ -17,8 +17,9 @@ async function fixture() {
   const bus = createEventBus();
   const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
   const commands: string[] = [];
+  const commandHandlers = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
   let opened = 0;
-  const pi = { events: bus, on: (name: string, handler: any) => handlers.set(name, handler), registerCommand: (name: string) => commands.push(name) } as unknown as ExtensionAPI;
+  const pi = { events: bus, on: (name: string, handler: any) => handlers.set(name, handler), registerCommand: (name: string, options: any) => { commands.push(name); commandHandlers.set(name, options.handler); } } as unknown as ExtensionAPI;
   createGuardrailsExtension({ agentDir, bridge: bridge(), history: (path) => { opened++; return new HistoryStore(path); } })(pi);
   assert.equal(opened, 0, "factory must not allocate history");
   let asks = 0;
@@ -29,7 +30,7 @@ async function fixture() {
     abort: async () => {},
   }) as unknown as ExtensionContext;
   const emit = (name: string, c: ExtensionContext, event: any = {}) => handlers.get(name)?.(event, c);
-  return { root, agentDir, bus, ctx, emit, asks: () => asks, commands, cleanup: async () => { await emit("session_shutdown", ctx("last")); await rm(root, { recursive: true }); } };
+  return { root, agentDir, bus, ctx, emit, asks: () => asks, commands, commandHandlers, cleanup: async () => { await emit("session_shutdown", ctx("last")); await rm(root, { recursive: true }); } };
 }
 test("parent extension and real subagents protocol compose, workers never open UI and attribution survives result updates", async () => {
   const f = await fixture();
@@ -84,6 +85,33 @@ test("Deny and stop is recorded before native abort can cancel the approval prom
     assert.equal(block.terminate, true); assert.equal(controller.signal.aborted, true);
     const history = new HistoryStore(join(f.agentDir, "guardrails/history.sqlite"));
     try { assert.equal(history.list()[0].choice, "deny-stop"); } finally { history.close(); }
+  } finally { await f.cleanup(); }
+});
+
+test("command stages coverage and judge toggles, rejects cancelled saves, and only persists a confirmed Save", async () => {
+  const f = await fixture();
+  try {
+    const ctx = f.ctx("setup", true);
+    const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text };
+    let screens = 0, accept = false, save = false;
+    ctx.ui.confirm = async () => accept;
+    ctx.ui.custom = (async (factory: any) => new Promise((done) => {
+      const panel = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, { matches: () => false }, done);
+      if (screens++ === 0) {
+        panel.handleInput("\x1b[B"); panel.handleInput("\r"); // Bash Off
+        for (let i = 0; i < 6; i++) panel.handleInput("\x1b[B");
+        panel.handleInput("\r"); // Judge Off
+        panel.handleInput(save ? "\x13" : "\x1b");
+      } else panel.handleInput("\x1b");
+    })) as typeof ctx.ui.custom;
+    await f.emit("session_start", ctx);
+    const load = async () => JSON.parse(await (await import("node:fs/promises")).readFile(join(f.agentDir, "guardrails.json"), "utf8"));
+    for (const mode of ["close", "cancel-save", "save"]) {
+      screens = 0; save = mode !== "close"; accept = mode === "save";
+      await f.commandHandlers.get("guardrails")!("", ctx);
+      assert.equal((await load()).coverage.bash, mode !== "save");
+      assert.equal((await load()).judgeEnabled, mode !== "save");
+    }
   } finally { await f.cleanup(); }
 });
 
