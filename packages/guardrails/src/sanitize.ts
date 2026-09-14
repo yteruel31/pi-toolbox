@@ -4,6 +4,13 @@ import { boundedJson, isOperationTool, validOperationArgs } from "./operations.j
 
 /** Best effort, not a secret detector. Never pass file bodies or tool results here. */
 export function sanitize(value: string, limit = 2000): string {
+  return redact(value, limit, /\b[A-Za-z0-9+/_=-]{40,}\b/g);
+}
+/** Filesystem separators aren't entropy. Keep long paths while masking opaque components. */
+export function sanitizePath(value: string, limit = 4096): string {
+  return redact(value, limit, /\b[A-Za-z0-9+_=-]{40,}\b/g);
+}
+function redact(value: string, limit: number, opaque: RegExp): string {
   return stripVTControlCharacters(value)
     .replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, " ")
     .replace(/-----BEGIN[\s\S]*?(?:-----END[^-]*-----|$)/g, "[private material omitted]")
@@ -12,7 +19,7 @@ export function sanitize(value: string, limit = 2000): string {
     .replace(/([\w.-]*(?:token|secret|password|passwd|api.?key|credential)[\w.-]*\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s;&]+)/gi, "$1[redacted]")
     .replace(/((?:https?|file):\/\/)[^\s/@]+@/gi, "$1[credentials]@")
     .replace(/((?:https?|file):\/\/[^\s?'"#]+)[?#][^\s'" ]*/gi, "$1[query omitted]")
-    .replace(/\b[A-Za-z0-9+/_=-]{40,}\b/g, "[long value omitted]")
+    .replace(opaque, "[long value omitted]")
     .slice(0, limit);
 }
 export function safeCommand(command: string): string {
@@ -60,16 +67,21 @@ export function operationView(c: Candidate): { value: unknown; incomplete: boole
 }
 export function candidateView(c: Candidate, target: string, operation: string) {
   const operationArgs = isOperationTool(c.tool) ? operationView(c) : undefined;
+  const cwd = sanitizePath(c.cwd);
+  const safeTarget = operationArgs ? sanitize(target, 4096) : sanitizePath(target);
+  const path = String(c.args.path ?? "");
+  const safePath = sanitizePath(path);
+  const incomplete = operationArgs?.incomplete || cwd !== c.cwd || safeTarget !== target || (!operationArgs && c.tool !== "bash" && path !== safePath);
   return {
-    tool: c.tool, cwd: sanitize(c.cwd, 4096), actor: c.actor.kind === "main" ? { kind: "main" } : {
+    tool: c.tool, cwd, actor: c.actor.kind === "main" ? { kind: "main" } : {
       kind: "subagent", runId: sanitize(c.actor.runId, 100), profile: c.actor.profile ? sanitize(c.actor.profile, 100) : undefined,
       childSessionId: c.actor.childSessionId ? sanitize(c.actor.childSessionId, 100) : undefined,
     },
-    ...(operationArgs ? { assessmentIncomplete: operationArgs.incomplete } : {}),
+    assessmentIncomplete: Boolean(incomplete),
     args: operationArgs ? operationArgs.value : c.tool === "bash" ? { command: safeCommand(String(c.args.command ?? "")) } : {
-      path: sanitize(String(c.args.path ?? ""), 4096),
+      path: safePath,
       ...(c.tool === "read" ? { offset: Number(c.args.offset) || undefined, limit: Number(c.args.limit) || undefined } : { body: "[omitted]" }),
     },
-    target: sanitize(target, 4096), operation: sanitize(operation, 100),
+    target: safeTarget, operation: sanitize(operation, 100),
   };
 }

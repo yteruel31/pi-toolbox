@@ -2,22 +2,26 @@ import { chmodSync, lstatSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { isSupportedTool, type Candidate, type HistoryEntry } from "./types.js";
-import { sanitize } from "./sanitize.js";
+import { isSupportedTool, isTool, type Candidate, type HistoryEntry } from "./types.js";
+import { sanitize, sanitizePath } from "./sanitize.js";
 
 const s = (max: number) => z.string().max(max).transform((v) => sanitize(v, max));
+const pathText = z.string().max(4096).transform((v) => sanitizePath(v));
 const entrySchema = z.object({
   id: z.uuid(), at: z.number(), updatedAt: z.number(),
-  sessionId: s(200), project: s(4096), cwd: s(4096), callId: s(200), leafId: s(100).optional(),
+  sessionId: s(200), project: pathText, cwd: pathText, callId: s(200), leafId: s(100).optional(),
   actor: z.discriminatedUnion("kind", [z.object({ kind: z.literal("main") }), z.object({ kind: z.literal("subagent"), runId: s(100), profile: s(100).optional(), childSessionId: s(100).optional() })]),
-  tool: z.custom<HistoryEntry["tool"]>((v) => typeof v === "string" && isSupportedTool(v)), summary: s(4000), target: s(4096), operation: s(100),
+  tool: z.custom<HistoryEntry["tool"]>((v) => typeof v === "string" && isSupportedTool(v)), summary: z.string().max(4000), target: z.string().max(4096), operation: s(100),
   action: z.enum(["Allow", "Ask", "Deny"]), origin: z.enum(["policy", "model", "error"]), reason: s(2000),
   policyIds: z.array(s(100)).max(200), historyIds: z.array(z.uuid()).max(16),
   model: z.object({ route: s(200), thinking: s(20), durationMs: z.number().nonnegative() }).optional(),
   choice: z.enum(["allow-once", "deny", "deny-stop"]).optional(),
   state: z.enum(["assessing", "review", "allowed", "denied"]),
   execution: z.enum(["not-observed", "blocked", "reported-success", "reported-error"]),
-});
+}).transform((entry) => ({ ...entry,
+  target: isTool(entry.tool) ? sanitizePath(entry.target) : sanitize(entry.target, 4096),
+  summary: ["read", "write", "edit"].includes(entry.tool) ? sanitizePath(entry.summary, 4000) : sanitize(entry.summary, 4000),
+}));
 export const HISTORY_LIMIT = 2000;
 export const HISTORY_DAYS = 30;
 export class HistoryStore {
