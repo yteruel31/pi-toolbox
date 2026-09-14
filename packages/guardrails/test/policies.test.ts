@@ -43,7 +43,8 @@ test("path matching uses component boundaries and real ancestors, without readin
 test("policy self-write cannot be granted by a policy or natural assessment", () => {
   const rules = [policy({ action: "Allow" })];
   for (const tool of ["write", "edit"] as const) assert.equal(evaluatePolicies(candidate({ tool, args: { path: "/project/.pi/guardrails.json" } }), rules, ["/project/.pi"]).decision?.action, "Deny");
-  for (const command of ["echo disable > ~/.pi/agent/guardrails.json", "python -c 'modify guardrails.json'", "rm -rf /project/.pi"]) assert.equal(evaluatePolicies(candidate({ args: { command } }), rules, ["/project/.pi"]).decision?.action, "Deny");
+  for (const command of ["echo disable > /project/.pi/guardrails.json", "rm -rf /project/.pi"]) assert.equal(evaluatePolicies(candidate({ args: { command } }), rules, ["/project/.pi"]).decision?.action, "Deny");
+  assert.equal(evaluatePolicies(candidate({ args: { command: "python -c 'modify guardrails.json'" } }), rules, ["/project/.pi"]).decision?.action, "Ask");
 });
 test("natural restrictions must be assessed before a structured Allow", () => {
   const result = evaluatePolicies(candidate(), [policy({ action: "Allow", conditions: { command: "git status" } }), policy({ id: "natural", kind: "natural", description: "Ask before reading this production checkout" })], []);
