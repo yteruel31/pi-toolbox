@@ -32,7 +32,7 @@ test("factory is inert, then registers core tools and the always-visible diagnos
   await h.handlers.get("session_shutdown")!({}, h.ctx);
 }));
 test("any existing tool collision disables the whole package without replacement", () => isolated(async () => {
-  const h = harness(["fetch_content"]); webAccess(h.pi);
+  const h = harness(["web_access_diagnostic"]); webAccess(h.pi);
   await h.handlers.get("session_start")!({}, h.ctx);
   assert.equal(h.tools.size, 0); assert.match(h.notifications[0]!, /No tools were replaced/);
 }));

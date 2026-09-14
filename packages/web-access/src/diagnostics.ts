@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { BrowserFailure, inspectBrowserRuntime, systemBrowserHost, type BrowserRuntime } from "./browser-environment.js";
+import { BrowserFailure, inspectBrowserRuntime, systemBrowserHost, type BrowserRuntime, type BrowserFailureCode } from "./browser-environment.js";
 import { renderPage } from "./browser.js";
 import { loadConfig, type WebConfig } from "./config.js";
 import { RedditService, type RedditDiagnostic } from "./reddit-service.js";
@@ -90,7 +90,7 @@ function installationRemedies(runtime: BrowserRuntime, os: { ubuntu: boolean; de
   }
   return lines;
 }
-export interface RenderProbeResult { state: "passed" | "failed" | "cancelled"; summary: string }
+export interface RenderProbeResult { state: "passed" | "failed" | "cancelled"; summary: string; code?: BrowserFailureCode }
 /** No live network. Reuses production renderPage, launch plan, route handler and cleanup. */
 export async function testIsolatedRendering(signal?: AbortSignal, render = renderPage): Promise<RenderProbeResult> {
   const url = "https://web-access-diagnostic.invalid/";
@@ -109,6 +109,6 @@ export async function testIsolatedRendering(signal?: AbortSignal, render = rende
   } catch (error) {
     const failure = error instanceof BrowserFailure && error.code === "cleanup-failed" ? error
       : signal?.aborted ? new BrowserFailure("cancelled") : error instanceof BrowserFailure ? error : new BrowserFailure("render-unknown");
-    return { state: failure.code === "cancelled" ? "cancelled" : "failed", summary: failure.message };
+    return { state: failure.code === "cancelled" ? "cancelled" : "failed", summary: failure.message, code: failure.code };
   }
 }

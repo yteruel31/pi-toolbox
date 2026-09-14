@@ -12,8 +12,9 @@ import { WebService, mapBounded } from "./service.js";
 import { retrieve, type Document } from "./store.js";
 import { CHECK_INSTRUCTIONS, synthesize, validateAssessment } from "./synthesis.js";
 import { registerSetupCommand } from "./setup-command.js";
+import { registerWebDiagnosticTool } from "./diagnostic-tool.js";
 
-export const CORE_TOOL_NAMES = ["web_search", "fetch_content", "get_search_content", "source_check", "deep_research"] as const;
+export const CORE_TOOL_NAMES = ["web_search", "fetch_content", "get_search_content", "source_check", "deep_research", "web_access_diagnostic"] as const;
 export const TOOL_NAMES = [...CORE_TOOL_NAMES, ...REDDIT_TOOL_NAMES] as const;
 const optionalText = (maxLength = 500) => Type.Optional(Type.String({ minLength: 1, maxLength }));
 const searchFields = {
@@ -45,7 +46,7 @@ function selected(one: string | undefined, many: string[] | undefined, label: st
 }
 function documentText(document: Document): string { return `# ${document.title}\n${document.url ?? ""}\n\n${document.content}`; }
 
-export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebService, research: ResearchManager): void {
+export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebService, research: ResearchManager, lifetime?: AbortSignal): void {
   function register<S extends TSchema>(name: typeof CORE_TOOL_NAMES[number], description: string, schema: S, execute: ToolDefinition<S, Details>["execute"]): void {
     pi.registerTool<S, Details>({
       name, label: name, description, promptSnippet: description,
@@ -153,6 +154,7 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
     }
     return jobOutput(params.action === "cancel" ? await research.cancel(params.researchId) : params.action === "result" ? await research.result(params.researchId, params.outputPath, ctx.cwd) : await research.refresh(params.researchId, params.upstreamId));
   });
+  registerWebDiagnosticTool(pi, lifetime);
 }
 export default function webAccess(pi: ExtensionAPI): void {
   registerSetupCommand(pi);
@@ -177,7 +179,7 @@ export default function webAccess(pi: ExtensionAPI): void {
       service = new WebService(config);
       const reddit = new RedditService(config);
       const redditDiagnostic = await reddit.inspect();
-      registerTools(pi, config, service, research);
+      registerTools(pi, config, service, research, lifetime.signal);
       registerRedditTools(pi, config, service, reddit, redditDiagnostic, lifetime.signal, defaultRedditToolDependencies);
       registered = true;
       await research.recover();
