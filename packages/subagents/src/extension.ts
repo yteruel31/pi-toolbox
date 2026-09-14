@@ -42,6 +42,7 @@ import {
   type PiHarnessOptions,
   type PiModelRuntimeLike,
 } from "./harnesses/pi.js";
+import { requestPiChildAssessment } from "./harnesses/pi-assessment.js";
 import { describeError } from "./shared/errors.js";
 import { formatRunIdentity, formatSpawnCallIdentity } from "./shared/run-identity.js";
 import { truncateText } from "./shared/truncate.js";
@@ -172,7 +173,12 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     const trustedCwd = await fs.realpath(ctx.cwd).catch(() => path.resolve(ctx.cwd));
     const modelRuntime = modelRuntimeAdapter(ctx);
     const parentModel = ctx.model ?? undefined;
+    const parentSessionId = ctx.sessionManager.getSessionId();
+    const childAssessment: PiHarnessOptions["childAssessment"] = (request, cwd) => requestPiChildAssessment(pi.events, {
+      parentSessionId, cwd, runId: request.runId, profile: request.agentProfile, signal: request.signal,
+    });
     piHarness = dependencies.createPiHarness?.({
+      childAssessment,
       modelRuntime,
       parentModel,
       parentThinkingLevel: ctx.thinkingLevel,
@@ -180,6 +186,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       isProjectTrusted: (cwd) => isWithin(trustedCwd, path.resolve(cwd)) && ctx.isProjectTrusted(),
       agentDir: getAgentDir(),
     }) ?? new PiHarness({
+      childAssessment,
       modelRuntime,
       parentModel,
       parentThinkingLevel: ctx.thinkingLevel,

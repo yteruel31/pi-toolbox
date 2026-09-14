@@ -114,6 +114,7 @@ function fakeContext(cwd: string, entries: FakeRuntime["entries"]): ExtensionCon
       getAvailable: () => [{ provider: "fake", id: "parent" }],
     },
     sessionManager: {
+      getSessionId: () => "parent-session-test",
       getBranch: () => entries.map(({ customType, data }, index) => ({
         type: "custom",
         id: `entry-${index}`,

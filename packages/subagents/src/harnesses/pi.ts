@@ -8,6 +8,8 @@ import {
   type CreateAgentSessionOptions,
 } from "@earendil-works/pi-coding-agent";
 
+import type { PiChildAssessment } from "./pi-assessment.js";
+
 import type {
   HarnessRunOutcome,
   HarnessRunRequest,
@@ -141,6 +143,7 @@ export interface PiResourceFactoryInput {
   projectTrusted: boolean;
   systemPrompt: string | undefined;
   tools: readonly string[] | undefined;
+  assessment?: PiChildAssessment;
 }
 
 export type PiResourceFactory = (
@@ -177,6 +180,8 @@ export interface PiHarnessOptions {
   createResources?: PiResourceFactory;
   /** Defaults to exactly three minutes. Tests may inject a shorter interval. */
   toolWatchdogMs?: number;
+  /** Optional parent-provided gate. No extension/package loading in children. */
+  childAssessment?: (request: HarnessRunRequest, cwd: string) => PiChildAssessment | undefined;
 }
 
 export class PiHarness implements SubagentHarness {
@@ -192,6 +197,7 @@ export class PiHarness implements SubagentHarness {
   private readonly createSession: PiSessionFactory;
   private readonly createResources: PiResourceFactory;
   private readonly toolWatchdogMs: number;
+  private readonly childAssessment: PiHarnessOptions["childAssessment"];
 
   constructor(options: PiHarnessOptions) {
     this.modelRuntime = options.modelRuntime;
@@ -203,6 +209,7 @@ export class PiHarness implements SubagentHarness {
     this.createSession = options.createSession ?? createOfficialPiSession;
     this.createResources = options.createResources ?? createOfficialPiResources;
     this.toolWatchdogMs = options.toolWatchdogMs ?? PI_TOOL_WATCHDOG_MS;
+    this.childAssessment = options.childAssessment;
 
     if (!Number.isFinite(this.toolWatchdogMs) || this.toolWatchdogMs <= 0) {
       throw new TypeError("toolWatchdogMs must be a positive finite number.");
@@ -231,6 +238,7 @@ export class PiHarness implements SubagentHarness {
       projectTrusted,
       systemPrompt: request.systemPrompt,
       tools: request.tools,
+      assessment: this.childAssessment?.(request, cwd),
     });
 
     let session: PiSessionLike | undefined;
@@ -474,7 +482,14 @@ export async function createOfficialPiResources(
       {
         name: "pi-subagents-child-safety",
         factory: (pi) => {
-          pi.on("tool_call", (event) => piChildToolDenial(event.toolName, input.tools));
+          pi.on("tool_call", async (event, ctx) => {
+            const denial = piChildToolDenial(event.toolName, input.tools);
+            if (denial) return denial;
+            return input.assessment?.assess({ ...event, childSessionId: ctx.sessionManager.getSessionId() });
+          });
+          if (input.assessment) pi.on("tool_result", (event, ctx) => {
+            input.assessment!.result({ toolCallId: event.toolCallId, isError: event.isError, childSessionId: ctx.sessionManager.getSessionId() });
+          });
         },
       },
     ],
