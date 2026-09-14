@@ -58,6 +58,26 @@ test("parent extension and real subagents protocol compose, workers never open U
     assert.equal(requestPiChildAssessment(f.bus, { parentSessionId: "parent", runId: "old", cwd: f.root, signal: new AbortController().signal }), undefined);
   } finally { await f.cleanup(); }
 });
+test("real Pi worker gate allows read-only mentions but blocks uncertain shell and protected writes", async () => {
+  const f = await fixture();
+  try {
+    const ctx = f.ctx("shell-parent", true); await f.emit("session_start", ctx);
+    const gate = requestPiChildAssessment(f.bus, { parentSessionId: "shell-parent", runId: "shell-worker", cwd: f.root, signal: new AbortController().signal })!;
+    for (const command of ["rg guardrails packages/guardrails/src", "git status --short -- guardrails.json"]) {
+      assert.equal(await gate.assess({ toolName: "bash", toolCallId: command, input: { command }, childSessionId: "child" }), undefined);
+    }
+    for (const command of ["custom-writer .pi/guardrails.json", "echo x > .pi/guardrails.json"]) {
+      assert.ok((await gate.assess({ toolName: "bash", toolCallId: command, input: { command }, childSessionId: "child" }))?.block);
+    }
+    assert.equal(f.asks(), 0);
+    const history = new HistoryStore(join(f.agentDir, "guardrails/history.sqlite"));
+    try {
+      assert.ok(history.list().some((entry) => entry.action === "Ask" && entry.state === "denied" && entry.policyIds.includes("builtin.shell-uncertain")));
+      assert.ok(history.list().some((entry) => entry.action === "Deny" && entry.policyIds.includes("builtin.self-protection")));
+    } finally { history.close(); }
+  } finally { await f.cleanup(); }
+});
+
 test("resume retains session history while fork gets its own current-session attribution", async () => {
   const f = await fixture();
   try {

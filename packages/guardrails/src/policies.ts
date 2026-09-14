@@ -1,4 +1,5 @@
-import { realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { shellSelfProtection } from "./shell-self-protection.js";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Policy } from "./config.js";
@@ -8,6 +9,10 @@ import { isOperationTool, operationMatches, operationOutputPaths, operationTarge
 
 /** Resolve existing ancestors without opening the target file, including new files below symlinks. */
 export function canonicalPath(path: string, cwd: string): string {
+  return resolveCanonicalPath(path, cwd, 0);
+}
+function resolveCanonicalPath(path: string, cwd: string, links: number): string {
+  if (links > 40) throw new Error("Cannot resolve target safely");
   let expanded = path.replace(/^@/, "").replace(/[\u00a0\u202f]/g, " ");
   if (expanded === "~" || expanded.startsWith("~/")) expanded = homedir() + expanded.slice(1);
   const absolute = resolve(cwd, expanded);
@@ -17,6 +22,18 @@ export function canonicalPath(path: string, cwd: string): string {
     try { return resolve(realpathSync(ancestor), ...tail); }
     catch (e) {
       if (!["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException).code ?? "")) throw new Error("Cannot resolve target safely");
+      // realpath can't follow a dangling link, but writes can create its protected target.
+      let link = false;
+      try { link = lstatSync(ancestor).isSymbolicLink(); }
+      catch (error) {
+        if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw new Error("Cannot resolve target safely");
+      }
+      if (link) {
+        let destination: string;
+        try { destination = readlinkSync(ancestor); }
+        catch { throw new Error("Cannot resolve target safely"); }
+        return resolveCanonicalPath(resolve(dirname(ancestor), destination, ...tail), cwd, links + 1);
+      }
       if (dirname(ancestor) === ancestor) return absolute;
       tail.unshift(basename(ancestor)); ancestor = dirname(ancestor);
     }
@@ -65,9 +82,26 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
   const { target, operation } = describeCandidate(c);
   const result = (action: Decision["action"], reason: string, policyIds: string[]): Decision => ({ action, origin: "policy", reason, policyIds, historyIds: [] });
   const command = String(c.args.command ?? "");
-  const self = c.tool === "write" || c.tool === "edit"
-    ? protectedPaths.some((p) => within(canonicalPath(p, c.cwd), target))
-    : c.tool === "bash" && (/(?:guardrails(?:\.json)?|(?:^|[\s/])\.pi(?:\/|\b))/.test(command.replace(/["'\\]/g, "")) || protectedPaths.some((p) => command.includes(p)));
+  const self = (c.tool === "write" || c.tool === "edit") && protectedPaths.some((p) => within(canonicalPath(p, c.cwd), target));
+  const protectedRoots = c.tool === "bash" ? protectedPaths.map((p) => canonicalPath(p, c.cwd)) : [];
+  let uncertainShellPath = false;
+  const shellVerdict = c.tool === "bash" && protectedRoots.length ? shellSelfProtection(command, (path, includeParents) => {
+    // Native @path shorthand and Unicode space normalization aren't shell syntax.
+    const expanded = path === "~" || path.startsWith("~/") ? homedir() + path.slice(1) : path;
+    const parts = expanded.split(sep);
+    const symlinkParent = parts.some((part, i) => {
+      if (part !== "..") return false;
+      const prefix = parts.slice(0, i).join(sep) || ".";
+      return canonicalPath(prefix, c.cwd) !== resolve(c.cwd, prefix);
+    });
+    if (/[\u00a0\u202f]/.test(path) || symlinkParent) {
+      // Lexical '..' normalization before symlink traversal can resolve a different target than the OS.
+      uncertainShellPath = true; return false;
+    }
+    const resolved = canonicalPath(expanded.startsWith("@") ? resolve(c.cwd, expanded) : expanded, c.cwd);
+    return protectedRoots.some((root) => within(root, resolved) || (includeParents && within(resolved, root)));
+  }) : undefined;
+  const shell = shellVerdict === "Deny" ? shellVerdict : uncertainShellPath ? "Ask" : shellVerdict;
   const localOperationPaths = operationOutputPaths(c);
   if (c.tool === "web-access" && validOperationArgs(c.args)) {
     for (const value of c.args.urls ?? []) {
@@ -79,7 +113,7 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
     }
   }
   const operationSelf = localOperationPaths.some((path) => protectedPaths.some((p) => within(canonicalPath(p, c.cwd), canonicalPath(path, c.cwd))));
-  if (self || operationSelf) return { target, operation, natural: [], decision: result("Deny", "Guardrails configuration/runtime self-modification is protected. Use the human configuration panel or an external editor.", ["builtin.self-protection"]) };
+  if (self || operationSelf || shell === "Deny") return { target, operation, natural: [], decision: result("Deny", "Guardrails configuration/runtime self-modification is protected. Use the human configuration panel or an external editor.", ["builtin.self-protection"]) };
   const matches = policies.filter((p) => (judgeEnabled || p.kind === "structured") && applicable(p, c, target));
   const structured = matches.filter((p) => p.kind === "structured");
   const natural = matches.filter((p) => p.kind === "natural");
@@ -87,6 +121,7 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
     const hits = structured.filter((p) => p.action === action);
     if (hits.length) return { target, operation, natural, decision: result(action, hits.map((p) => `${p.name}: ${action}${isOperationTool(c.tool) ? " (operation conditions matched locally)" : ` (${JSON.stringify(p.conditions)})`}`).join("; "), hits.map((p) => p.id)) };
   }
+  if (shell === "Ask") return { target, operation, natural, decision: result("Ask", "Shell effects cannot be resolved by the bounded local classifier. Human review is required while configuration/runtime protection is enabled.", ["builtin.shell-uncertain"]) };
   const allows = structured.filter((p) => p.action === "Allow");
   // Model mode still assesses complex shell Allows and applicable natural restrictions.
   // Rule-only mode honors deterministic Allows as written; no match is permissive too.
