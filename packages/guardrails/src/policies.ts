@@ -59,7 +59,7 @@ export function applicable(p: Policy, c: Candidate, target: string): boolean {
   if (p.conditions.command && (c.tool !== "bash" || c.args.command !== p.conditions.command)) return false;
   return true;
 }
-export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPaths: string[]): { decision?: Decision; natural: Policy[]; target: string; operation: string } {
+export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPaths: string[], judgeEnabled = true): { decision?: Decision; natural: Policy[]; target: string; operation: string } {
   const oversized = isOperationTool(c.tool) ? !validOperationArgs(c.args) : c.tool === "bash" ? typeof c.args.command !== "string" || c.args.command.length > 16000 : typeof c.args.path !== "string" || c.args.path.length > 4096;
   if (oversized) return { target: c.cwd, operation: c.tool, natural: [], decision: { action: "Deny", origin: "policy", reason: "Tool arguments are invalid or exceed the assessment budget (16000 command / 4096 path characters; operations: 64 KB, 12 levels, 32 URLs).", policyIds: ["builtin.argument-budget"], historyIds: [] } };
   const { target, operation } = describeCandidate(c);
@@ -80,7 +80,7 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
   }
   const operationSelf = localOperationPaths.some((path) => protectedPaths.some((p) => within(canonicalPath(p, c.cwd), canonicalPath(path, c.cwd))));
   if (self || operationSelf) return { target, operation, natural: [], decision: result("Deny", "Guardrails configuration/runtime self-modification is protected. Use the human configuration panel or an external editor.", ["builtin.self-protection"]) };
-  const matches = policies.filter((p) => applicable(p, c, target));
+  const matches = policies.filter((p) => (judgeEnabled || p.kind === "structured") && applicable(p, c, target));
   const structured = matches.filter((p) => p.kind === "structured");
   const natural = matches.filter((p) => p.kind === "natural");
   for (const action of ["Deny", "Ask"] as const) {
@@ -88,9 +88,9 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
     if (hits.length) return { target, operation, natural, decision: result(action, hits.map((p) => `${p.name}: ${action}${isOperationTool(c.tool) ? " (operation conditions matched locally)" : ` (${JSON.stringify(p.conditions)})`}`).join("; "), hits.map((p) => p.id)) };
   }
   const allows = structured.filter((p) => p.action === "Allow");
-  // Do not treat a prefix/regex or an exact complex shell string as proof of harmless execution.
-  // Natural restrictions still need assessment before an explicit Allow can apply.
-  if (allows.length && !natural.length && (c.tool !== "bash" || (!complexShell(command) && allows.some((p) => p.conditions.command === command)))) {
+  // Model mode still assesses complex shell Allows and applicable natural restrictions.
+  // Rule-only mode honors deterministic Allows as written; no match is permissive too.
+  if (allows.length && !natural.length && (!judgeEnabled || c.tool !== "bash" || (!complexShell(command) && allows.some((p) => p.conditions.command === command)))) {
     return { target, operation, natural, decision: result("Allow", `Explicit allow: ${allows.map((p) => p.name).join(", ")}`, allows.map((p) => p.id)) };
   }
   return { target, operation, natural };

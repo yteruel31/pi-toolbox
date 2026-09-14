@@ -1,4 +1,5 @@
 import type { AssistantMessage, Context, Model, ModelsApiStreamOptions, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { z } from "zod";
 import type { Config, Policy } from "./config.js";
@@ -18,11 +19,13 @@ export interface CompletionBridge {
 export function piBridge(getContext: () => ExtensionContext): CompletionBridge {
   return {
     resolve(config) {
+      if (!config.judgeEnabled) throw new Error("Judge model is off");
       const ctx = getContext();
       const slash = config.model.indexOf("/");
       const model = config.model ? ctx.modelRegistry.find(config.model.slice(0, slash), config.model.slice(slash + 1)) : ctx.model;
       if (!model) throw new Error("No registered assessment model");
       if (ctx.scopedModels.length && !ctx.scopedModels.some((m) => m.model.provider === model.provider && m.model.id === model.id)) throw new Error("Assessment model is outside the session model scope");
+      if (!getSupportedThinkingLevels(model).includes(config.thinking)) throw new Error("Choose compatible judge thinking in Setup");
       return { model, route: `${model.provider}/${model.id}` };
     },
     async complete(model, context, options) {

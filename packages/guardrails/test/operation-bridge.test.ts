@@ -120,6 +120,38 @@ test("explicit Off bypasses main, operation and worker gates even if history sto
   } finally { await f.cleanup(); }
 });
 
+for (const brokenHistory of [false, true]) test(`per-module bypass through actual main/worker/operation gates (broken history: ${brokenHistory})`, async () => {
+  const settings = config();
+  const f = await fixture({ config: settings, brokenHistory });
+  try {
+    await f.emit("session_start");
+    const gate = requestPiChildAssessment(f.bus, { parentSessionId: "parent", runId: "worker", cwd: f.root, signal: new AbortController().signal })!;
+    for (const tool of ["bash", "read", "write", "edit", "mcp", "web-access"] as const) {
+      const next = config({ policies: [policy({ tools: [tool], action: "Deny" })] });
+      next.coverage[tool] = false;
+      await writeFile(join(f.agentDir, "guardrails.json"), JSON.stringify(next));
+      if (tool === "mcp" || tool === "web-access") {
+        const op = { package: tool, name: "inspect", args: {} };
+        await f.emit("tool_call", f.ctx, { toolName: tool, toolCallId: "wrapper", input: {} });
+        const ticket = await authorizeOperation(f.bus, op, f.ctx); ticket.result(false);
+        next.coverage[tool] = true;
+        await writeFile(join(f.agentDir, "guardrails.json"), JSON.stringify(next));
+        await assert.rejects(authorizeOperation(f.bus, op, f.ctx), AuthorizationDenied);
+      } else {
+        const input = tool === "bash" ? { command: "git status" } : { path: "README.md" };
+        assert.equal(await f.emit("tool_call", f.ctx, { toolName: tool, toolCallId: "main", input }), undefined);
+        assert.equal(await gate.assess({ toolName: tool, toolCallId: "child", childSessionId: "child", input }), undefined);
+        next.coverage[tool] = true;
+        await writeFile(join(f.agentDir, "guardrails.json"), JSON.stringify(next));
+        assert.ok((await f.emit("tool_call", f.ctx, { toolName: tool, toolCallId: "main-on", input }))?.block);
+        assert.ok((await gate.assess({ toolName: tool, toolCallId: "child-on", childSessionId: "child", input }))?.block);
+      }
+    }
+    assert.equal(f.asks(), 0);
+    if (!brokenHistory) assert.equal(f.entries().length, 10, "only enabled calls are journaled, without duplicate wrapper events");
+  } finally { await f.cleanup(); }
+});
+
 test("shutdown keeps a veto while other producer shutdown handlers are still draining", async () => {
   const f = await fixture();
   try {

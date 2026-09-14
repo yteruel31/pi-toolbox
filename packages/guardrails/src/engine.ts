@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type { ConfigSnapshot } from "./config.js";
+import { bypasses, type ConfigSnapshot } from "./config.js";
 import type { Block, Candidate, Decision, HistoryEntry } from "./types.js";
 import type { CompletionBridge } from "./judge.js";
 import { bounded, judge } from "./judge.js";
 import { HistoryStore, relevantHistory } from "./history.js";
 import { evaluatePolicies } from "./policies.js";
 import { candidateView, sanitize, sanitizePath } from "./sanitize.js";
+
+function ruleOnlyAllow(): Decision {
+  return { action: "Allow", origin: "rule-only-no-match", reason: "Judge model is off. No deterministic rule matched; rule-only mode allows unmatched calls.", policyIds: [], historyIds: [] };
+}
 
 export type Approval = (entry: HistoryEntry, signal: AbortSignal) => Promise<"allow-once" | "deny" | "deny-stop">;
 export interface EngineOptions {
@@ -23,13 +27,21 @@ export class GuardrailsEngine {
   }
   async evaluate(c: Candidate, signal?: AbortSignal): Promise<{ decision: Decision; target: string; operation: string; enabled: boolean }> {
     const snapshot = await this.options.load();
-    const evaluated = evaluatePolicies(c, snapshot.policies, this.options.protectedPaths);
-    if (snapshot.error) return { ...evaluated, enabled: true, decision: evaluated.decision ?? { action: "Ask", origin: "error", reason: snapshot.error, policyIds: [], historyIds: [] } };
-    if (!snapshot.config.enabled) return { ...evaluated, enabled: false, decision: { action: "Allow", origin: "policy", reason: "Guardrails is disabled. No assessment performed.", policyIds: [], historyIds: [] } };
+    if (bypasses(snapshot, c.tool)) return { target: "", operation: "", enabled: false, decision: { action: "Allow", origin: "bypass", reason: "Protection or module is off. No assessment performed.", policyIds: [], historyIds: [] } };
+    const evaluated = this.describe(c, snapshot);
     if (evaluated.decision) return { ...evaluated, enabled: true, decision: evaluated.decision };
+    if (!snapshot.config.judgeEnabled) return { ...evaluated, enabled: true, decision: ruleOnlyAllow() };
     const history = relevantHistory(this.options.history.list(), c, evaluated.target, evaluated.operation, evaluated.natural.map((p) => p.id));
     const decision = await judge(this.options.bridge, snapshot.config, c, evaluated.natural, history, evaluated.target, evaluated.operation, signal);
     return { ...evaluated, enabled: true, decision };
+  }
+  private describe(c: Candidate, snapshot: ConfigSnapshot): ReturnType<typeof evaluatePolicies> {
+    const evaluated = evaluatePolicies(c, snapshot.error ? [] : snapshot.policies, this.options.protectedPaths, snapshot.config.judgeEnabled);
+    if (snapshot.error && evaluated.decision?.action !== "Deny") evaluated.decision = this.configError(snapshot);
+    return evaluated;
+  }
+  private configError(snapshot: ConfigSnapshot): Decision {
+    return { action: snapshot.config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", reason: snapshot.error!, policyIds: [], historyIds: [] };
   }
   /** Dry runs call evaluate directly: no execution, approval UI or history mutation. */
   async assess(c: Candidate, approval?: Approval, signal?: AbortSignal): Promise<Block | undefined> {
@@ -38,8 +50,8 @@ export class GuardrailsEngine {
     let entry: HistoryEntry | undefined;
     try {
       const snapshot = await this.options.load();
-      if (!snapshot.config.enabled && !snapshot.error) return undefined;
-      const described = evaluatePolicies(c, snapshot.policies, this.options.protectedPaths);
+      if (bypasses(snapshot, c.tool)) return undefined;
+      const described = this.describe(c, snapshot);
       const view = candidateView(c, described.target, described.operation);
       entry = this.options.history.put({
         id: randomUUID(), at: Date.now(), updatedAt: Date.now(), sessionId: sanitize(c.sessionId, 200), project: sanitizePath(c.project),
@@ -50,10 +62,8 @@ export class GuardrailsEngine {
         state: "assessing", execution: "not-observed",
       });
       // Keep one config snapshot for this call. Concurrent UI edits apply to subsequent calls.
-      let decision: Decision;
-      if (snapshot.error) decision = described.decision ?? { action: "Ask", origin: "error", reason: snapshot.error, policyIds: [], historyIds: [] };
-      else decision = described.decision ?? await judge(this.options.bridge, snapshot.config, c, described.natural,
-        relevantHistory(this.options.history.list(), c, described.target, described.operation, described.natural.map((p) => p.id)), described.target, described.operation, combined);
+      const decision = described.decision ?? (!snapshot.config.judgeEnabled ? ruleOnlyAllow() : await judge(this.options.bridge, snapshot.config, c, described.natural,
+        relevantHistory(this.options.history.list(), c, described.target, described.operation, described.natural.map((p) => p.id)), described.target, described.operation, combined));
       entry = { ...entry, ...decision, state: decision.action === "Ask" ? "review" : decision.action === "Deny" ? "denied" : "allowed", updatedAt: Date.now() };
       if (combined.aborted) entry = { ...entry, state: "denied", reason: "Assessment cancelled. Tool not authorized." };
       if (entry.state === "review") {

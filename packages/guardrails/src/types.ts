@@ -14,7 +14,7 @@ export interface Candidate {
 }
 export interface Decision {
   action: Action;
-  origin: "policy" | "model" | "error";
+  origin: "policy" | "model" | "error" | "rule-only-no-match" | "bypass";
   reason: string;
   policyIds: string[];
   historyIds: string[];
