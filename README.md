@@ -76,6 +76,10 @@ pi install npm:@yteruel31/pi-diagram
 
 Create, edit, and deterministically review structured box-and-arrow diagrams from Pi, inspect inline or annotated PNG previews, and share a capability-scoped live viewer through localhost, Tailscale Serve, or a user-owned HTTPS reverse proxy.
 
+### [`@yteruel31/pi-guardrails`](./packages/guardrails)
+
+Policy-first mistake prevention for main-agent and Pi-worker `bash`, `read`, `write`, and `edit` calls. `/guardrails` provides Setup, Policies, and local History. Protection starts disabled; unresolved calls use a fresh assessment context and Pi's model/auth registry. Claude workers and other tools are outside coverage. See the [coverage and configuration guide](./packages/guardrails/README.md). Not yet published to npm.
+
 ### [`@yteruel31/pi-web-access`](./packages/web-access)
 
 Eight tools for web search, content fetching, bounded retrieval, source checking, native background deep research, and opt-in authenticated Reddit reads. Search uses Gemini, Brave or OpenAI; extraction supports local PDF text, isolated Chromium, public GitHub clones and video frames. Reddit uses an explicitly configured dedicated native-browser profile, local-only inspection, and an explicit bounded validation before its content tools appear on reload. Research reports stay in local Markdown files. See the [configuration, system dependencies, Reddit profile safety guidance, and explicit migration instructions](./packages/web-access/README.md) before replacing an existing web extension. The package is not yet published to npm.

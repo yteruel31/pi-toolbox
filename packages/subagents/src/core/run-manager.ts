@@ -293,6 +293,7 @@ export class RunManager {
       promise = Promise.resolve(
         request.harness.run({
           runId: run.id,
+          agentProfile: run.agentProfile,
           prompt: request.prompt,
           systemPrompt: request.systemPrompt,
           tools: request.tools,

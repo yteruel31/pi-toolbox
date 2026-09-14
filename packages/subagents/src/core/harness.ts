@@ -22,6 +22,8 @@ export interface HarnessActiveControl {
 export interface HarnessRunRequest {
   /** Stable session-local run id, for logging/diagnostics only. */
   runId: string;
+  /** Named profile identity for parent assessment attribution, not a tool grant. */
+  agentProfile?: string;
   /** The task text. Non-empty; validated by the manager. */
   prompt: string;
   /** Optional named-agent system prompt, delivered before the task. */
