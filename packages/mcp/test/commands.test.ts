@@ -5,7 +5,7 @@ import { DEFAULT_UI_SETTINGS, type McpConfig, type McpGatewaySettings } from "..
 import { safeAuthorizationUrl } from "../src/auth/coordinator.js";
 import { GatewayDiagnosticError } from "../src/gateway/diagnostics.js";
 import { TailscaleMutationError } from "../src/tailscale.js";
-import { registerMcpTool } from "../src/runtime.js";
+import { McpRuntime, registerMcpTool } from "../src/runtime.js";
 
 function config(gateway?: McpGatewaySettings): McpConfig {
 	return { mcpServers: {}, settings: { ui: { ...DEFAULT_UI_SETTINGS }, gateway }, diagnostics: [] };
@@ -211,7 +211,7 @@ test("runtime restore failure does not hide committed state or trigger rollback"
 test("agent gateway actions use the same confirmed lifecycle and reject mixed input", async () => {
 	const subject = harness();
 	let tool: any;
-	registerMcpTool({ registerTool: (value: unknown) => { tool = value; } } as never, () => ({}) as never, subject.service);
+	registerMcpTool({ registerTool: (value: unknown) => { tool = value; } } as never, () => ({ authorize: McpRuntime.prototype.authorize }) as never, subject.service);
 	const run = (input: unknown) => tool.execute("id", input, undefined, undefined, subject.context);
 	const status = await run({ action: "gateway-status" });
 	assert.equal(status.details.gateway.state, "unconfigured");

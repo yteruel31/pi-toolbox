@@ -78,7 +78,7 @@ Create, edit, and deterministically review structured box-and-arrow diagrams fro
 
 ### [`@yteruel31/pi-guardrails`](./packages/guardrails)
 
-Policy-first mistake prevention for main-agent and Pi-worker `bash`, `read`, `write`, and `edit` calls. `/guardrails` provides Setup, Policies, and local History. Protection starts disabled; unresolved calls use a fresh assessment context and Pi's model/auth registry. Claude workers and other tools are outside coverage. See the [coverage and configuration guide](./packages/guardrails/README.md). Not yet published to npm.
+Policy-first mistake prevention for main-agent and Pi-worker `bash`, `read`, `write`, and `edit` calls, plus main-agent operations exposed by the updated MCP and web-access packages. `/guardrails` provides Setup, customizable Policies, and local History. Protection starts disabled; unresolved calls use a fresh assessment context and Pi's model/auth registry. MCP/web-access use the optional [operation-hooks contract](./packages/operation-hooks/README.md), a shared library with no policy or auto-loaded extension. No tools are added to workers; Claude stays outside coverage. See the [coverage and configuration guide](./packages/guardrails/README.md). Not yet published to npm.
 
 ### [`@yteruel31/pi-web-access`](./packages/web-access)
 

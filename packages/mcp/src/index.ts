@@ -60,6 +60,7 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		emitStatus({ v: 1, counts: null });
 		runtime = new McpRuntime(loadMcpConfig(), undefined, undefined, undefined, {
 			context: ctx,
+			operationBus: pi.events,
 			onUiStatus: (status) => {
 				ctx?.ui.setStatus("mcp-ui", status ? appStatusText(status) : undefined);
 			},

@@ -1,3 +1,5 @@
+import { authorized, inAuthorizationScope } from "./authorization.js";
+import { buildRedditSearchUrl, buildRedditPostUrl, type RedditSearchOptions } from "./reddit-parser.js";
 import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -123,10 +125,14 @@ export function registerRedditTools(
       parameters: schema,
       async execute(id, params, signal, update, ctx) {
         if (!Value.Check(schema, params)) throw new Error(`Invalid ${name} arguments`);
+        params = structuredClone(params);
         const combined = signalFor(signal, lifetimeSignal); combined.throwIfAborted();
         const working = name === "reddit_profile_diagnostic" ? "Inspecting Reddit readiness..." : "Waiting for the profile or running one bounded request...";
         update?.(result(working, { summary: working }));
-        return execute(id, params, combined, update, ctx);
+        const args = params as Record<string, unknown>;
+        const localOnly = name === "reddit_profile_diagnostic" && (args.action ?? "inspect") === "inspect";
+        const urls = localOnly ? undefined : name === "reddit_search" ? [buildRedditSearchUrl(params as unknown as RedditSearchOptions)] : name === "reddit_fetch_content" ? [buildRedditPostUrl(args.url as string, params)] : [buildRedditSearchUrl({ q: "typescript", sort: "relevance", time: "all", limit: 5 })];
+        return inAuthorizationScope({ bus: pi.events, context: ctx, rootToolCallId: id, toolName: name }, () => authorized(name === "reddit_profile_diagnostic" ? `${name}.${args.action ?? "inspect"}` : name, { ...args, localOnly, authenticatedProfile: !localOnly, destinationKind: "page" }, urls, combined, () => execute(id, params, combined, update, ctx), (value) => !!value.details.status && value.details.status !== "ready"));
       },
       renderCall(args, theme) {
         const data = args as Record<string, unknown>;

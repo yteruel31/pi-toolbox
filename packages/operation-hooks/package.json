@@ -1,0 +1,20 @@
+{
+  "name": "@yteruel31/pi-operation-hooks",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Optional, awaited operation authorization protocol for Pi extensions.",
+  "author": "Yoann TERUEL <yoann@gigapay.com>",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/yteruel31/pi-toolbox.git", "directory": "packages/operation-hooks" },
+  "publishConfig": { "access": "public" },
+  "exports": { ".": "./src/index.ts" },
+  "pi": { "extensions": [] },
+  "files": ["src", "README.md", "LICENSE"],
+  "scripts": {
+    "check": "tsc --noEmit && node --import tsx --test test/*.test.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "devDependencies": { "@types/node": "^22.19.1", "typescript": "^5.9.3", "tsx": "^4.21.0" },
+  "engines": { "node": ">=22.19.0" }
+}

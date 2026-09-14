@@ -1,3 +1,5 @@
+import { authorized } from "./authorization.js";
+import { AuthorizationDenied } from "@yteruel31/pi-operation-hooks";
 import { constants } from "node:fs";
 import { lstat, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -114,9 +116,11 @@ export class RedditService {
           const search = parseSearch(searchResponse.body, { q: "typescript", sort: "relevance", time: "all", limit: 5 });
           if (!search.items[0]) throw new RedditBrowserError("invalid_response", "request");
           const postOptions = { sort: "confidence", limit: 10, depth: 2 } as const;
-          const postResponse = await this.dependencies.request(validated, buildRedditPostUrl(search.items[0].url, postOptions), { signal, profileLock: lock }, this.dependencies.browser);
+          const postUrl = buildRedditPostUrl(search.items[0].url, postOptions);
+          const postResponse = await authorized("reddit_fetch_content", { url: postUrl, ...postOptions, internal: true, authenticatedProfile: true, destinationKind: "page" }, [postUrl], signal, () => this.dependencies.request(validated, postUrl, { signal, profileLock: lock }, this.dependencies.browser));
           parsePost(postResponse.body, postOptions); status = "ready";
         } catch (error) {
+          if (error instanceof AuthorizationDenied) throw error;
           const diagnosticStatus = statusOf(error);
           if (isTransient(diagnosticStatus)) return { status: diagnosticStatus, message: messages[diagnosticStatus], eligible: false };
           status = diagnosticStatus as StoredStatus;
@@ -126,6 +130,7 @@ export class RedditService {
         return { status, message: messages[status], lastValidatedAt: validatedAt, eligible: status === "ready" };
       });
     } catch (error) {
+      if (error instanceof AuthorizationDenied) throw error;
       if (error instanceof RedditConfigError) return this.inspect();
       const status = statusOf(error);
       return { status, message: messages[status], eligible: false };

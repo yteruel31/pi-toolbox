@@ -12,9 +12,12 @@ import { GatewayClient } from "./gateway/client.js";
 import { CustomGatewayExposure, TailscaleGatewayExposure, type GatewayExposure } from "./gateway/exposure.js";
 import { TailscaleAdapter } from "./tailscale.js";
 import { McpAppController } from "./apps/controller.js";
+import { appResourceUri } from "./apps/resource.js";
 import { AppPublisher, type AppPublicationStatus } from "./apps/publisher.js";
 import { sample } from "./mcp/sampling.js";
 import { elicitForm } from "./mcp/elicitation.js";
+import type { Operation, OperationBus } from "@yteruel31/pi-operation-hooks";
+import { withMcpAuthorization, type McpOperationContext } from "./authorization.js";
 
 const Params = Type.Object({
 	server: Type.Optional(Type.String({ maxLength: 64 })),
@@ -123,6 +126,7 @@ class OutputBudget {
 }
 
 export interface McpRuntimeOptions {
+	operationBus?: OperationBus;
 	publisher?: AppPublisher;
 	onUiStatus?: (status?: AppPublicationStatus) => void;
 	publishApps?: boolean;
@@ -133,6 +137,8 @@ export interface McpRuntimeOptions {
 
 export class McpRuntime {
 	private readonly clientRequestAbort = new AbortController();
+	private readonly operationBus?: OperationBus;
+	private readonly operationContext?: ExtensionContext;
 	readonly manager: McpServerManager;
 	readonly config: McpConfig;
 	readonly serverConfigs: ReturnType<typeof parseServerConfigs>["servers"];
@@ -150,6 +156,8 @@ export class McpRuntime {
 		options: McpRuntimeOptions = {},
 	) {
 		this.config = config;
+		this.operationBus = options.operationBus;
+		this.operationContext = options.context;
 		const parsed = parseServerConfigs(config);
 		this.serverConfigs = parsed.servers;
 		this.disabledServers = parsed.disabled;
@@ -224,7 +232,20 @@ export class McpRuntime {
 		activePublisher = this.publisher;
 	}
 
-	async execute(input: Input, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
+	async authorize<T>(operation: Omit<Operation, "package">, identity: McpOperationContext, signal: AbortSignal | undefined, execute: () => Promise<T>, isError?: (value: T) => boolean): Promise<T> {
+		return withMcpAuthorization(this.operationBus, { ...operation, rootToolCallId: identity.rootToolCallId }, identity.context ?? this.operationContext, signal, execute, isError);
+	}
+
+	async execute(input: Input, signal?: AbortSignal, identity: McpOperationContext = {}): Promise<AgentToolResult<Details>> {
+		// Pin execution inputs before an evaluator can await a human decision.
+		input = structuredClone(input);
+		if (input.tool && !input.action) return this.executeInput(input, signal, identity);
+		const name = input.action ?? (input.connect ? "connect" : input.search !== undefined ? "tools-search" : input.server ? "tools-list" : "status");
+		const args = input.action === "auth-complete" ? {} : input.args ?? (input.search !== undefined ? { search: input.search } : {});
+		return this.authorize({ name, server: input.server ?? input.connect, args }, identity, signal, () => this.executeInput(input, signal, identity));
+	}
+
+	private async executeInput(input: Input, signal?: AbortSignal, identity: McpOperationContext = {}): Promise<AgentToolResult<Details>> {
 		if (input.action) {
 			if (input.action.startsWith("gateway-")) throw new Error("Gateway actions require the registered mcp tool's configuration service");
 			if (input.search !== undefined || input.connect !== undefined || input.tool !== undefined) throw new Error("MCP actions cannot be combined with another MCP operation");
@@ -301,7 +322,7 @@ export class McpRuntime {
 			return this.list(input.server);
 		}
 		if (input.search !== undefined) return this.search(input.search, signal);
-		return this.invoke(input.tool!, input.args ?? {}, input.server, signal);
+		return this.invoke(input.tool!, input.args ?? {}, input.server, signal, identity);
 	}
 
 	private async search(query: string, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
@@ -320,11 +341,11 @@ export class McpRuntime {
 			.join("\n") || "No matching MCP tools.", { count: hits.length });
 	}
 
-	async executeDirect(server: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult<Details>> {
-		return this.invoke(tool, args, server, signal);
+	async executeDirect(server: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal, identity: McpOperationContext = {}): Promise<AgentToolResult<Details>> {
+		return this.invoke(tool, structuredClone(args), server, signal, identity);
 	}
 
-	private async invoke(tool: string, args: Record<string, unknown>, server: string | undefined, signal?: AbortSignal) {
+	private async invoke(tool: string, args: Record<string, unknown>, server: string | undefined, signal: AbortSignal | undefined, identity: McpOperationContext) {
 		let targetServer = server;
 		let targetTool = tool;
 		if (!targetServer) {
@@ -336,39 +357,45 @@ export class McpRuntime {
 				targetTool = tool.slice(targetServer.length + 1);
 			}
 		}
-		if (targetServer) {
-			await this.manager.connect(targetServer, false, signal);
-			if (!this.manager.modelTool(targetServer, targetTool)) throw new Error("Unknown MCP tool");
-		} else {
-			await Promise.allSettled(this.manager.status().map((candidate) => this.manager.connect(candidate.name, false, signal)));
+		if (!targetServer) {
+			await this.authorize({ name: "tools-discover", args: { tool: targetTool } }, identity, signal,
+				async () => { await Promise.allSettled(this.manager.status().map((candidate) => this.manager.connect(candidate.name, false, signal))); });
 			const matches = this.manager.status().flatMap((candidate) =>
 				this.manager.modelTools(candidate.name).filter((item) => item.name === targetTool).map(() => candidate.name));
 			if (matches.length > 1) throw new Error("Ambiguous MCP tool name; specify server or stable alias");
 			if (!matches.length) throw new Error("Unknown MCP tool");
 			targetServer = matches[0]!;
 		}
-		const metadata = this.manager.modelTool(targetServer, targetTool)!;
-		const result = await this.manager.callFromModel(targetServer, targetTool, args, signal);
-		let ui: { state: "available" | "unavailable" } | undefined;
-		try {
-			const opened = await this.apps.open(targetServer, metadata, args, result, signal);
-			if (opened) ui = { state: this.publisher ? (await this.publisher.reconcile(this.apps.list())).state : "available" };
-		} catch {
-			ui = { state: "unavailable" };
-		}
-		const details = { server: targetServer, tool: targetTool, isError: result.isError === true, ...(ui ? { ui } : {}) };
-		const budget = new OutputBudget(details);
-		if (result.isError) budget.text("MCP tool reported an error.\n");
-		for (const item of result.content ?? []) {
-			if (item.type === "text") budget.text(item.text);
-			else if (item.type === "image") budget.image(item.data, item.mimeType);
-			else budget.text(`[${item.type}] ${safeJson(item)}`);
-		}
-		if (result.structuredContent !== undefined) {
-			budget.text(`[structured content]\n${safeJson(result.structuredContent)}`);
-		}
-		if (!budget.content.length) budget.text(result.isError ? "MCP tool reported an error." : "MCP tool returned no content.");
-		return budget.result();
+		const resolvedServer = targetServer;
+		return this.authorize({ name: "tools-call", server: resolvedServer, toolName: targetTool, args }, identity, signal, async () => {
+			await this.manager.connect(resolvedServer, false, signal);
+			if (!this.manager.modelTool(resolvedServer, targetTool)) throw new Error("Unknown MCP tool");
+			const metadata = this.manager.modelTool(resolvedServer, targetTool)!;
+			const result = await this.manager.callFromModel(resolvedServer, targetTool, args, signal);
+			let ui: { state: "available" | "unavailable" } | undefined;
+			try {
+				const uri = appResourceUri(metadata);
+				if (uri) ui = await this.authorize({ name: "apps-open", server: resolvedServer, toolName: targetTool, args: { uri } }, identity, signal, async () => {
+					const opened = await this.apps.open(resolvedServer, metadata, args, result, signal);
+					return opened ? { state: this.publisher ? (await this.publisher.reconcile(this.apps.list())).state : "available" as const } : undefined;
+				}, (value) => value?.state === "unavailable");
+			} catch {
+				ui = { state: "unavailable" };
+			}
+			const details = { server: resolvedServer, tool: targetTool, isError: result.isError === true, ...(ui ? { ui } : {}) };
+			const budget = new OutputBudget(details);
+			if (result.isError) budget.text("MCP tool reported an error.\n");
+			for (const item of result.content ?? []) {
+				if (item.type === "text") budget.text(item.text);
+				else if (item.type === "image") budget.image(item.data, item.mimeType);
+				else budget.text(`[${item.type}] ${safeJson(item)}`);
+			}
+			if (result.structuredContent !== undefined) {
+				budget.text(`[structured content]\n${safeJson(result.structuredContent)}`);
+			}
+			if (!budget.content.length) budget.text(result.isError ? "MCP tool reported an error." : "MCP tool returned no content.");
+			return budget.result();
+		}, (result) => result.details.isError === true);
 	}
 
 	async close(): Promise<void> {
@@ -424,22 +451,25 @@ export function registerMcpTool(pi: ExtensionAPI, getRuntime: () => McpRuntime |
 		description: "Inspect, search, connect to, and call MCP servers. Server configuration and OAuth do not require a gateway. Use auth-start with server, then auth-complete with server and args.redirectUrl if the user supplies the complete browser redirect URL; /mcp also offers private callback entry with c. Gateway actions: gateway-status (safe configuration state, no network), gateway-validate (external HTTPS challenge), gateway-configure (args: {mode: 'tailscale'} or {mode: 'custom', externalUrl: HTTPS base URL, listenAddress: IP}), gateway-deactivate (no args). Gateway mutations require interactive user confirmation, reuse lifecycle/rollback/locked persistence, and never configure a custom proxy. Agree on proxy, domain and public/private access before infrastructure changes. Never write gateway JSON directly. Diagnostics omit secrets and raw errors.",
 		parameters: Params,
 		async execute(_id, input, signal, _onUpdate, context) {
+			input = structuredClone(input);
 			if (input.action?.startsWith("gateway-")) {
 				if (input.server !== undefined || input.search !== undefined || input.connect !== undefined || input.tool !== undefined) throw new Error("Gateway actions cannot be combined with server operations");
 				if (input.action !== "gateway-configure" && input.args !== undefined) throw new Error("Only gateway-configure accepts gateway args");
 				if (!gateway || !getRuntime()) throw new Error("MCP gateway is unavailable before session start");
-				const report = input.action === "gateway-status" ? gateway.status()
-					: input.action === "gateway-validate" ? await gateway.validate(signal)
-					: input.action === "gateway-configure" ? await gateway.configure(input.args, context, signal)
-					: await gateway.deactivate(context, signal);
-				return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }], details: { gateway: report } };
+				return getRuntime()!.authorize({ name: input.action!, args: input.args ?? {} }, { context, rootToolCallId: _id }, signal, async () => {
+					const report = input.action === "gateway-status" ? gateway.status()
+						: input.action === "gateway-validate" ? await gateway.validate(signal)
+						: input.action === "gateway-configure" ? await gateway.configure(input.args, context, signal)
+						: await gateway.deactivate(context, signal);
+					return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }], details: { gateway: report } };
+				}, (result) => ["failed", "cancelled"].includes(result.details.gateway.state) || !!result.details.gateway.restoreDiagnostic);
 			}
 			const runtime = getRuntime();
 			if (!runtime) return {
 				content: [{ type: "text", text: "MCP is unavailable before session start." }],
 				details: { state: "unavailable" },
 			};
-			return runtime.execute(input, signal);
+			return runtime.execute(input, signal, { context, rootToolCallId: _id });
 		},
 	});
 }

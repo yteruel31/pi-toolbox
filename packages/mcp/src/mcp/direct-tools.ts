@@ -92,10 +92,10 @@ export class DirectToolRegistry {
 				this.pi.registerTool({
 					name, label: name, description: (tool.description ?? `MCP tool ${tool.name}`).slice(0, 2_000),
 					parameters: Type.Unsafe(JSON.parse(schema)),
-					execute: async (_id, args, signal) => {
+					execute: async (_id, args, signal, _onUpdate, context) => {
 						const current = this.runtime;
 						if (!current || generation !== this.generation || !desired.has(name) || !selected(current.serverConfigs.get(server.name)?.directTools, current.config.settings.directTools ?? false, tool.name) || !current.manager.modelTool(server.name, tool.name)) throw new Error("MCP direct tool is no longer available");
-						return current.executeDirect(server.name, tool.name, args as Record<string, unknown>, signal);
+						return current.executeDirect(server.name, tool.name, args as Record<string, unknown>, signal, { context, rootToolCallId: _id });
 					},
 				});
 				this.owned.add(name); this.fingerprints.set(name, fingerprint); existing.add(name);

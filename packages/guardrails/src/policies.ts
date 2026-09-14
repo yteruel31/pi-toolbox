@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Policy } from "./config.js";
 import type { Candidate, Decision } from "./types.js";
+import { fileURLToPath } from "node:url";
+import { isOperationTool, operationMatches, operationOutputPaths, operationTarget, parsedUrl, validOperationArgs } from "./operations.js";
 
 /** Resolve existing ancestors without opening the target file, including new files below symlinks. */
 export function canonicalPath(path: string, cwd: string): string {
@@ -43,34 +45,47 @@ export function complexShell(command: string): boolean {
   return /[\n\r;|&<>$`{}()\\'"*?\[\]~]|(?:^|\s)(?:eval|exec|source|env|command|bash|sh|zsh|python\S*|node|ruby|perl|xargs|find|sudo|su|doas)(?:\s|$)|(?:^|\s)\w+=/.test(command);
 }
 export function describeCandidate(c: Candidate): { target: string; operation: string } {
+  if (isOperationTool(c.tool)) return { target: operationTarget(c), operation: validOperationArgs(c.args) ? c.args.operation : "invalid-operation" };
   if (c.tool !== "bash") return { target: canonicalPath(String(c.args.path ?? ""), c.cwd), operation: c.tool };
   const command = String(c.args.command ?? "").trim();
   return { target: canonicalPath(c.cwd, c.cwd), operation: complexShell(command) ? "shell-complex" : command.split(/\s+/).slice(0, command.startsWith("git ") ? 2 : 1).join(" ").slice(0, 100) };
 }
 export function applicable(p: Policy, c: Candidate, target: string): boolean {
   if (!p.enabled || (p.scope !== "both" && p.scope !== c.actor.kind) || !p.tools.includes(c.tool)) return false;
+  if (!operationMatches(p, c)) return false;
   if (p.conditions.preset && !presetMatch(p.conditions.preset, c, target)) return false;
   // A path rule cannot establish what an arbitrary shell command will access.
-  if (p.conditions.pathPrefix && (c.tool === "bash" || !within(canonicalPath(p.conditions.pathPrefix, c.project), target))) return false;
+  if (p.conditions.pathPrefix && (c.tool === "bash" || isOperationTool(c.tool) || !within(canonicalPath(p.conditions.pathPrefix, c.project), target))) return false;
   if (p.conditions.command && (c.tool !== "bash" || c.args.command !== p.conditions.command)) return false;
   return true;
 }
 export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPaths: string[]): { decision?: Decision; natural: Policy[]; target: string; operation: string } {
-  const oversized = c.tool === "bash" ? typeof c.args.command !== "string" || c.args.command.length > 16000 : typeof c.args.path !== "string" || c.args.path.length > 4096;
-  if (oversized) return { target: c.cwd, operation: c.tool, natural: [], decision: { action: "Deny", origin: "policy", reason: "Tool arguments are invalid or exceed the assessment budget (16000 command / 4096 path characters).", policyIds: ["builtin.argument-budget"], historyIds: [] } };
+  const oversized = isOperationTool(c.tool) ? !validOperationArgs(c.args) : c.tool === "bash" ? typeof c.args.command !== "string" || c.args.command.length > 16000 : typeof c.args.path !== "string" || c.args.path.length > 4096;
+  if (oversized) return { target: c.cwd, operation: c.tool, natural: [], decision: { action: "Deny", origin: "policy", reason: "Tool arguments are invalid or exceed the assessment budget (16000 command / 4096 path characters; operations: 64 KB, 12 levels, 32 URLs).", policyIds: ["builtin.argument-budget"], historyIds: [] } };
   const { target, operation } = describeCandidate(c);
   const result = (action: Decision["action"], reason: string, policyIds: string[]): Decision => ({ action, origin: "policy", reason, policyIds, historyIds: [] });
   const command = String(c.args.command ?? "");
   const self = c.tool === "write" || c.tool === "edit"
     ? protectedPaths.some((p) => within(canonicalPath(p, c.cwd), target))
     : c.tool === "bash" && (/(?:guardrails(?:\.json)?|(?:^|[\s/])\.pi(?:\/|\b))/.test(command.replace(/["'\\]/g, "")) || protectedPaths.some((p) => command.includes(p)));
-  if (self) return { target, operation, natural: [], decision: result("Deny", "Guardrails configuration/runtime self-modification is protected. Use the human configuration panel or an external editor.", ["builtin.self-protection"]) };
+  const localOperationPaths = operationOutputPaths(c);
+  if (c.tool === "web-access" && validOperationArgs(c.args)) {
+    for (const value of c.args.urls ?? []) {
+      const url = parsedUrl(value)!;
+      if (url.protocol === "file:") {
+        try { localOperationPaths.push(fileURLToPath(url)); }
+        catch { return { target, operation, natural: [], decision: result("Deny", "Invalid local web target.", ["builtin.argument-budget"]) }; }
+      }
+    }
+  }
+  const operationSelf = localOperationPaths.some((path) => protectedPaths.some((p) => within(canonicalPath(p, c.cwd), canonicalPath(path, c.cwd))));
+  if (self || operationSelf) return { target, operation, natural: [], decision: result("Deny", "Guardrails configuration/runtime self-modification is protected. Use the human configuration panel or an external editor.", ["builtin.self-protection"]) };
   const matches = policies.filter((p) => applicable(p, c, target));
   const structured = matches.filter((p) => p.kind === "structured");
   const natural = matches.filter((p) => p.kind === "natural");
   for (const action of ["Deny", "Ask"] as const) {
     const hits = structured.filter((p) => p.action === action);
-    if (hits.length) return { target, operation, natural, decision: result(action, hits.map((p) => `${p.name}: ${action} (${JSON.stringify(p.conditions)})`).join("; "), hits.map((p) => p.id)) };
+    if (hits.length) return { target, operation, natural, decision: result(action, hits.map((p) => `${p.name}: ${action}${isOperationTool(c.tool) ? " (operation conditions matched locally)" : ` (${JSON.stringify(p.conditions)})`}`).join("; "), hits.map((p) => p.id)) };
   }
   const allows = structured.filter((p) => p.action === "Allow");
   // Do not treat a prefix/regex or an exact complex shell string as proof of harmless execution.

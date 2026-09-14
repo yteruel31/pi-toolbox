@@ -41,7 +41,7 @@ export function decisionIcon(e: HistoryEntry, theme: Theme): string {
   return theme.fg(c === "auto" ? "success" : c === "human" ? "accent" : c === "attention" ? "warning" : "error", c === "auto" || c === "human" ? "✓" : c === "attention" ? "!" : "✕");
 }
 export function historyDetail(e: HistoryEntry): string[] {
-  return [e.summary, "", `Decision: ${e.action} · ${e.origin}`, `State: ${e.state}`, `Reason: ${e.reason}`,
+  return [e.summary, "", `Decision: ${e.action} · ${e.origin}`, `State: ${e.state}`, `Target: ${e.target}`, `Operation: ${e.operation}`, `Reason: ${e.reason}`,
     `Human choice: ${e.choice ?? "none (automatic decision)"}`, `Execution: ${e.execution} (Pi observation only)`,
     `Actor: ${actorLabel(e)}`, `Project: ${e.project}`, `Session: ${e.sessionId}`, `Cwd: ${e.cwd}`,
     `Child session: ${e.actor.kind === "subagent" ? e.actor.childSessionId ?? "not reported" : "not applicable"}`,
@@ -200,7 +200,7 @@ export class GuardrailsPanel implements Component, Focusable {
         `Model route: ${this.o.draft.model || "active parent Pi model"}`, "Independent judge thinking defaults to off.",
         "Worker Ask and headless Ask always block. Main Ask requires approval.", `Configuration: ${this.o.snapshot.error ?? "valid"}`, this.o.snapshot.projectStatus,
         "Global settings own activation, model and policies. Project config only adds restrictions.",
-        "Coverage: main and Pi child bash/read/write/edit. Not an OS sandbox. Claude is unchanged.",
+        "Coverage: native bash/read/write/edit plus integrated MCP/web operations. No new worker tools. Not an OS sandbox. Claude is unchanged.",
         "History records decisions and reported results, not a tamper-proof security audit.", ...(s.notice ? ["", sanitize(s.notice)] : [])];
       body = this.scrollLines(lines, inner, bodyRows);
     } else if (s.tab === "Policies") {

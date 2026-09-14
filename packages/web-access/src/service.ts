@@ -4,6 +4,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import type { WebConfig } from "./config.js";
 import { resolveKey } from "./config.js";
 import { request } from "./network.js";
+import { pageRequestAuthorization } from "./authorization.js";
 import { ContentStore, type Document } from "./store.js";
 import { search, type Provider } from "./providers.js";
 import { extractHtml, extractPdf } from "./extraction.js";
@@ -42,6 +43,7 @@ export class WebService {
     }));
   }
   async fetch(input: FetchInput, cwd: string, signal?: AbortSignal): Promise<Fetched> {
+    const authorize = pageRequestAuthorization([input.url]);
     const timeoutMs = this.config.fetch.timeoutMs;
     const budget = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]);
     const local = !/^https?:\/\//i.test(input.url);
@@ -61,7 +63,7 @@ export class WebService {
         return { ...result, url: input.url };
       } finally { this.clonesInFlight--; }
     }
-    const response = await request(input.url, { timeoutMs, signal: budget, maxBytes: this.config.fetch.maxBytes });
+    const response = await request(input.url, { timeoutMs, signal: budget, maxBytes: this.config.fetch.maxBytes, authorize });
     const mime = response.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() ?? "";
     const base = { url: response.url, title: response.url, status: response.status };
     if (input.mode === "raw") {
@@ -83,7 +85,7 @@ export class WebService {
     const extracted = extractHtml(body, response.url);
     const render = input.render ?? this.config.fetch.javascript;
     if (render === "always" || (render === "auto" && extracted.content.trim().length < 200)) {
-      const html = await renderPage(response.url, { timeoutMs, signal: budget, request: (url, opts) => request(url, { ...opts, timeoutMs, signal: budget, maxBytes: this.config.fetch.maxBytes }) });
+      const html = await renderPage(response.url, { timeoutMs, signal: budget, request: (url, opts) => request(url, { ...opts, timeoutMs, signal: budget, maxBytes: this.config.fetch.maxBytes, authorize }) });
       const rendered = extractHtml(html, response.url);
       return { ...base, ...rendered, method: "chromium", warning: rendered.content.length < 200 ? "Rendered page still contains little text" : undefined };
     }

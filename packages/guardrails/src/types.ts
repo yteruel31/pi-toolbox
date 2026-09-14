@@ -1,5 +1,6 @@
 export type Action = "Allow" | "Ask" | "Deny";
-export type Tool = "bash" | "read" | "write" | "edit";
+export type NativeTool = "bash" | "read" | "write" | "edit";
+export type Tool = NativeTool | "mcp" | "web-access";
 export type Actor = { kind: "main" } | { kind: "subagent"; runId: string; profile?: string; childSessionId?: string };
 export interface Candidate {
   tool: Tool;
@@ -38,4 +39,6 @@ export interface HistoryEntry extends Decision {
   execution: "not-observed" | "blocked" | "reported-success" | "reported-error";
 }
 export interface Block { block: true; reason: string; terminate?: boolean }
-export function isTool(value: string): value is Tool { return ["bash", "read", "write", "edit"].includes(value); }
+/** Native interception must not mistake operation families for Pi tool names. */
+export function isTool(value: string): value is NativeTool { return ["bash", "read", "write", "edit"].includes(value); }
+export function isSupportedTool(value: string): value is Tool { return isTool(value) || value === "mcp" || value === "web-access"; }

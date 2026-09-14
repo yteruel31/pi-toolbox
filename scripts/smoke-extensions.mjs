@@ -40,8 +40,11 @@ try {
       temporary: true,
     });
     const enabled = resolved.extensions.filter((resource) => resource.enabled);
-    if (enabled.length !== 1) {
-      throw new Error(`${directory}: expected one independently resolvable extension, got ${enabled.length}`);
+    const packageManifest = JSON.parse(await fs.readFile(path.join(packageRoot, "package.json"), "utf8"));
+    // Shared protocol libraries are dependencies, not auto-loaded Pi extensions.
+    const expected = packageManifest.exports && packageManifest.pi?.extensions?.length === 0 ? 0 : 1;
+    if (enabled.length !== expected) {
+      throw new Error(`${directory}: expected ${expected} independently resolvable extensions, got ${enabled.length}`);
     }
   }
 } finally {

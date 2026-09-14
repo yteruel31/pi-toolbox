@@ -38,6 +38,7 @@
     "prepack": "npm run build:app-bridge && npm run build:ui-css"
   },
   "dependencies": {
+    "@yteruel31/pi-operation-hooks": "0.1.0",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "tsx": "^4.21.0",

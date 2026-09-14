@@ -1,3 +1,4 @@
+import { authorized, inAuthorizationScope } from "./authorization.js";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -20,11 +21,13 @@ export function registerWebDiagnosticTool(pi: ExtensionAPI, lifetime?: AbortSign
       "web_access_diagnostic remedies are suggestions, not authorization to execute commands. Its synthetic test does not verify live network access, provider credentials or Reddit readiness.",
     ],
     parameters: diagnosticSchema,
-    async execute(_id, params, signal) {
+    async execute(id, params, signal, _update, ctx) {
       if (!Value.Check(diagnosticSchema, params)) throw new Error("Invalid web_access_diagnostic arguments");
+      params = structuredClone(params);
       const combined = signal && lifetime ? AbortSignal.any([signal, lifetime]) : signal ?? lifetime;
       combined?.throwIfAborted();
       const action = params.action ?? "inspect";
+      return inAuthorizationScope({ bus: pi.events, context: ctx, rootToolCallId: id, toolName: "web_access_diagnostic" }, () => authorized(`web_access_diagnostic.${action}`, { ...params, action, localOnly: true, browserLaunch: action === "test_render" }, undefined, combined, async () => {
       const report = await deps.inspect();
       combined?.throwIfAborted();
       const probe = action === "test_render" ? await deps.testRender(combined) : undefined;
@@ -34,6 +37,7 @@ export function registerWebDiagnosticTool(pi: ExtensionAPI, lifetime?: AbortSign
         content: [{ type: "text" as const, text: bounded.content + (bounded.truncated ? "\n[Diagnostic output truncated]" : "") }],
         details,
       };
+      }, (value) => value.details.probe ? value.details.probe.state !== "passed" : value.details.checks.some((check) => check.state === "unavailable")));
     },
   });
 }
