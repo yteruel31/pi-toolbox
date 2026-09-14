@@ -1,6 +1,6 @@
 # Pi Web Access
 
-Eight Pi tools for bounded web research and opt-in authenticated Reddit reads. When the enabled package activates without collisions, five core tools and the Reddit diagnostic are available; the two Reddit content tools appear only after the explicitly configured profile has passed validation and Pi has been reloaded. This package is independent of `pi-web-access`; it isn't a full clone and doesn't change an existing installation or import its credentials.
+Nine Pi tools for bounded web research and opt-in authenticated Reddit reads. When the enabled package activates without collisions, six core tools and the Reddit diagnostic are available; the two Reddit content tools appear only after the explicitly configured profile has passed validation and Pi has been reloaded. This package is independent of `pi-web-access`; it isn't a full clone and doesn't change an existing installation or import its credentials.
 
 ## Tools
 
@@ -11,6 +11,7 @@ Eight Pi tools for bounded web research and opt-in authenticated Reddit reads. W
 | `get_search_content` | Bounded retrieval by response ID, document selection, character pagination and exact/case-insensitive passage finding |
 | `source_check` | Search, fetch up to five sources, assess a claim with a Pi model, and validate quoted evidence against the retrieved text |
 | `deep_research` | Start, inspect, retrieve or cancel native Gemini/OpenAI background research; save the complete report locally as Markdown |
+| `web_access_diagnostic` | Inspect local rendering prerequisites or run the synthetic isolated render test; returns checks, failure codes and suggested remedies without performing repairs |
 | `reddit_profile_diagnostic` | Inspect Reddit readiness using only local filesystem metadata, or explicitly run one bounded search plus one bounded post request; never creates/copies a profile or changes tool availability mid-conversation |
 | `reddit_search` | Search one Reddit result page through the explicitly selected native profile; 1–25 posts, with an `after` cursor returned but never followed automatically |
 | `reddit_fetch_content` | Read one recognized Reddit post URL and a partial comment tree; 1–100 comments and depth 1–10, without fetching `more` children automatically |
@@ -21,7 +22,7 @@ No curator browser UI, OCR, audio transcription, video model calls, hosted extra
 
 The package is not yet published to npm. It can be loaded from this checkout or through the toolbox's Git package. Runtime TypeScript is the published entrypoint; `npm run build` provides a compile/bundle verification artifact, not a replacement installation directory.
 
-Don't load this extension alongside another extension or SDK `customTool` registering any of its eight tool names (`web_search`, `fetch_content`, `get_search_content`, `source_check`, `deep_research`, `reddit_profile_diagnostic`, `reddit_search`, or `reddit_fetch_content`). Registration happens at `session_start`, after existing tools are visible. If any name is already present—even a conditional Reddit content name—activation fails and this package registers **none** of its tools. The conflicting owner remains in place and an actionable error is reported. It never renames, disables or silently replaces another tool. Extensions that dynamically register conflicting names later must also be disabled by the user; collision detection cannot reserve names against later registration.
+Don't load this extension alongside another extension or SDK `customTool` registering any of its nine tool names (`web_search`, `fetch_content`, `get_search_content`, `source_check`, `deep_research`, `web_access_diagnostic`, `reddit_profile_diagnostic`, `reddit_search`, or `reddit_fetch_content`). Registration happens at `session_start`, after existing tools are visible. If any name is already present—even a conditional Reddit content name—activation fails and this package registers **none** of its tools. The conflicting owner remains in place and an actionable error is reported. It never renames, disables or silently replaces another tool. Extensions that dynamically register conflicting names later must also be disabled by the user; collision detection cannot reserve names against later registration.
 
 For migration, use `pi config` to disable the old extension before enabling this one, then `/reload`. Review the configuration below and explicitly recreate the settings you want. Old `~/.pi/web-search.json`, credentials, browser profiles and installed packages are untouched. To leave this package inactive within the toolbox, set `enabled` to `false` in its configuration.
 
@@ -88,6 +89,12 @@ Classic HTTP remains available without Linux/browser/bwrap dependencies. With `a
 General-renderer errors distinguish missing bwrap, missing or incompatible browser, unsupported OS, observed launch namespace/AppArmor denials, parent-request failure, timeout/cancellation, and unknown launch/render causes. Only **launch** output is classified as sandbox evidence; page-controlled errors cannot establish an AppArmor denial. Raw browser logs, environment values, configured browser paths, and nested error causes are not returned. A generic permission error or `No usable sandbox` is not enough to blame AppArmor.
 
 Reddit errors separately report unconfigured/unsafe paths, unavailable browser, busy profile, timeout, cancellation, or HTTP 403 access denial. A 403 alone does **not** prove logout, missing cookies, or a missing profile, and the tools do not loop or retry it. Verify Reddit access manually in the selected profile and resolve the reported condition before testing again. For `profile_busy`, close every browser using that user-data root. Chromium `SingletonLock` and `.pi-web-access-reddit.lock` are never recovered automatically: remove a lock manually only after verifying no Chrome/Pi operation uses the profile. A cancellation may finish cleanup later; a retained private lock after browser-close failure is intentional evidence of uncertain process state.
+
+### Agent rendering diagnostic
+
+`web_access_diagnostic({ action: "inspect" })` (also the default with no action) reads the same local browser prerequisites as the Diagnostic tab. It doesn't launch a browser. `web_access_diagnostic({ action: "test_render" })` adds the existing synthetic test with its 10-second render timeout, production isolation and cleanup, and cancellation on tool abort or session shutdown. Neither action makes external requests, spends API credits, reads credentials, or tests Reddit.
+
+Results include `checks`, `remedies`, and, for a test, `probe.state`, `probe.summary`, and `probe.code` on failure or cancellation. A failed probe is a diagnostic result, not an exception that discards the checks. Text output is capped at 40,000 bytes / 1,500 lines. The agent can inspect, propose a repair, and retest, but must request explicit user confirmation before installing packages or changing any system configuration. Remedies aren't execution authorization. The tool has no repair action and never changes AppArmor, namespace settings, browser installation, or configuration. This guidance doesn't enforce permissions on other tools such as `bash`.
 
 ### Ubuntu 26.04 targeted AppArmor repair
 
