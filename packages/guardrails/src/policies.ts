@@ -117,7 +117,9 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
   const matches = policies.filter((p) => (judgeEnabled || p.kind === "structured") && applicable(p, c, target));
   const structured = matches.filter((p) => p.kind === "structured");
   const natural = matches.filter((p) => p.kind === "natural");
-  const builtin = deterministicDecision(c, protectedPaths, sensitivePaths);
+  let builtin: Decision | undefined;
+  try { builtin = deterministicDecision(c, protectedPaths, sensitivePaths); }
+  catch { return { target, operation, natural, decision: result("Deny", "Local safety inspection failed; the operation cannot be proven safe.", ["builtin.inspection-failed"]) }; }
   const unresolvedShell = c.tool === "bash" && shell === "Ask";
   const denies = structured.filter((p) => p.action === "Deny");
   if (denies.length) return { target, operation, natural, decision: result("Deny", denies.map((p) => `${p.name}: Deny${isOperationTool(c.tool) ? " (operation conditions matched locally)" : ` (${JSON.stringify(p.conditions)})`}`).join("; "), denies.map((p) => p.id)) };

@@ -12,11 +12,14 @@ export interface Candidate {
   project: string;
   leafId?: string;
 }
+export type AssessmentRisk = "sensitive-transfer" | "external-modification" | "unrecoverable-loss" | "guardrail-modification" | "uncertainty";
+export type AssessmentFailure = "credentials" | "timeout" | "transport" | "invalid-response" | "cancelled" | "model-selection";
 export interface JevDiagnostics {
   probabilities: Record<Action, number>;
   restrictions: [string, number][];
+  risks?: [AssessmentRisk, number][];
   thresholds: { allow: number; deny: number; restrictive: number };
-  reasons: ("generic-allow" | "generic-deny" | "restrictive-policy" | "generic-uncertain" | "incomplete-input" | "redacted-input")[];
+  reasons: ("generic-allow" | "generic-deny" | "restrictive-policy" | "generic-uncertain" | "incomplete-input" | "redacted-input" | "atomic-risk")[];
 }
 export interface Decision {
   action: Action;
@@ -26,6 +29,7 @@ export interface Decision {
   historyIds: string[];
   model?: { route: string; thinking: string; durationMs: number };
   jev?: JevDiagnostics;
+  failure?: AssessmentFailure;
 }
 export interface HistoryEntry extends Decision {
   id: string;

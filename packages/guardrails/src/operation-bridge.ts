@@ -46,6 +46,17 @@ export function provideOperationGate(
       if (block?.terminate) void ctx.abort();
       return block;
     },
+    async inspectDelivery(delivery, signal) {
+      if (signal.aborted || current.controller.signal.aborted || ctx.sessionManager.getSessionId() !== current.sessionId) return { block: true, reason: "Operation result withheld because delivery inspection was cancelled." };
+      const incomingApproval: Approval | undefined = ctx.hasUI ? async (entry, approvalSignal) => {
+        const choice = await ctx.ui.select(`${entry.reason}\nThe result body is hidden. Release this one result?`, ["Keep withheld", "Release once"], { signal: approvalSignal });
+        return choice === "Release once" ? "allow-once" : "deny";
+      } : undefined;
+      const block = await engine.inspectIncoming(candidate, delivery, incomingApproval, AbortSignal.any([signal, current.controller.signal, ...(ctx.signal ? [ctx.signal] : [])]));
+      if (signal.aborted || current.controller.signal.aborted || ctx.sessionManager.getSessionId() !== current.sessionId) return { block: true, reason: "Operation result withheld because its session ended before release." };
+      if (block?.terminate) void ctx.abort();
+      return block;
+    },
     result(isError) { engine.result(candidate, isError); },
   };
 }

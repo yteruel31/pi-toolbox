@@ -64,7 +64,6 @@ test("unknown execution stays unresolved, even with exact and natural Allow", ()
     "file -C -m /project/.pi/magic", "printf -vPATH x", "rm ~other/.pi/config",
     "rm '~/.pi/config'", "rm \\~/.pi/config", "rm ''~/.pi/config",
     "ln -s /project/.pi /tmp/new-alias; tee /tmp/new-alias/config",
-    "cp -a /tmp/alias /tmp/new-alias; rm /tmp/new-alias/config",
     "> /tmp/log cd /tmp; rm .pi/guardrails.json", "echo\u00a0guardrails",
     "cp -rT /tmp/source /project", "cp -r /tmp/source/. /project",
     "git diff --out=/project/.pi/config", "sed -i -f /project/.pi/rewrite.sed /tmp/notes",
@@ -80,6 +79,20 @@ test("unknown execution stays unresolved, even with exact and natural Allow", ()
     assert.equal(evaluatePolicies(candidate({ args: { command } }), [rules[0]], protectedPaths).decision, undefined, command);
     assert.equal(evaluatePolicies(candidate({ args: { command } }), [policy({ action: "Deny" })], protectedPaths).decision?.action, "Deny", command);
   }
+});
+
+test("failed inspection of a copied alias denies before destructive fallback", () => {
+  const root = mkdtempSync(join(tmpdir(), "shell-copy-alias-"));
+  try {
+    const source = join(root, "alias");
+    const destination = join(root, "new-alias");
+    mkdirSync(source);
+    writeFileSync(join(source, "config"), "fixture");
+    const command = `cp -a ${source} ${destination}; rm ${destination}/config`;
+    const result = evaluatePolicies(candidate({ args: { command } }), [], protectedPaths).decision;
+    assert.equal(result?.action, "Deny");
+    assert.equal(result?.policyIds[0], "builtin.inspection-failed");
+  } finally { rmSync(root, { recursive: true }); }
 });
 
 test("known executable prefixes still deny before unsupported syntax", () => {
@@ -109,7 +122,9 @@ test("relative and symlink shell destinations use real ancestors and component b
     for (const command of ["echo x > alias/new", "rm -rf alias", "cp /tmp/new ./private/new", "rm -rf ."]) {
       assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command } }), [], [join(root, "private")]).decision?.action, "Deny", command);
     }
-    assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "rm -rf private-other" } }), [], [join(root, "private")]).decision, undefined);
+    const siblingRemoval = evaluatePolicies(candidate({ cwd: root, args: { command: "rm -rf private-other" } }), [], [join(root, "private")]).decision;
+    assert.equal(siblingRemoval?.action, "Ask");
+    assert.equal(siblingRemoval?.policyIds[0], "builtin.destructive-target");
     mkdirSync(join(root, "staging"));
     writeFileSync(join(root, "private", "config"), "fixture");
     symlinkSync(join(root, "private", "config"), join(root, "staging", "config"));

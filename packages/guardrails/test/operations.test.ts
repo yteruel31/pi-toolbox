@@ -4,19 +4,72 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ConfigStore, configSchema, conditionSchema, defaultConfig, operationPresets, policySchema } from "../src/config.js";
+import { ConfigStore, configSchema, conditionSchema, defaultConfig, operationPresets, policySchema, presets } from "../src/config.js";
 import { GuardrailsEngine } from "../src/engine.js";
 import { HistoryStore, filterHistory, relevantHistory } from "../src/history.js";
 import { judge } from "../src/judge.js";
-import { argumentAt, boundedJson, parseDryRunInput, validOperationArgs } from "../src/operations.js";
+import { argumentAt, boundedJson, operationRiskDecision, parseDryRunInput, validOperationArgs } from "../src/operations.js";
 import { describeCandidate, evaluatePolicies } from "../src/policies.js";
 import { candidateView, operationView } from "../src/sanitize.js";
 import { isSupportedTool, isTool, type Candidate } from "../src/types.js";
 import { bridge, candidate, config, entry, policy } from "./helpers.js";
 
-const operation = (args: Record<string, unknown> = {}, tool: Candidate["tool"] = "web-access") => candidate({ tool, args: { operation: "fetch_content", arguments: {}, ...args } });
+const operation = (args: Record<string, unknown> = {}, tool: Candidate["tool"] = "web-access") => candidate({ tool, args: { operation: "custom-operation", arguments: {}, ...args } });
 const rule = (conditions: ReturnType<typeof conditionSchema.parse>, action: "Allow" | "Ask" | "Deny" = "Allow") => policy({ tools: ["mcp", "web-access"], conditions, action });
 const evaluate = (c: Candidate, rules = [rule({})], protectedPaths: string[] = []) => evaluatePolicies(c, rules, protectedPaths);
+
+test("only concrete local discovery and public non-sensitive outbound reads auto-allow", () => {
+  for (const c of [operation({ operation: "status" }, "mcp"), operation({ operation: "tools-list" }, "mcp"), operation({ operation: "web_search", urls: ["https://api.search.brave.com/"], arguments: { query: "TypeScript releases" } })]) {
+    assert.equal(evaluate(c, []).decision?.action, "Allow");
+    assert.equal(evaluate(c, [rule({}, "Ask")]).decision?.action, "Ask");
+  }
+  for (const c of [
+    operation({ operation: "resources-read", server: "files", arguments: { uri: "file:///private" } }, "mcp"),
+    operation({ operation: "tools-call", toolName: "list_items" }, "mcp"),
+    operation({ operation: "deep_research.result" }),
+    operation({ operation: "web_search", urls: ["http://127.0.0.1/search"], arguments: { query: "public" } }),
+  ]) assert.equal(evaluate(c, []).decision, undefined, JSON.stringify(c.args));
+});
+
+test("stored content retrieval accepts opaque local cache IDs without weakening remote reads", () => {
+  for (const responseId of ["a".repeat(32), "b".repeat(64)]) {
+    assert.equal(evaluate(operation({ operation: "get_search_content", arguments: { responseId, offset: 10, limit: 200, query: "docs" } }), []).decision?.action, "Allow");
+  }
+  assert.equal(evaluate(operation({ operation: "web_search", urls: ["https://api.search.brave.com/"], arguments: { query: "a".repeat(32) } }), []).decision?.action, "Ask");
+});
+
+test("known outbound secrets impose an Ask floor before explicit Allows", () => {
+  const risky = [
+    operation({ operation: "web_search", urls: ["https://api.search.brave.com/"], arguments: { query: "password=hunter2" } }),
+    operation({ operation: "fetch_content", urls: ["https://example.org/?token=abcdef"] }),
+    operation({ operation: "fetch_content", urls: ["https://example.org/path/ghp_FAKEEXAMPLE123456789"] }),
+  ];
+  for (const c of risky) {
+    assert.equal(operationRiskDecision(c), "Ask");
+    assert.equal(evaluate(c, [rule({}, "Allow")]).decision?.action, "Ask");
+    assert.equal(evaluatePolicies(c, [rule({}, "Allow")], [], false).decision?.action, "Ask");
+  }
+  assert.equal(evaluate(operation({ operation: "web_search", urls: ["https://api.search.brave.com/"], arguments: { query: "TypeScript async iterator tutorial" } }), []).decision?.action, "Allow");
+  assert.equal(evaluate(operation({ operation: "fetch_content", urls: ["https://example.org/docs"] }), []).decision?.action, "Allow");
+});
+
+test("actual MCP discovery metadata is narrow and outbound credentials impose an Ask floor", () => {
+  for (const operationName of ["status", "tools-search", "tools-list", "tools-discover"]) {
+    assert.equal(evaluate(operation({ operation: operationName, arguments: operationName === "tools-search" ? { search: "TypeScript docs" } : {} }, "mcp"), []).decision?.action, "Allow");
+  }
+  assert.equal(evaluate(operation({ operation: "tools-call", toolName: "list_items" }, "mcp"), []).decision, undefined);
+  const risky = [
+    operation({ operation: "tools-call", toolName: "publish", arguments: { password: "hunter2" } }, "mcp"),
+    operation({ operation: "tools-call", toolName: "publish", urls: ["https://example.org/?token=abcdef"] }, "mcp"),
+    operation({ operation: "resources-read", server: "remote", arguments: { uri: "https://example.org/ghp_FAKEEXAMPLE123456789" } }, "mcp"),
+  ];
+  for (const c of risky) {
+    assert.equal(operationRiskDecision(c), "Ask");
+    assert.equal(evaluate(c, [rule({}, "Allow")]).decision?.action, "Ask");
+    assert.equal(evaluatePolicies(c, [rule({}, "Allow")], [], false).decision?.action, "Ask");
+    assert.equal(evaluatePolicies(c, [rule({}, "Allow")], [], true).decision?.action, "Ask");
+  }
+});
 
 test("operation tool families do not expand native interception", () => {
   for (const tool of ["mcp", "web-access"]) { assert.equal(isTool(tool), false); assert.equal(isSupportedTool(tool), true); }
@@ -24,15 +77,19 @@ test("operation tool families do not expand native interception", () => {
   assert.equal(isSupportedTool("mcp_anything"), false);
 });
 
-test("version 1 legacy configs remain identical; optional operation presets are not defaults", () => {
-  const legacy = defaultConfig();
-  assert.deepEqual(configSchema.parse(legacy), legacy);
-  assert.equal(legacy.enabled, false);
-  assert.ok(legacy.policies.every((p) => !p.tools.includes("mcp") && !p.tools.includes("web-access")));
+test("new defaults omit the broad destructive-files prompt while saved policies remain unchanged", () => {
+  const fresh = defaultConfig();
+  assert.deepEqual(configSchema.parse(fresh), fresh);
+  assert.equal(fresh.enabled, false);
+  assert.equal(fresh.policies.some((p) => p.id === "destructive-files"), false);
+  assert.ok(fresh.policies.every((p) => !p.tools.includes("mcp") && !p.tools.includes("web-access")));
+  const saved = { ...fresh, policies: [{ ...presets.find((p) => p.id === "destructive-files")!, action: "Ask" as const }] };
+  assert.equal(configSchema.parse(saved).policies[0]?.action, "Ask");
+  assert.equal(configSchema.parse({ ...saved, policies: [{ ...saved.policies[0]!, action: "Deny" }] }).policies[0]?.action, "Deny");
   for (const preset of operationPresets) {
     assert.ok(policySchema.safeParse(preset).success);
     assert.equal(preset.action, "Ask");
-    assert.equal(legacy.policies.some((p) => p.id === preset.id), false);
+    assert.equal(fresh.policies.some((p) => p.id === preset.id), false);
     assert.equal(evaluate(operation({}, preset.tools[0]), [preset]).decision?.action, "Ask");
   }
   assert.ok(policySchema.safeParse(policy({ tools: ["bash", "read", "write", "edit", "mcp", "web-access"] })).success);
@@ -113,7 +170,7 @@ test("operation validation rejects malformed, exotic, cyclic, sparse and over-bu
 });
 
 test("deep masking hides credentials, queries and body/content before model assessment", async () => {
-  const c = operation({ urls: ["https://username:password@example.com/docs?private-query=yes#fragment"], arguments: {
+  const c = operation({ operation: "fetch_content", urls: ["https://username:password@example.com/docs?private-query=yes#fragment"], arguments: {
     nested: { apiKey: "sensitive-key", auth: { cookie: "session-secret" }, body: { arbitrary: "body-secret" }, content: "content-secret", query: "query-secret", prompt: "prompt-secret" },
     links: ["https://username-only@example.com/a?query-secret", { authorization: "Bearer bearer-secret" }],
     limit: 3,
@@ -124,14 +181,15 @@ test("deep masking hides credentials, queries and body/content before model asse
   const view = candidateView(c, described.target, described.operation);
   assert.equal(view.assessmentIncomplete, true);
   const json = JSON.stringify(view);
-  for (const secret of ["username", "password", "private-query", "fragment", "sensitive-key", "session-secret", "body-secret", "content-secret", "query-secret", "prompt-secret", "bearer-secret"]) assert.ok(!json.includes(secret), secret);
+  for (const secret of ["username", "password", "private-query", "fragment", "sensitive-key", "session-secret", "body-secret", "content-secret", "prompt-secret", "bearer-secret"]) assert.ok(!json.includes(secret), secret);
+  assert.ok(json.includes("query-secret"), "ordinary query text remains assessable");
   const fake = bridge(); let prompt = "";
   const complete = fake.complete;
   fake.complete = async (m, context, opts) => { prompt = JSON.stringify(context); assert.equal(context.tools, undefined); return complete(m, context, opts); };
   const verdict = await judge(fake, config(), c, [], [], described.target, described.operation);
   assert.equal(verdict.action, "Ask");
   assert.ok(!prompt.includes("sensitive-key"));
-  assert.equal(evaluate(c, [rule({ domain: "example.com" })]).decision?.action, "Allow", "explicit local rules still inspect originals");
+  assert.equal(evaluate(c, [rule({ domain: "example.com" })]).decision?.action, "Ask", "known outbound risk overrides explicit Allow");
 });
 
 test("truncated, sanitized and omitted operation values cannot be model-autoallowed", async () => {
@@ -183,12 +241,12 @@ test("operation history supports lifecycle, privacy, filtering, and same-project
   try {
     const cfg = config({ policies: [rule({ domain: "example.com" })] });
     const engine = new GuardrailsEngine({ load: async () => ({ config: cfg, policies: cfg.policies, revision: "", projectStatus: "" }), bridge: bridge(), history, protectedPaths: [], signal: new AbortController().signal });
-    const c = operation({ urls: ["https://u:secret@example.com/docs?token=hidden"], arguments: { body: "hidden-body" } });
+    const c = operation({ urls: ["https://example.com/docs"], arguments: { note: "public" } });
     assert.equal(await engine.assess(c), undefined);
     engine.result(c, false);
     const rows = history.list();
     assert.equal(rows.length, 1); assert.equal(rows[0].tool, "web-access"); assert.equal(rows[0].execution, "reported-success");
-    assert.ok(!JSON.stringify(rows).includes("hidden")); assert.ok(!JSON.stringify(rows).includes("u:secret"));
+    assert.ok(!JSON.stringify(rows).includes("public"));
     history.put(entry({ tool: "mcp", summary: "mcp catalog", target: "server:catalog", operation: "lookup" }));
     assert.equal(filterHistory(history.list(), { search: "lookup" }).length, 1);
     assert.equal(filterHistory(history.list(), { search: "example.com" }).length, 1);

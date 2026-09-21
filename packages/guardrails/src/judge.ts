@@ -100,10 +100,13 @@ export async function judge(bridge: CompletionBridge, config: Config, c: Candida
     if (matched.some((p) => p.action === "Deny")) action = "Deny";
     else if (action === "Allow" && matched.some((p) => p.action === "Ask")) action = "Ask";
     // Redaction can remove the very effects being assessed. Never auto-allow incomplete input.
-    if (action === "Allow" && (view.assessmentIncomplete || /omitted|\[redacted\]|\[credentials\]/.test(JSON.stringify(view.args)))) action = "Ask";
-    const enforced = action !== verdict.action ? ` Decision raised to ${action} by matching policy or omitted arguments; the model cannot weaken this restriction.` : "";
+    if (action === "Allow" && view.assessmentIncomplete) action = "Ask";
+    const enforced = action !== verdict.action ? ` Decision raised to ${action} by matching policy or incomplete assessment input; the model cannot weaken this restriction.` : "";
     return { ...verdict, action, reason: sanitize(verdict.reason + enforced), origin: "model", model: { route, thinking: config.thinking, durationMs: Date.now() - start } };
-  } catch {
-    return { action: signal?.aborted || config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", reason: signal?.aborted ? "Assessment cancelled. Tool not authorized." : "Assessment unavailable, timed out, or returned an invalid verdict. Human approval required; headless calls are blocked.", policyIds: [], historyIds: [], ...(route ? { model: { route, thinking: config.thinking, durationMs: Date.now() - start } } : {}) };
+  } catch (error) {
+    const cancelled = Boolean(signal?.aborted); const message = error instanceof Error ? error.message : "";
+    const failure = cancelled ? "cancelled" : !route ? "model-selection" : /timed out|timeout/i.test(message) ? "timeout" : /JSON|parse|verdict|output limit|Incomplete|Unknown verdict|too large/i.test(message) ? "invalid-response" : "transport";
+    const label = failure === "cancelled" ? "Assessment cancelled. Tool not authorized." : failure === "model-selection" ? "Assessment model is unavailable." : failure === "timeout" ? "Assessment timed out." : failure === "invalid-response" ? "Assessment model returned an invalid verdict." : "Assessment transport failed.";
+    return { action: cancelled || config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", failure, reason: `${label} Human approval required; headless calls are blocked.`, policyIds: [], historyIds: [], ...(route ? { model: { route, thinking: config.thinking, durationMs: Date.now() - start } } : {}) };
   }
 }

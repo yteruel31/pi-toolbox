@@ -76,7 +76,7 @@ export const operationPresets: Policy[] = [
 ].map((p) => ({ ...p, enabled: true, scope: "both", kind: "structured", action: "Ask" })) as Policy[];
 export const availablePresets: Policy[] = [...presets, ...operationPresets];
 export function defaultConfig(): Config {
-  return { version: 1, enabled: false, coverage: coverageSchema.parse({}), judgeEnabled: true, backend: "pi", jev: jevSchema.parse({ credential: {} }), thinking: "off", model: "", timeoutMs: 15000, maxOutputTokens: 1024, errorBehavior: "ask", policies: structuredClone(presets) };
+  return { version: 1, enabled: false, coverage: coverageSchema.parse({}), judgeEnabled: true, backend: "pi", jev: jevSchema.parse({ credential: {} }), thinking: "off", model: "", timeoutMs: 15000, maxOutputTokens: 1024, errorBehavior: "ask", policies: structuredClone(presets.filter((policy) => policy.id !== "destructive-files")) };
 }
 export interface ConfigSnapshot { config: Config; policies: Policy[]; revision: string; error?: string; projectStatus: string }
 /** Invalid snapshots never qualify for a bypass. Shared by storage-unavailable gates. */
