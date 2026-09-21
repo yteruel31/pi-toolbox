@@ -25,7 +25,7 @@ function mutatingPaths(words: string[]): string[] | undefined {
   const [name, ...args] = words; let parsed: ReturnType<typeof parseOperands>;
   switch (name) {
     case "rm": case "rmdir": case "unlink": case "shred":
-      parsed = parseOperands(args, /^(?:-[rfdiIvPRzu]+|--(?:recursive|force|dir|verbose|zero|remove))$/, new Set(["-n", "-s", "--iterations", "--size"])); return parsed?.paths;
+      parsed = parseOperands(args, /^(?:-[rfdiIvPRzu]+|--(?:recursive|force|dir|verbose|zero|remove|no-preserve-root))$/, new Set(["-n", "-s", "--iterations", "--size"])); return parsed?.paths;
     case "touch":
       parsed = parseOperands(args, /^(?:-[acmh]+|--(?:no-create|no-dereference))$/, new Set(["-t", "-d", "-r", "--date", "--reference"])); return parsed?.paths;
     case "truncate":
@@ -79,8 +79,20 @@ function gitDestructive(words: string[]): boolean {
     });
   }
   if (command === "branch") {
-    const deleting = rest.some((arg) => arg === "--delete" || /^-[^-]*[dD]/.test(arg));
-    return deleting && rest.some((arg) => protectedBranches.has(arg));
+    let deleting = false, forcing = false, listing = false, options = true;
+    const operands: string[] = [];
+    for (const arg of rest) {
+      if (options && arg === "--") { options = false; continue; }
+      if (options && arg.startsWith("-")) {
+        if (arg === "--delete" || /^-[^-]*[dD]/.test(arg)) deleting = true;
+        if (arg === "--force" || /^-[^-]*f/.test(arg)) forcing = true;
+        if (arg === "--list" || /^-[^-]*l/.test(arg)) listing = true;
+        continue;
+      }
+      operands.push(arg);
+    }
+    if (deleting) return operands.some((arg) => protectedBranches.has(arg));
+    return forcing && !listing && protectedBranches.has(operands[0] ?? "");
   }
   return false;
 }

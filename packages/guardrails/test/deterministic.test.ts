@@ -35,7 +35,8 @@ test("detected denials dominate unknown or reviewable segments and protected bra
     "git push origin main --force", "git push --force origin main", "git push origin +HEAD:main",
     "git push --repo=origin --force HEAD:main", "git -c core.abbrev=8 push --force origin main",
     "git push origin --delete main", "git branch -D main", "git branch -d main",
-    "touch /home/user/.ssh/id_rsa", "rm -r ~/.ssh", "sed -i -e 's/a/b/' .env", "mv .env public.txt",
+    "git branch -f main HEAD", "git branch main -f HEAD", "git branch --force master HEAD", "git branch --force -- main HEAD",
+    "rm -rf --no-preserve-root /", "touch /home/user/.ssh/id_rsa", "rm -r ~/.ssh", "sed -i -e 's/a/b/' .env", "mv .env public.txt",
     "echo x > /home/user/.aws/credentials",
   ]) assert.equal(evaluate(command)?.action, "Deny", command);
 });
@@ -54,7 +55,20 @@ test("unknown read and Git options never establish safety", () => {
     "ls --definitely-invalid", "git diff --outpu=.pi/settings.json", "git diff --ext-dif",
     "git --config-env=core.fsmonitor=GUARDRAILS_TEST_HELPER status", "git -p log", "git --paginate log",
     "git diff HEAD", "git show HEAD", "git log -- .env",
+    "rm -rf --unknown-option /", "git branch -f feature/example main", "git branch --force feature/example main",
+    "git branch --list --force main", "git branch -lf main",
   ]) assert.equal(evaluate(command), undefined, command);
+});
+
+test("conventional destructive forms deny for both actors and judge modes before competing policy or model paths", () => {
+  for (const command of ["rm -rf --no-preserve-root /", "git branch -f main HEAD", "git branch --force master HEAD"]) {
+    for (const judgeEnabled of [true, false]) for (const actor of [{ kind: "main" }, { kind: "subagent", runId: "worker" }] as const) {
+      const policies = [policy({ action: "Allow", conditions: { command } }), policy({ id: "ask", action: "Ask", conditions: { command } })];
+      const result = evaluatePolicies(candidate({ args: { command }, actor }), policies, ["/project/.pi"], judgeEnabled);
+      assert.equal(result.decision?.action, "Deny", `${command} (${actor.kind}, judge ${judgeEnabled})`);
+      assert.equal(result.natural.length, 0);
+    }
+  }
 });
 
 test("sed mutation extraction distinguishes scripts from identified targets", () => {
