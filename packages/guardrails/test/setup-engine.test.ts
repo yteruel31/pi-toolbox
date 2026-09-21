@@ -89,6 +89,19 @@ for (const actor of actors) {
     } finally { f.history.close(); }
   });
 }
+test("Jev backend and Off paths avoid Pi and credential I/O; credential file follows each loaded snapshot", async () => {
+  const history = new HistoryStore(":memory:"); let pi = 0, credentials = 0, fetches = 0;
+  let cfg = config({ backend: "jev", jev: { model: "jev-latest", allowThreshold: .95, denyThreshold: .8, credential: { source: "file", reference: "/private/first.any" } } });
+  const engine = new GuardrailsEngine({ load: async () => ({ config: cfg, policies: cfg.policies, revision: "", projectStatus: "" }), history, protectedPaths: [], signal: new AbortController().signal,
+    bridge: { resolve() { pi++; throw Error("Pi registry must not be used"); }, async complete() { pi++; throw Error("Pi must not be used"); } },
+    jevCredential: async () => { credentials++; return "key"; }, jevFetch: async () => { fetches++; return new Response(JSON.stringify({ model: "jev-latest", usage: { input_tokens: 1, output_tokens: 1 }, answers: { decision: { type: "choice", choice: "Allow", confidence: .95, probabilities: { Allow: .95, Ask: .04, Deny: .01 } } } }), { headers: { "content-type": "application/json" } }); },
+  });
+  assert.equal((await engine.evaluate(candidate({ tool: "read", args: { path: "/private/first.any" } }))).decision.action, "Ask"); assert.equal(credentials, 0); assert.equal(fetches, 0);
+  cfg = { ...cfg, jev: { ...cfg.jev, credential: { source: "file", reference: "/private/second.unusual" } } };
+  assert.equal((await engine.evaluate(candidate({ tool: "write", args: { path: "/private/second.unusual", content: "x" } }))).decision.action, "Deny"); assert.equal(credentials, 0);
+  cfg = { ...cfg, enabled: false }; await engine.evaluate(candidate()); assert.equal(credentials, 0); assert.equal(fetches, 0); assert.equal(pi, 0); history.close();
+});
+
 test("rule-only retains builtin argument and self protections; global Off skips even argument inspection", async () => {
   const f = fixture();
   try {

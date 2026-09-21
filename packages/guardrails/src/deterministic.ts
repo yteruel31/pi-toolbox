@@ -17,7 +17,10 @@ function decision(action: Exclude<DeterministicVerdict, undefined>, id: string, 
 function expand(path: string): string { return path === "~" || path.startsWith("~/") ? homedir() + path.slice(1) : path; }
 function canonical(path: string, cwd: string): string { return canonicalPath(expand(path), cwd); }
 function shellCanonical(path: string, cwd: string): string { return canonicalShellPath(expand(path), cwd); }
-function isSensitivePath(path: string, cwd: string, shell = false): boolean { return sensitive.test((shell ? shellCanonical : canonical)(path, cwd).replaceAll(sep, "/")); }
+function isSensitivePath(path: string, cwd: string, shell = false, sensitivePaths: string[] = []): boolean {
+  const resolved = (shell ? shellCanonical : canonical)(path, cwd);
+  return sensitive.test(resolved.replaceAll(sep, "/")) || sensitivePaths.some((configured) => within(canonical(configured, cwd), resolved));
+}
 function isDevice(path: string, cwd: string, shell = false): boolean { return /^\/dev(?:\/|$)/.test((shell ? shellCanonical : canonical)(path, cwd)); }
 function isRootOrHome(path: string, cwd: string, shell = false): boolean { const absolute = (shell ? shellCanonical : canonical)(path, cwd); return absolute === "/" || absolute === resolve(homedir()); }
 
@@ -153,7 +156,7 @@ function readPaths(words: string[]): string[] | undefined {
   return [];
 }
 
-function evaluateParsed(parsed: Segment[], complete: boolean, uncertainCwd: boolean[], c: Candidate): Decision | undefined {
+function evaluateParsed(parsed: Segment[], complete: boolean, uncertainCwd: boolean[], c: Candidate, sensitivePaths: string[]): Decision | undefined {
   let allSafe = complete && parsed.length > 0 && parsed.length === 1, ask = false;
   for (let index = 0; index < parsed.length; index++) {
     const { words, redirections } = parsed[index];
@@ -161,32 +164,32 @@ function evaluateParsed(parsed: Segment[], complete: boolean, uncertainCwd: bool
     if (redirections.some((r) => r.operator !== "<")) allSafe = false;
     for (const redirection of redirections) {
       if (!usable(redirection.path)) { allSafe = false; continue; }
-      if (redirection.operator === "<") { if (isSensitivePath(redirection.path, c.cwd, true)) ask = true; continue; }
-      if (isSensitivePath(redirection.path, c.cwd, true) || isDevice(redirection.path, c.cwd, true) || isRootOrHome(redirection.path, c.cwd, true)) return decision("Deny", "builtin.dangerous-path", "Shell writes to credential, device, root or home targets are denied.");
+      if (redirection.operator === "<") { if (isSensitivePath(redirection.path, c.cwd, true, sensitivePaths)) ask = true; continue; }
+      if (isSensitivePath(redirection.path, c.cwd, true, sensitivePaths) || isDevice(redirection.path, c.cwd, true) || isRootOrHome(redirection.path, c.cwd, true)) return decision("Deny", "builtin.dangerous-path", "Shell writes to credential, device, root or home targets are denied.");
     }
     if (!words.length) continue;
     if (/^mkfs(?:\.|$)/.test(words[0])) return decision("Deny", "builtin.catastrophic-shell", "Disk formatting is denied.");
     if (gitDestructive(words)) return decision("Deny", "builtin.protected-branch", "Destructive Git operations targeting main or master are denied.");
     const paths = mutatingPaths(words);
     if (paths === undefined) { allSafe = false; continue; }
-    if (paths.filter(usable).some((path) => isSensitivePath(path, c.cwd, true) || isDevice(path, c.cwd, true))) return decision("Deny", "builtin.dangerous-path", "Mutation of an identified credential or device path is denied.");
+    if (paths.filter(usable).some((path) => isSensitivePath(path, c.cwd, true, sensitivePaths) || isDevice(path, c.cwd, true))) return decision("Deny", "builtin.dangerous-path", "Mutation of an identified credential or device path is denied.");
     if (["rm", "rmdir", "unlink", "shred", "truncate", "dd"].includes(words[0]) && paths.filter(usable).some((path) => isRootOrHome(path, c.cwd, true))) return decision("Deny", "builtin.catastrophic-shell", "Destructive mutation of the filesystem root or home directory is denied.");
     const safe = safeRead(words);
     const reads = safe ? readPaths(words) : undefined;
     if (!safe || reads === undefined) allSafe = false;
-    if (reads?.filter(usable).some((path) => isSensitivePath(path, c.cwd, true))) ask = true;
+    if (reads?.filter(usable).some((path) => isSensitivePath(path, c.cwd, true, sensitivePaths))) ask = true;
   }
   if (ask) return decision("Ask", "builtin.sensitive-path", "Reading an identified credential path requires review.");
   return allSafe ? decision("Allow", "builtin.safe-read", "Narrow read-only shell form recognized.") : undefined;
 }
 
 /** Built-in decisions cover only narrow facts that are safe to prove locally. */
-export function deterministicDecision(c: Candidate, protectedPaths: string[]): Decision | undefined {
+export function deterministicDecision(c: Candidate, protectedPaths: string[], sensitivePaths: string[] = []): Decision | undefined {
   if (c.tool === "mcp" || c.tool === "web-access") return undefined;
   if (c.tool !== "bash") {
     const path = String(c.args.path ?? "");
-    if (c.tool === "read" && isSensitivePath(path, c.cwd)) return decision("Ask", "builtin.sensitive-path", "Reading an identified credential path requires review.");
-    if ((c.tool === "write" || c.tool === "edit") && (isSensitivePath(path, c.cwd) || isDevice(path, c.cwd))) return decision("Deny", "builtin.dangerous-path", "Writing an identified credential or device path is denied.");
+    if (c.tool === "read" && isSensitivePath(path, c.cwd, false, sensitivePaths)) return decision("Ask", "builtin.sensitive-path", "Reading an identified credential path requires review.");
+    if ((c.tool === "write" || c.tool === "edit") && (isSensitivePath(path, c.cwd, false, sensitivePaths) || isDevice(path, c.cwd))) return decision("Deny", "builtin.dangerous-path", "Writing an identified credential or device path is denied.");
     if (c.tool === "write" || c.tool === "edit") {
       const target = canonical(path, c.cwd), project = canonical(c.project, c.cwd);
       if (target !== project && within(project, target) && !protectedPaths.some((p) => within(canonical(p, c.cwd), target))) return decision("Allow", "builtin.project-write", "Write target is inside the project and outside protected or sensitive paths.");
@@ -194,6 +197,6 @@ export function deterministicDecision(c: Candidate, protectedPaths: string[]): D
     return undefined;
   }
   const analysis = analyzeShell(String(c.args.command ?? ""));
-  const result = evaluateParsed(analysis.segments, analysis.complete, analysis.uncertainCwd, c);
+  const result = evaluateParsed(analysis.segments, analysis.complete, analysis.uncertainCwd, c, sensitivePaths);
   return result?.action === "Allow" && !analysis.complete ? undefined : result;
 }

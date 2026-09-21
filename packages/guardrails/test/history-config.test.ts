@@ -36,6 +36,9 @@ test("old configs retain all coverage and model behavior; staged settings persis
   assert.ok(Object.values(coverage).every(Boolean)); assert.equal(judgeEnabled, true); assert.equal(old.enabled, false);
   assert.equal(configSchema.safeParse({ ...old, judgeEnabled: "off" }).success, false);
   assert.equal(configSchema.safeParse({ ...old, coverage: { unknown: false } }).success, false);
+  assert.equal(configSchema.parse(old).backend, "pi"); assert.equal(configSchema.parse(old).jev.allowThreshold, 0.95); assert.equal(configSchema.parse(old).jev.denyThreshold, 0.8);
+  assert.equal(configSchema.safeParse({ ...old, backend: "jev", jev: { model: "jev-latest", allowThreshold: 1.1, denyThreshold: .8, credential: { source: "environment", reference: "TYPESAFE_API_KEY" } } }).success, false);
+  assert.equal(configSchema.safeParse({ ...old, backend: "jev", jev: { model: "jev-latest", allowThreshold: .95, denyThreshold: .8, credential: { source: "environment", reference: "bad-name" } } }).success, false);
   const root = await mkdtemp(join(tmpdir(), "guardrails-staged-"));
   try {
     const store = new ConfigStore(root, join(root, "project"));
@@ -46,6 +49,14 @@ test("old configs retain all coverage and model behavior; staged settings persis
     assert.deepEqual(JSON.parse(await readFile(store.globalPath, "utf8")), old, "cancel discards local draft");
     await store.save(draft, snapshot.revision);
     assert.deepEqual((await store.load(false)).config, draft);
+  } finally { await rm(root, { recursive: true }); }
+});
+test("save callback runs only after stale-revision validation while the exclusive lock is held", async () => {
+  const root = await mkdtemp(join(tmpdir(), "guardrails-save-hook-"));
+  try {
+    const store = new ConfigStore(root, join(root, "project")); const snapshot = await store.load(false); let writes = 0;
+    await store.save(config(), snapshot.revision, async () => { writes++; }); assert.equal(writes, 1);
+    await assert.rejects(store.save(config(), snapshot.revision, async () => { writes++; })); assert.equal(writes, 1);
   } finally { await rm(root, { recursive: true }); }
 });
 
