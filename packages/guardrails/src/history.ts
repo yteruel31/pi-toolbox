@@ -15,6 +15,12 @@ const entrySchema = z.object({
   action: z.enum(["Allow", "Ask", "Deny"]), origin: z.enum(["policy", "model", "error", "rule-only-no-match", "bypass"]), reason: s(2000),
   policyIds: z.array(s(100)).max(200), historyIds: z.array(z.uuid()).max(16),
   model: z.object({ route: s(200), thinking: s(20), durationMs: z.number().nonnegative() }).optional(),
+  jev: z.object({
+    probabilities: z.object({ Allow: z.number().min(0).max(1), Ask: z.number().min(0).max(1), Deny: z.number().min(0).max(1) }).strict(),
+    restrictions: z.array(z.tuple([s(100), z.number().min(0).max(1)])).max(200),
+    thresholds: z.object({ allow: z.number().min(0).max(1), deny: z.number().min(0).max(1), restrictive: z.number().min(0).max(1) }).strict(),
+    reasons: z.array(z.enum(["generic-allow", "generic-deny", "restrictive-policy", "generic-uncertain", "incomplete-input", "redacted-input"])).max(6),
+  }).strict().optional(),
   choice: z.enum(["allow-once", "deny", "deny-stop"]).optional(),
   state: z.enum(["assessing", "review", "allowed", "denied"]),
   execution: z.enum(["not-observed", "blocked", "reported-success", "reported-error"]),

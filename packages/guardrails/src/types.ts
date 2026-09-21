@@ -12,6 +12,12 @@ export interface Candidate {
   project: string;
   leafId?: string;
 }
+export interface JevDiagnostics {
+  probabilities: Record<Action, number>;
+  restrictions: [string, number][];
+  thresholds: { allow: number; deny: number; restrictive: number };
+  reasons: ("generic-allow" | "generic-deny" | "restrictive-policy" | "generic-uncertain" | "incomplete-input" | "redacted-input")[];
+}
 export interface Decision {
   action: Action;
   origin: "policy" | "model" | "error" | "rule-only-no-match" | "bypass";
@@ -19,6 +25,7 @@ export interface Decision {
   policyIds: string[];
   historyIds: string[];
   model?: { route: string; thinking: string; durationMs: number };
+  jev?: JevDiagnostics;
 }
 export interface HistoryEntry extends Decision {
   id: string;
