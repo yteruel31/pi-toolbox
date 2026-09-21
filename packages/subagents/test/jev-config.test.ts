@@ -46,13 +46,24 @@ describe("Jev setup storage", () => {
     await mkdir(piDir, { mode: 0o775 }); await chmod(piDir, 0o775); await mkdir(agentDir, { mode: 0o700 }); await chmod(agentDir, 0o700);
     await saveJevSetup({ agentDir, enabled: true, source: "environment", reference: "FIRST_JEV_KEY" });
     expect(await readJevConfig(agentDir)).toEqual({ version: 1, enabled: true, credential: { source: "environment", value: "FIRST_JEV_KEY" } });
+    expect(await resolveJevKey((await readJevConfig(agentDir))!, { FIRST_JEV_KEY: "environment-secret" })).toBe("environment-secret");
+    expect(await readFile(join(agentDir, "subagents-jev.json"), "utf8")).not.toContain("environment-secret");
     await saveJevSetup({ agentDir, snapshot: await readJevSetupSnapshot(agentDir), enabled: false, source: "environment", reference: "SECOND_JEV_KEY" });
     expect(await readJevConfig(agentDir)).toEqual({ version: 1, enabled: false, credential: { source: "environment", value: "SECOND_JEV_KEY" } });
+    expect((await stat(piDir)).mode & 0o777).toBe(0o775); expect((await stat(agentDir)).mode & 0o777).toBe(0o700);
   });
 
-  it.runIf(process.platform !== "win32")("keeps credential files strict under owned 0775 ancestors", async () => {
-    const base = await root(), writable = join(base, "writable"), credential = join(writable, "key.json"); await mkdir(writable); await chmod(writable, 0o775);
-    await expect(saveJevSetup({ agentDir: join(base, "agent"), enabled: true, source: "file", reference: credential, key: "secret" })).rejects.toThrow("Unsafe");
+  it.runIf(process.platform !== "win32")("keeps non-environment settings and credentials strict under owned 0775 ancestors", async () => {
+    const base = await root(), writable = join(base, "writable"), agentDir = join(writable, "agent"), credential = join(writable, "key.json");
+    await mkdir(writable); await chmod(writable, 0o775); await mkdir(agentDir, { mode: 0o700 });
+    await writeFile(join(agentDir, "subagents-jev.json"), `${JSON.stringify({ version: 1, enabled: true, credential: { source: "file", value: credential } })}\n`, { mode: 0o600 });
+    await writeFile(credential, '{"jev":"secret"}\n', { mode: 0o600 });
+    await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe");
+    await expect(resolveJevKey({ version: 1, enabled: true, credential: { source: "file", value: credential } })).rejects.toThrow("Unsafe");
+    await expect(saveJevSetup({ agentDir, enabled: true, source: "file", reference: credential, key: "secret" })).rejects.toThrow("Unsafe");
+    const storeKeyring = vi.fn(async () => undefined);
+    await expect(saveJevSetup({ agentDir, enabled: true, source: "keyring", key: "secret", storeKeyring })).rejects.toThrow("Unsafe");
+    expect(storeKeyring).not.toHaveBeenCalled();
   });
 
   it.runIf(process.platform !== "win32")("rejects settings below world-writable owned ancestors", async () => {
@@ -64,6 +75,14 @@ describe("Jev setup storage", () => {
     const base = await root(), agentDir = join(base, "agent"), config = join(agentDir, "subagents-jev.json"); await mkdir(agentDir);
     await symlink(join(base, "missing"), config); await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe"); await rm(config);
     await mkdir(config); await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe");
+  });
+
+  it.runIf(process.platform !== "win32")("rejects writable settings destinations and files while reading protected 0555 destinations", async () => {
+    const base = await root(), agentDir = join(base, "agent"), config = join(agentDir, "subagents-jev.json"); await mkdir(agentDir, { mode: 0o700 });
+    await chmod(agentDir, 0o770); await expect(saveJevSetup({ agentDir, enabled: true, source: "environment", reference: "JEV_API_KEY" })).rejects.toThrow("Unsafe");
+    await chmod(agentDir, 0o700); await writeFile(config, '{"version":1,"enabled":true,"credential":{"source":"environment","value":"JEV_API_KEY"}}\n', { mode: 0o600 }); await chmod(config, 0o660);
+    await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe");
+    await chmod(config, 0o600); await chmod(agentDir, 0o555); expect((await readJevConfig(agentDir))?.enabled).toBe(true); await chmod(agentDir, 0o700);
   });
 
   it.runIf(process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() === 0)("rejects foreign-owned settings", async () => {

@@ -90,7 +90,7 @@ export async function ensureOwnedSettingsPath(path: string, create = false): Pro
   if (create) return;
   let info;
   try { info = await lstat(absolute); } catch { throw new JevStorageError("unsafe"); }
-  if (!info.isFile() || info.isSymbolicLink() || process.platform !== "win32" && info.uid !== process.getuid?.()) throw new JevStorageError("unsafe");
+  if (!info.isFile() || info.isSymbolicLink() || process.platform !== "win32" && (info.uid !== process.getuid?.() || (info.mode & 0o022) !== 0)) throw new JevStorageError("unsafe");
 }
 async function ensureOwnedDirectoryPath(directory: string, create: boolean): Promise<void> {
   const absolute = resolve(directory); const root = parse(absolute).root; let cursor = root;
@@ -102,8 +102,10 @@ async function ensureOwnedDirectoryPath(directory: string, create: boolean): Pro
       const mode = info.mode & 0o777;
       const stickySystem = info.uid === 0 && (info.mode & 0o1000) !== 0;
       const systemAncestor = info.uid === 0 && !inside(resolve(process.env.HOME || root), cursor) && (mode & 0o022) === 0;
-      const ownedDirectory = info.uid === process.getuid?.() && ((mode & 0o022) === 0 || (mode & 0o002) === 0 && (mode & 0o200) !== 0);
-      if (!ownedDirectory && !stickySystem && !systemAncestor && cursor !== root) throw new JevStorageError("unsafe");
+      const destination = cursor === absolute;
+      const ownedDirectory = info.uid === process.getuid?.() && (mode & 0o002) === 0 && (!destination || (mode & 0o020) === 0);
+      if (!ownedDirectory && !destination && (stickySystem || systemAncestor || cursor === root)) continue;
+      if (!ownedDirectory) throw new JevStorageError("unsafe");
     }
   }
 }
@@ -121,7 +123,8 @@ export async function readSafeText(path: string, privateMode: boolean, allowMiss
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => { throw new JevStorageError("unsafe"); });
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.ino !== before.ino || stat.dev !== before.dev || stat.size > JEV_MAX_BYTES || process.platform !== "win32" && (stat.uid !== process.getuid?.() || privateMode && (stat.mode & 0o777) !== 0o600)) throw new JevStorageError("unsafe");
+    const unsafeMode = process.platform !== "win32" && (stat.uid !== process.getuid?.() || (privateMode ? (stat.mode & 0o777) !== 0o600 : (stat.mode & 0o022) !== 0));
+    if (!stat.isFile() || stat.ino !== before.ino || stat.dev !== before.dev || stat.size > JEV_MAX_BYTES || unsafeMode) throw new JevStorageError("unsafe");
     const buffer = Buffer.alloc(JEV_MAX_BYTES + 1); let size = 0;
     while (size < buffer.length) { const result = await file.read(buffer, size, buffer.length - size, null); if (!result.bytesRead) break; size += result.bytesRead; }
     if (size > JEV_MAX_BYTES) throw new JevStorageError("unsafe");
