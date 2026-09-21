@@ -17,6 +17,7 @@ import { MAX_AGENT_SKILLS } from "./agents/limits.js";
 import { DefaultRouteResolver } from "./agents/route-resolver.js";
 import { defaultJevCredentialPath, jevStorageErrorMessage, readJevConfig, readJevSetupSnapshot, resolveJevKey, saveJevSetup, testJevConnection, type StoredJevConfig } from "./agents/jev-config.js";
 import { routeWithJev } from "./agents/jev.js";
+import { createJevBackgroundHarness } from "./agents/jev-background.js";
 import { FileRoutingStore } from "./agents/routing-store.js";
 import {
   appendPreloadedSkills,
@@ -29,6 +30,7 @@ import type {
 import type {
   AgentCatalog,
   AgentDefinition,
+  RouteResolutionInput,
   InstalledAgentPackage,
   RoutingEntry,
   RoutingFile,
@@ -95,6 +97,8 @@ export interface ExtensionDependencies extends RoutingModelCatalogDependencies {
   createDiscovery?(ctx: ExtensionContext): Promise<FileAgentDiscovery>;
   createRoutingStore?(ctx: ExtensionContext): FileRoutingStore;
   preloadSkills?(input: AgentSkillPreloadInput): Promise<AgentSkillPreloadResult>;
+  readJevConfig?(agentDir: string): ReturnType<typeof readJevConfig>;
+  resolveJevKey?(config: StoredJevConfig, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string | undefined>;
 }
 
 /** Public dependency-injection seam for offline extension integration tests. */
@@ -114,6 +118,8 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   let claudeHarness: SubagentHarness | undefined;
   let deliveryScheduled = false;
   let shuttingDown = false;
+  let jevConfig: StoredJevConfig | undefined;
+  let jevConfigWarning: string | undefined;
   const runListeners = new Set<() => void>();
 
   const notifyRunListeners = (): void => {
@@ -175,6 +181,13 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     shuttingDown = false;
     sessionContext = ctx;
     const restore = findLatestPersistedState(ctx);
+    try {
+      jevConfig = await (dependencies.readJevConfig ?? readJevConfig)(getAgentDir());
+      jevConfigWarning = undefined;
+    } catch {
+      jevConfig = undefined;
+      jevConfigWarning = "Jev configuration is unavailable; configured routing will be used.";
+    }
     const trustedCwd = await fs.realpath(ctx.cwd).catch(() => path.resolve(ctx.cwd));
     const modelRuntime = modelRuntimeAdapter(ctx);
     const parentModel = ctx.model ?? undefined;
@@ -283,24 +296,44 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         },
         dependencies,
       );
-      const routed = await maybeRouteWithJev(
-        ctx,
-        params.prompt,
-        resolution.agent,
-        resolution.route,
-        dependencies,
-        _signal,
-      );
-      if (routed.fallback && ctx.hasUI) {
-        ctx.ui.notify(`Jev routing fallback: ${routed.fallback}`, "warning");
-      }
-      const baseHarness = routed.route.harness === "claude"
+      const baseHarness = resolution.route.harness === "claude"
         ? runtime.claudeHarness
         : runtime.piHarness;
+      const runJevConfig = jevConfig ? { ...jevConfig } : undefined;
+      let piModels: Model<any>[] = [];
+      if (runJevConfig?.enabled) {
+        const availablePiModels = ctx.modelRegistry.getAvailable() as Model<any>[];
+        const scopedIds = new Set((ctx.scopedModels ?? []).map((entry) => `${entry.model.provider}/${entry.model.id}`));
+        const scoped = scopedIds.size === 0
+          ? availablePiModels
+          : availablePiModels.filter((model) => scopedIds.has(`${model.provider}/${model.id}`));
+        const fixedModel = resolution.route.model;
+        const fixed = fixedModel?.includes("/")
+          ? availablePiModels.find((model) => `${model.provider}/${model.id}` === fixedModel)
+          : undefined;
+        piModels = fixed && !scoped.includes(fixed) ? [...scoped, fixed] : scoped;
+      }
+      const routingHarness = runJevConfig?.enabled
+        ? createJevBackgroundHarness({
+          task: params.prompt,
+          agent: resolution.agent,
+          route: resolution.route,
+          resolutionInput: resolution.resolutionInput,
+          piModels,
+          loadClaudeModels: (signal) => (dependencies.listClaudeModels ?? listClaudeSupportedModels)({ cwd: ctx.cwd, signal }),
+          resolveApiKey: async (signal) => {
+            const key = await (dependencies.resolveJevKey ?? resolveJevKey)(runJevConfig, process.env, signal);
+            if (!key) throw new Error("Jev credentials are unavailable.");
+            return key;
+          },
+          routeJev: dependencies.routeJev ?? routeWithJev,
+          harnesses: { pi: runtime.piHarness, claude: runtime.claudeHarness },
+        })
+        : baseHarness;
       const requestedSkills = resolution.agent?.skills ?? [];
       const harness = requestedSkills.length > 0
         ? withSkillPreloading(
-          baseHarness,
+          routingHarness,
           {
             names: requestedSkills,
             cwd: workingDir,
@@ -309,7 +342,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
           },
           dependencies.preloadSkills ?? preloadAgentSkills,
         )
-        : baseHarness;
+        : routingHarness;
       const snapshot = runtime.manager.spawn({
         prompt: params.prompt,
         title: params.name,
@@ -318,16 +351,17 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         systemPrompt: resolution.agent?.systemPrompt,
         tools: resolution.agent?.tools,
         workingDir,
-        model: routed.route.model,
-        thinkingLevel: routed.route.thinking,
+        model: resolution.route.model,
+        thinkingLevel: resolution.route.thinking,
+        routing: runJevConfig?.enabled ? { state: "pending" } : undefined,
       });
       updateStatus();
       return textResult(
         `Started ${snapshot.id} (${snapshot.harness}, ${snapshot.status})${snapshot.title ? `: ${formatRunIdentity(snapshot)}` : ""}.`,
         {
           snapshot,
-          route: routed.route,
-          routing: { jev: routed.used, fallback: routed.fallback },
+          route: resolution.route,
+          routing: { jev: Boolean(runJevConfig?.enabled), pending: Boolean(runJevConfig?.enabled), fallback: jevConfigWarning },
           skills: { requested: requestedSkills },
         },
       );
@@ -713,49 +747,13 @@ function preloadUntilAbort(
   });
 }
 
-async function maybeRouteWithJev(
-  ctx: ExtensionContext,
-  task: string,
-  agent: AgentDefinition | undefined,
-  route: ReturnType<DefaultRouteResolver["resolve"]>,
-  dependencies: ExtensionDependencies,
-  signal?: AbortSignal,
-) {
-  let config;
-  try {
-    config = await readJevConfig(getAgentDir());
-  } catch (error) {
-    return { route, used: false, fallback: truncateText(describeError(error), 240) };
-  }
-  if (!config?.enabled) return { route, used: false };
-  try {
-    const apiKey = await resolveJevKey(config, process.env, signal);
-    const piModels = (ctx.scopedModels?.length
-      ? ctx.scopedModels.map((entry) => entry.model)
-      : ctx.modelRegistry.getAvailable()) as Model<any>[];
-    const claudeModels = await (dependencies.listClaudeModels ?? listClaudeSupportedModels)({ cwd: ctx.cwd, signal });
-    return await (dependencies.routeJev ?? routeWithJev)({
-      task,
-      role: agent ? `${agent.name}: ${agent.description}` : "generic subagent",
-      route,
-      piModels,
-      claudeModels,
-      apiKey,
-      signal,
-    });
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    return { route, used: false, fallback: truncateText(describeError(error), 240) };
-  }
-}
-
 async function resolveSpawn(
   ctx: ExtensionContext,
   requestedAgent: string | undefined,
   requestedName: string | undefined,
   explicit: RoutingEntry,
   dependencies: ExtensionDependencies,
-): Promise<{ agent: AgentDefinition | undefined; route: ReturnType<DefaultRouteResolver["resolve"]> }> {
+): Promise<{ agent: AgentDefinition | undefined; route: ReturnType<DefaultRouteResolver["resolve"]>; resolutionInput: RouteResolutionInput }> {
   let agent: AgentDefinition | undefined;
   let userRouting: RoutingEntry | undefined;
   let projectRouting: RoutingEntry | undefined;
@@ -781,7 +779,7 @@ async function resolveSpawn(
       projectRouting = project.routing?.agents[agent.name];
     }
   }
-  const route = new DefaultRouteResolver().resolve({
+  const resolutionInput: RouteResolutionInput = {
     explicit,
     agent,
     userRouting,
@@ -790,8 +788,9 @@ async function resolveSpawn(
       model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
       thinking: ctx.thinkingLevel,
     },
-  });
-  return { agent, route };
+  };
+  const route = new DefaultRouteResolver().resolve(resolutionInput);
+  return { agent, route, resolutionInput };
 }
 
 async function discoverResolvedAgents(

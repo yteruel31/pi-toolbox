@@ -111,6 +111,12 @@ export interface RunMessagingState {
 }
 
 /** Immutable public view of a tracked run. */
+export interface RunRoutingDiagnostic {
+  state: "pending" | "resolved" | "fallback";
+  provenance?: Partial<Record<"harness" | "model" | "thinking", string>>;
+  fallback?: string;
+}
+
 export interface RunSnapshot {
   id: string;
   title: string;
@@ -130,6 +136,7 @@ export interface RunSnapshot {
   autoDeliver: boolean;
   consumption: ResultConsumption;
   usage: RunUsage | undefined;
+  routing?: RunRoutingDiagnostic;
 }
 
 /** Final, consumable result of a settled run. */
@@ -149,6 +156,7 @@ export interface RunResult {
   settledAt: number;
   durationMs: number;
   settlementSeq: number;
+  routing?: RunRoutingDiagnostic;
 }
 
 /** One row of subagent_list output. */
@@ -161,6 +169,7 @@ export interface RunListEntry {
   elapsedMs: number;
   model: string | undefined;
   thinkingLevel?: ThinkingLevel;
+  routing?: RunRoutingDiagnostic;
 }
 
 /** subagent_check output: status plus bounded recent activity, non-consuming. */
@@ -188,6 +197,7 @@ export interface RunInspection {
   /** Bounded preview of the final text/diagnostics once settled. */
   resultPreview: string | undefined;
   consumption: ResultConsumption;
+  routing?: RunRoutingDiagnostic;
 }
 
 /** Per-id outcome of subagent_wait; unknown ids never hide valid results. */
@@ -238,6 +248,7 @@ export interface PersistedRunRecord {
   /** Optional for backwards-compatible restore of version-1 snapshots. */
   transcript?: RunTranscriptEntry[];
   transcriptDropped?: number;
+  routing?: RunRoutingDiagnostic;
 }
 
 /** Whole serialized manager state, written through the persistence hook. */

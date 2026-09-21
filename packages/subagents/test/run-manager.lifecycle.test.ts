@@ -39,6 +39,29 @@ describe("run lifecycle", () => {
     });
   });
 
+  it("tracks, sanitizes, clones, persists, and restores routing diagnostics", async () => {
+    const manager = new RunManager();
+    const harness = new FakeHarness();
+    const input = { state: "pending" as const, provenance: { model: "saved-user\u001b[31m" }, fallback: "x".repeat(900) };
+    const spawned = manager.spawn({ prompt: "route", harness, routing: input });
+    input.provenance.model = "mutated";
+    expect(spawned.routing).toMatchObject({ state: "pending", provenance: { model: "saved-user[31m" } });
+    const listed = manager.list()[0]!;
+    listed.routing!.provenance!.model = "consumer mutation";
+    expect(manager.check(spawned.id).routing?.provenance?.model).toBe("saved-user[31m");
+    harness.runs[0]!.request.reportRouting?.({ harness: "claude", model: "sonnet", thinkingLevel: "high" }, { state: "resolved", provenance: { harness: "jev" } });
+    expect(manager.check(spawned.id)).toMatchObject({ harness: "claude", model: "sonnet", thinkingLevel: "high", routing: { state: "resolved" } });
+    harness.last.resolve({ finalText: "done" });
+    await flush();
+    const state = manager.snapshotState();
+    expect(state.runs[0]?.routing).toMatchObject({ state: "resolved" });
+    const restored = new RunManager({ restore: state });
+    expect(restored.check(spawned.id).routing).toMatchObject({ state: "resolved" });
+    const legacy = structuredClone(state);
+    delete legacy.runs[0]!.routing;
+    expect(new RunManager({ restore: legacy }).check(spawned.id).routing).toBeUndefined();
+  });
+
   it("rejects an empty prompt immediately", () => {
     const manager = new RunManager();
     const harness = new FakeHarness();
