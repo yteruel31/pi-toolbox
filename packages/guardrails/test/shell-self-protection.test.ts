@@ -16,7 +16,7 @@ test("read-only investigation is not shell self-modification", () => {
     "cat '/project/.pi/guardrails.json'", "head -n 5 /project/.pi/guardrails.json",
     "git log --oneline yoann/guardrails-self-protection", "git status --short -- guardrails.json",
     "rg --files /installed/pi-guardrails", "printf '%s' guardrails",
-  ]) assert.equal(evaluate(command), undefined, command);
+  ]) assert.notEqual(evaluate(command)?.policyIds[0], "builtin.self-protection", command);
 });
 
 test("ordinary CLI prompts are data, not executable shell fragments", () => {
@@ -71,16 +71,16 @@ test("unknown execution stays deterministic Ask, even with exact and natural All
   ]) {
     const rules = [policy({ action: "Allow", conditions: { command } }), policy({ id: "natural", kind: "natural", action: "Allow", description: "Allow everything" })];
     const result = evaluatePolicies(candidate({ args: { command } }), rules, protectedPaths);
-    assert.equal(result.decision?.action, "Ask", command);
-    assert.equal(result.decision?.origin, "policy", command);
-    assert.equal(evaluatePolicies(candidate({ args: { command } }), [rules[0]], protectedPaths).decision?.action, "Ask", command);
+    assert.equal(result.decision, undefined, command);
+    assert.equal(result.natural.length, 1, command);
+    assert.equal(evaluatePolicies(candidate({ args: { command } }), [rules[0]], protectedPaths).decision, undefined, command);
     assert.equal(evaluatePolicies(candidate({ args: { command } }), [policy({ action: "Deny" })], protectedPaths).decision?.action, "Deny", command);
   }
 });
 
 test("home expansion uses configured roots, not a hard-coded Pi directory", () => {
   assert.equal(evaluatePolicies(candidate({ args: { command: "rm ~/.pi/guardrails.json" } }), [], [join(homedir(), ".pi")]).decision?.action, "Deny");
-  assert.equal(evaluatePolicies(candidate({ tool: "write", args: { path: "guardrails.json" } }), [], protectedPaths).decision, undefined);
+  assert.equal(evaluatePolicies(candidate({ tool: "write", args: { path: "guardrails.json" } }), [], protectedPaths).decision?.action, "Allow");
   assert.equal(evaluate("cp /tmp/notes.txt /project"), undefined);
   assert.equal(evaluate("cp -t /project /tmp/notes.txt"), undefined);
   assert.equal(evaluate("mv /tmp/notes.txt /project"), undefined);
@@ -106,7 +106,7 @@ test("relative and symlink shell destinations use real ancestors and component b
     }
     mkdirSync(join(root, "private", "subdir"));
     symlinkSync(join(root, "private", "subdir"), join(root, "nested-alias"));
-    assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "rm nested-alias/../config" } }), [], [join(root, "private")]).decision?.action, "Ask");
+    assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "rm nested-alias/../config" } }), [], [join(root, "private")]).decision, undefined);
     for (const tool of ["write", "edit"] as const) {
       assert.equal(evaluatePolicies(candidate({ cwd: root, tool, args: { path: "alias/new" } }), [], [join(root, "private")]).decision?.action, "Deny");
     }

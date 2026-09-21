@@ -42,7 +42,7 @@ for (const actor of actors) {
     try {
       for (const policies of [[], [policy({ kind: "natural", description: "Deny all calls", action: "Deny" })]]) {
         f.snapshot.policies = policies;
-        const c = candidate({ actor });
+        const c = candidate({ actor, args: { command: "opaque-command" } });
         assert.equal(await f.engine.assess(c, f.approval), undefined);
         const recorded = f.history.list().find((e) => e.callId === c.callId)!;
         assert.equal(recorded.origin, "rule-only-no-match"); assert.equal(recorded.model, undefined);
@@ -50,7 +50,7 @@ for (const actor of actors) {
       }
       assert.deepEqual(f.counts(), [0, 0, 0]);
       f.snapshot.config.judgeEnabled = true;
-      await f.engine.assess(candidate({ actor }), f.approval);
+      await f.engine.assess(candidate({ actor, args: { command: "opaque-command" } }), f.approval);
       assert.deepEqual(f.counts(), [1, 1, 0]);
     } finally { f.history.close(); }
   });
