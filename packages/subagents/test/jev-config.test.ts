@@ -31,11 +31,13 @@ describe("Jev setup storage", () => {
     expect(stores).toBe(1);
   });
 
-  it("supports allowlisted environment references without copying the secret", async () => {
+  it("supports bounded environment references without copying or evaluating the secret", async () => {
     const base = await root(), agentDir = join(base, "agent");
-    await saveJevSetup({ agentDir, enabled: true, source: "environment", reference: "TYPESAFE_API_KEY" });
-    expect(await resolveJevKey((await readJevConfig(agentDir))!, { TYPESAFE_API_KEY: "env-secret" })).toBe("env-secret");
-    await expect(saveJevSetup({ agentDir: join(base, "bad"), enabled: true, source: "environment", reference: "OTHER" })).rejects.toThrow("Invalid");
+    await saveJevSetup({ agentDir, enabled: true, source: "environment", reference: "CUSTOM_JEV_TOKEN" });
+    expect(await resolveJevKey((await readJevConfig(agentDir))!, { CUSTOM_JEV_TOKEN: "env-secret" })).toBe("env-secret");
+    for (const reference of ["BAD NAME", "$JEV_API_KEY", "A".repeat(257)]) {
+      await expect(saveJevSetup({ agentDir: join(base, `bad-${reference.length}`), enabled: true, source: "environment", reference })).rejects.toThrow("Invalid");
+    }
     await expect(saveJevSetup({ agentDir: join(base, "relative"), enabled: true, source: "file", reference: "relative.json", key: "key" })).rejects.toThrow("Invalid");
   });
 
