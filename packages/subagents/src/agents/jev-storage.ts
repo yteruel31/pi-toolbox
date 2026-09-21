@@ -76,13 +76,42 @@ export async function ensureSafePath(path: string, create = false, rejectReposit
     }
   }
 }
-export async function makeSafeDirectory(directory: string): Promise<void> {
-  const absolute = resolve(directory); await ensureSafePath(absolute, true);
+export async function makeSafeDirectory(directory: string, allowOwnedWritableAncestors = false): Promise<void> {
+  const absolute = resolve(directory);
+  if (allowOwnedWritableAncestors) await ensureOwnedDirectoryPath(absolute, true);
+  else await ensureSafePath(absolute, true);
   await mkdir(absolute, { recursive: true, mode: 0o700 }).catch(() => { throw new JevStorageError("write"); });
-  await ensureSafePath(absolute);
+  if (allowOwnedWritableAncestors) await ensureOwnedDirectoryPath(absolute, false);
+  else await ensureSafePath(absolute);
 }
-export async function readSafeText(path: string, privateMode: boolean, allowMissing: boolean, rejectRepository = false): Promise<{ text?: string; revision?: JevRevision }> {
-  await ensureSafePath(path, false, rejectRepository).catch(async error => {
+export async function ensureOwnedSettingsPath(path: string, create = false): Promise<void> {
+  const absolute = resolve(path);
+  await ensureOwnedDirectoryPath(dirname(absolute), create);
+  if (create) return;
+  let info;
+  try { info = await lstat(absolute); } catch { throw new JevStorageError("unsafe"); }
+  if (!info.isFile() || info.isSymbolicLink() || process.platform !== "win32" && info.uid !== process.getuid?.()) throw new JevStorageError("unsafe");
+}
+async function ensureOwnedDirectoryPath(directory: string, create: boolean): Promise<void> {
+  const absolute = resolve(directory); const root = parse(absolute).root; let cursor = root;
+  for (const part of relative(root, absolute).split(/[\\/]/).filter(Boolean)) {
+    cursor = join(cursor, part); let info;
+    try { info = await lstat(cursor); } catch (error) { if (create && (error as NodeJS.ErrnoException).code === "ENOENT") return; throw new JevStorageError("unsafe"); }
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new JevStorageError("unsafe");
+    if (process.platform !== "win32") {
+      const mode = info.mode & 0o777;
+      const stickySystem = info.uid === 0 && (info.mode & 0o1000) !== 0;
+      const systemAncestor = info.uid === 0 && !inside(resolve(process.env.HOME || root), cursor) && (mode & 0o022) === 0;
+      const ownedDirectory = info.uid === process.getuid?.() && ((mode & 0o022) === 0 || (mode & 0o002) === 0 && (mode & 0o200) !== 0);
+      if (!ownedDirectory && !stickySystem && !systemAncestor && cursor !== root) throw new JevStorageError("unsafe");
+    }
+  }
+}
+export async function readSafeText(path: string, privateMode: boolean, allowMissing: boolean, rejectRepository = false, allowOwnedWritableAncestors = false): Promise<{ text?: string; revision?: JevRevision }> {
+  const checkPath = allowOwnedWritableAncestors
+    ? (value: string, create: boolean) => ensureOwnedSettingsPath(value, create)
+    : (value: string, create: boolean) => ensureSafePath(value, create, rejectRepository);
+  await checkPath(path, false).catch(async error => {
     if (allowMissing && error instanceof JevStorageError) { try { await lstat(path); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return; } }
     throw error;
   });

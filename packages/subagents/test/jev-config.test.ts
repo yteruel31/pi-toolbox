@@ -41,6 +41,38 @@ describe("Jev setup storage", () => {
     await expect(saveJevSetup({ agentDir: join(base, "relative"), enabled: true, source: "file", reference: "relative.json", key: "key" })).rejects.toThrow("Invalid");
   });
 
+  it.runIf(process.platform !== "win32")("saves, loads, and updates environment settings under owned 0775 ancestors", async () => {
+    const base = await root(), piDir = join(base, "pi"), agentDir = join(piDir, "agent");
+    await mkdir(piDir, { mode: 0o775 }); await chmod(piDir, 0o775); await mkdir(agentDir, { mode: 0o700 }); await chmod(agentDir, 0o700);
+    await saveJevSetup({ agentDir, enabled: true, source: "environment", reference: "FIRST_JEV_KEY" });
+    expect(await readJevConfig(agentDir)).toEqual({ version: 1, enabled: true, credential: { source: "environment", value: "FIRST_JEV_KEY" } });
+    await saveJevSetup({ agentDir, snapshot: await readJevSetupSnapshot(agentDir), enabled: false, source: "environment", reference: "SECOND_JEV_KEY" });
+    expect(await readJevConfig(agentDir)).toEqual({ version: 1, enabled: false, credential: { source: "environment", value: "SECOND_JEV_KEY" } });
+  });
+
+  it.runIf(process.platform !== "win32")("keeps credential files strict under owned 0775 ancestors", async () => {
+    const base = await root(), writable = join(base, "writable"), credential = join(writable, "key.json"); await mkdir(writable); await chmod(writable, 0o775);
+    await expect(saveJevSetup({ agentDir: join(base, "agent"), enabled: true, source: "file", reference: credential, key: "secret" })).rejects.toThrow("Unsafe");
+  });
+
+  it.runIf(process.platform !== "win32")("rejects settings below world-writable owned ancestors", async () => {
+    const base = await root(), writable = join(base, "writable"), agentDir = join(writable, "agent"); await mkdir(writable); await chmod(writable, 0o777);
+    await expect(saveJevSetup({ agentDir, enabled: true, source: "environment", reference: "JEV_API_KEY" })).rejects.toThrow("Unsafe");
+  });
+
+  it("rejects unsafe settings file types and links", async () => {
+    const base = await root(), agentDir = join(base, "agent"), config = join(agentDir, "subagents-jev.json"); await mkdir(agentDir);
+    await symlink(join(base, "missing"), config); await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe"); await rm(config);
+    await mkdir(config); await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe");
+  });
+
+  it.runIf(process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() === 0)("rejects foreign-owned settings", async () => {
+    const base = await root(), agentDir = join(base, "agent"), config = join(agentDir, "subagents-jev.json"); await mkdir(agentDir);
+    await writeFile(config, '{"version":1,"enabled":false,"credential":{"source":"environment","value":"JEV_API_KEY"}}');
+    const { chown } = await import("node:fs/promises"); await chown(config, 1, 1);
+    await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe");
+  });
+
   it("redacts keyring failures and never falls back", async () => {
     const base = await root(), agentDir = join(base, "agent"); await mkdir(agentDir);
     const failure = saveJevSetup({ agentDir, enabled: true, source: "keyring", key: "secret", storeKeyring: async () => { throw new Error("raw sentinel secret"); } });
