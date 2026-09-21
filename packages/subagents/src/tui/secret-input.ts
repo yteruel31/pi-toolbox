@@ -15,15 +15,21 @@ export class SecretInput implements Component, Focusable {
   private value = "";
   private cursor = 0;
   private paste: string | undefined;
+  private pasteOverflow = false;
   invalid = false;
   getValue(): string { return this.value; }
-  clear(): void { this.value = ""; this.cursor = 0; this.paste = undefined; this.invalid = false; }
+  clear(): void { this.value = ""; this.cursor = 0; this.paste = undefined; this.pasteOverflow = false; this.invalid = false; }
   consumePaste(data: string): boolean {
     if (this.paste === undefined) { if (!data.startsWith("\x1b[200~")) return false; this.paste = ""; data = data.slice(6); }
     const combined = this.paste + data;
     const end = combined.indexOf("\x1b[201~");
-    if (end >= 0) { this.insert(combined.slice(0, end)); this.paste = undefined; }
-    else this.paste = combined.length > 16_390 ? combined.slice(-5) : combined;
+    if (end >= 0) {
+      if (!this.pasteOverflow) this.insert(combined.slice(0, end)); else this.invalid = true;
+      this.paste = undefined; this.pasteOverflow = false;
+    } else if (combined.length > 16_390) {
+      this.pasteOverflow = true;
+      this.paste = combined.slice(-5);
+    } else this.paste = combined;
     return true;
   }
   private insert(text: string): void {
@@ -35,7 +41,10 @@ export class SecretInput implements Component, Focusable {
     if (matchesKey(data, "ctrl+u")) this.clear();
     else if (matchesKey(data, "left")) this.cursor = Math.max(0, this.cursor - 1);
     else if (matchesKey(data, "right")) this.cursor = Math.min(this.value.length, this.cursor + 1);
-    else if (matchesKey(data, "backspace") && this.cursor > 0) { this.value = this.value.slice(0, --this.cursor) + this.value.slice(this.cursor + 1); }
+    else if (matchesKey(data, "home") || matchesKey(data, "ctrl+a")) this.cursor = 0;
+    else if (matchesKey(data, "end") || matchesKey(data, "ctrl+e")) this.cursor = this.value.length;
+    else if (matchesKey(data, "backspace") && this.cursor > 0) { this.value = this.value.slice(0, this.cursor - 1) + this.value.slice(this.cursor); this.cursor--; this.invalid = false; }
+    else if (matchesKey(data, "delete")) { this.value = this.value.slice(0, this.cursor) + this.value.slice(this.cursor + 1); this.invalid = false; }
     else { const printable = decodeKittyPrintable(data) ?? modifyOtherKeysPrintable(data); if (printable !== undefined) this.insert(printable); else if (/^[^\x00-\x1f\x7f-\x9f]+$/.test(data)) this.insert(data); }
   }
   render(width: number): string[] {
