@@ -32,11 +32,59 @@ describe("Jev route selection", () => {
     expect(deriveJevConstraints(route(), resolution({ agent: agent({ effort: "max" }) })).harness).toBeUndefined();
   });
 
-  it("preserves profile model inherit as a fixed omission", async () => {
+  it("preserves profile and resolved model inherit as fixed omissions without resolving credentials", async () => {
     const fetcher = vi.fn();
-    const result = await routeWithJev({ task: "task", route: route({ model: undefined, provenance: { harness: "agent-default", model: "agent-default", thinking: "parent" } }), resolutionInput: resolution({ agent: agent({ harness: "claude", model: "inherit" }) }), piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], apiKey: "key" }, fetcher);
-    expect(result.route.model).toBeUndefined();
+    const resolveApiKey = vi.fn(async () => "key");
+    const inherited = route({ harness: "claude", model: undefined, provenance: { harness: "agent-default", model: "agent-default", thinking: "parent" } });
+    const raw = await routeWithJev({ task: "task", route: inherited, resolutionInput: resolution({ agent: agent({ harness: "claude", model: "inherit" }) }), piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], resolveApiKey }, fetcher);
+    const resolved = await routeWithJev({ task: "task", route: inherited, piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], resolveApiKey }, fetcher);
+    expect(raw.route).toEqual(inherited);
+    expect(resolved.route).toEqual(inherited);
     expect(fetcher).not.toHaveBeenCalled();
+    expect(resolveApiKey).not.toHaveBeenCalled();
+  });
+
+  it("infers SDK aliases before applying fixed profile effort and never calls Jev", async () => {
+    const fetcher = vi.fn();
+    const resolveApiKey = vi.fn(async () => "key");
+    const result = await routeWithJev({
+      task: "task", route: route(), resolutionInput: resolution({ agent: agent({ model: "sonnet", effort: "max", thinking: "low" }) }),
+      piModels: [], claudeModels: [{ value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", description: "", supportsEffort: true, supportedEffortLevels: ["low", "max"] }], resolveApiKey,
+    }, fetcher);
+    expect(result.route).toMatchObject({ harness: "claude", model: "sonnet", thinking: "max", provenance: { model: "agent-default", thinking: "agent-default" } });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(resolveApiKey).not.toHaveBeenCalled();
+  });
+
+  it("applies profile effort per candidate backend before requesting Jev", async () => {
+    const seen: Array<Array<[string, string | undefined]>> = [];
+    const choose = (harness: "pi" | "claude") => vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const keys = Object.keys(JSON.parse(String(init?.body)).questions.route.criteria);
+      const decoded = keys.map((key) => JSON.parse(Buffer.from(key, "base64url").toString()) as [string, string, string | null]);
+      seen.push(decoded.map(([candidateHarness, , thinking]) => [candidateHarness, thinking ?? undefined]));
+      const choice = keys[decoded.findIndex(([candidateHarness]) => candidateHarness === harness)]!;
+      return new Response(JSON.stringify({ answers: { route: { type: "choice", choice, confidence: 1, probabilities: Object.fromEntries(keys.map((key) => [key, key === choice ? 1 : 0])) } } }));
+    });
+    const common = { task: "task", route: route(), resolutionInput: resolution({ agent: agent({ effort: "max" }) }), piModels: [piModel("one", { low: "low", max: "max" })], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: true, supportedEffortLevels: ["low" as const, "max" as const] }], apiKey: "key" };
+    const pi = await routeWithJev(common, choose("pi"));
+    const claude = await routeWithJev(common, choose("claude"));
+    expect(pi.route).toMatchObject({ harness: "pi", provenance: { thinking: "jev" } });
+    expect(claude.route).toMatchObject({ harness: "claude", thinking: "max", provenance: { thinking: "agent-default" } });
+    expect(seen[0]).toEqual(expect.arrayContaining([["pi", "low"], ["pi", "max"], ["claude", "max"]]));
+  });
+
+  it("rejects tool and effort incompatibilities instead of unsafe fallback", async () => {
+    const claude = [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: true, supportedEffortLevels: ["low" as const] }];
+    await expect(routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { harness: "claude", model: "sonnet" } }), tools: ["bash"], piModels: [piModel("one")], claudeModels: claude, apiKey: "key" })).rejects.toBeInstanceOf(JevRoutingConflictError);
+    await expect(routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { harness: "pi", model: "openai-codex/one" } }), tools: ["Read"], piModels: [piModel("one")], claudeModels: claude, apiKey: "key" })).rejects.toBeInstanceOf(JevRoutingConflictError);
+    await expect(routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { harness: "claude", model: "sonnet", thinking: "max" } }), piModels: [], claudeModels: claude, apiKey: "key" })).rejects.toBeInstanceOf(JevRoutingConflictError);
+  });
+
+  it("keeps a valid original route on service failure", async () => {
+    const original = route({ model: "openai-codex/one", thinking: "low" });
+    const result = await routeWithJev({ task: "task", route: original, piModels: [piModel("one", { low: "low" }), piModel("two", { low: "low" })], claudeModels: [], apiKey: "key" }, vi.fn(async () => { throw new Error("offline"); }));
+    expect(result.route).toEqual(original);
+    expect(result.fallback).toContain("failed");
   });
 
   it("throws on backend/model conflicts and never calls Jev", async () => {
@@ -50,8 +98,7 @@ describe("Jev route selection", () => {
     const exact = await routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { model: "anthropic/claude-sonnet-5", thinking: "high" } }), piModels: [piModel("claude-sonnet-5")], claudeModels, apiKey: "key" }, vi.fn());
     expect(exact.route.harness).toBe("claude");
     expect(exact.route.model).toBe("anthropic/claude-sonnet-5");
-    const wrong = await routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { model: "other/sonnet" } }), piModels: [], claudeModels, apiKey: "key" }, vi.fn());
-    expect(wrong.fallback).toContain("No compatible");
+    await expect(routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { model: "other/sonnet" } }), piModels: [], claudeModels, apiKey: "key" }, vi.fn())).rejects.toBeInstanceOf(JevRoutingConflictError);
   });
 
   it("uses authoritative Claude effort metadata and conservative tool compatibility", () => {

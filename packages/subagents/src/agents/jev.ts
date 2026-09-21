@@ -82,7 +82,7 @@ export function deriveJevConstraints(route: ResolvedRoute, input?: RouteResoluti
       thinking: fixed(route.provenance.thinking) && route.thinking !== undefined ? route.thinking : undefined,
       provenance: {
         ...(fixed(route.provenance.harness) ? { harness: route.provenance.harness } : {}),
-        ...(fixed(route.provenance.model) && route.model !== undefined ? { model: route.provenance.model } : {}),
+        ...(fixed(route.provenance.model) ? { model: route.provenance.model } : {}),
         ...(fixed(route.provenance.thinking) && route.thinking !== undefined ? { thinking: route.provenance.thinking } : {}),
       },
     };
@@ -100,7 +100,7 @@ export function deriveJevConstraints(route: ResolvedRoute, input?: RouteResoluti
   if (!thinking && effectiveHarness === "claude" && input.agent?.defaults.effort !== undefined) {
     thinking = { value: input.agent.defaults.effort, provenance: "agent-default" };
   }
-  if (!thinking && input.agent?.defaults.thinking !== undefined) {
+  if (!thinking && effectiveHarness && input.agent?.defaults.thinking !== undefined) {
     thinking = { value: input.agent.defaults.thinking, provenance: "agent-default" };
   }
   return {
@@ -151,6 +151,11 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
   if (constraints.harness && inferred && constraints.harness !== inferred) {
     throw new JevRoutingConflictError("The fixed harness and model are incompatible.");
   }
+  if (inferred && constraints.harness === undefined) {
+    constraints.harness = inferred;
+    constraints.provenance.harness = "jev";
+  }
+  applyProfileThinking(constraints, input.resolutionInput, constraints.harness);
   const fixedHarness = constraints.harness ?? inferred;
   if (!input.resolutionInput && constraints.harness && constraints.provenance.harness && !constraints.model && routeFieldUnset(input.route.model)) {
     delete constraints.provenance.model;
@@ -158,21 +163,33 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
   let candidates = buildJevCandidates(input.piModels, input.claudeModels, constraints.harness ?? fixedHarness);
   if (input.tools) candidates = candidates.filter((item) => toolsCompatible(item.harness, input.tools!));
   if (constraints.model) candidates = candidates.filter((item) => modelMatches(item, constraints.model!, input.piModels, input.claudeModels));
-  if (constraints.thinking !== undefined) candidates = candidates.filter((item) => thinkingMatches(item, constraints.thinking!));
-  if (candidates.length === 0) return fallback(input.route, "No compatible available route was found for the fixed routing constraints.");
-
-  if (constraints.model && constraints.thinking !== undefined) {
-    return { route: applyCandidate(input.route, candidates[0]!, constraints), used: false };
+  candidates = candidates.filter((item) => {
+    const thinking = effectiveThinking(constraints, input.resolutionInput, item.harness);
+    return thinking === undefined || thinkingMatches(item, thinking);
+  }).map((item) => ({ ...item, thinking: effectiveThinking(constraints, input.resolutionInput, item.harness) ?? item.thinking }));
+  if (candidates.length === 0) {
+    if (!input.resolutionInput && constraints.model && constraints.thinking !== undefined) {
+      return { route: input.route, used: false };
+    }
+    throw new JevRoutingConflictError("No compatible available route was found for the fixed routing constraints.");
   }
-  if (candidates.length === 1) return { route: applyCandidate(input.route, candidates[0]!, constraints), used: false };
+
+  if (constraints.model && effectiveThinking(constraints, input.resolutionInput, candidates[0]!.harness) !== undefined) {
+    const selectedConstraints = candidateConstraints(constraints, input.resolutionInput, candidates[0]!.harness);
+    return { route: applyCandidate(input.route, candidates[0]!, selectedConstraints), used: false };
+  }
+  if (candidates.length === 1) {
+    const selectedConstraints = candidateConstraints(constraints, input.resolutionInput, candidates[0]!.harness);
+    return { route: applyCandidate(input.route, candidates[0]!, selectedConstraints), used: false };
+  }
   if (candidates.length > JEV_MAX_CHOICES) {
-    return fallback(input.route, `Jev routing has ${candidates.length} valid choices, above the ${JEV_MAX_CHOICES} service limit.`);
+    return safeFallback(input, constraints, `Jev routing has ${candidates.length} valid choices, above the ${JEV_MAX_CHOICES} service limit.`);
   }
 
   try {
     const criteria = Object.fromEntries(candidates.map((item) => [item.key, item.description]));
     const apiKey = input.apiKey ?? await input.resolveApiKey?.();
-    if (!apiKey) return fallback(input.route, "Jev credentials are unavailable.");
+    if (!apiKey) return safeFallback(input, constraints, "Jev credentials are unavailable.");
     const answer = await requestJevChoice({
       apiKey,
       state: { task: input.task, role: bounded(input.role ?? "generic subagent", 500) },
@@ -181,12 +198,72 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
       fetchImpl,
     });
     const selected = candidates.find((item) => item.key === answer.choice);
-    if (!selected) return fallback(input.route, "Jev returned an unavailable route.");
-    return { route: applyCandidate(input.route, selected, constraints), used: true };
-  } catch {
+    if (!selected) return safeFallback(input, constraints, "Jev returned an unavailable route.");
+    return { route: applyCandidate(input.route, selected, candidateConstraints(constraints, input.resolutionInput, selected.harness)), used: true };
+  } catch (error) {
     if (input.signal?.aborted) throw new Error("Jev routing was cancelled.");
-    return fallback(input.route, "Jev routing failed or returned an invalid response.");
+    if (error instanceof JevRoutingConflictError) throw error;
+    return safeFallback(input, constraints, "Jev routing failed or returned an invalid response.");
   }
+}
+
+function profileThinking(input: RouteResolutionInput | undefined, harness: HarnessKind):
+  { value: ThinkingLevel; provenance: RouteFieldProvenance } | undefined {
+  if (!input) return undefined;
+  const higherPriority = layeredWithoutAgent(input, "thinking");
+  if (higherPriority) return higherPriority as { value: ThinkingLevel; provenance: RouteFieldProvenance };
+  if (harness === "claude" && input.agent?.defaults.effort !== undefined) {
+    return { value: input.agent.defaults.effort, provenance: "agent-default" };
+  }
+  if (input.agent?.defaults.thinking !== undefined) {
+    return { value: input.agent.defaults.thinking, provenance: "agent-default" };
+  }
+  return undefined;
+}
+
+function applyProfileThinking(constraints: JevConstraints, input: RouteResolutionInput | undefined, harness: HarnessKind | undefined): void {
+  if (constraints.thinking !== undefined || !harness) return;
+  const thinking = profileThinking(input, harness);
+  if (thinking) {
+    constraints.thinking = thinking.value;
+    constraints.provenance.thinking = thinking.provenance;
+  }
+}
+
+function effectiveThinking(constraints: JevConstraints, input: RouteResolutionInput | undefined, harness: HarnessKind): ThinkingLevel | undefined {
+  return constraints.thinking ?? profileThinking(input, harness)?.value;
+}
+
+function candidateConstraints(constraints: JevConstraints, input: RouteResolutionInput | undefined, harness: HarnessKind): JevConstraints {
+  const next = { ...constraints, provenance: { ...constraints.provenance } };
+  applyProfileThinking(next, input, harness);
+  return next;
+}
+
+function safeFallback(input: JevRouteInput, constraints: JevConstraints, reason: string): JevRouteResult {
+  const harness = constraints.harness ?? input.route.harness;
+  if (input.tools && !toolsCompatible(harness, input.tools)) {
+    throw new JevRoutingConflictError("The fixed route is incompatible with the tool allowlist.");
+  }
+  const thinking = effectiveThinking(constraints, input.resolutionInput, harness);
+  if (thinking !== undefined) {
+    const catalog = buildJevCandidates(input.piModels, input.claudeModels, harness);
+    const compatible = catalog.some((item) =>
+      (!constraints.model || modelMatches(item, constraints.model, input.piModels, input.claudeModels)) &&
+      thinkingMatches(item, thinking));
+    if (catalog.length > 0 && !compatible) {
+      throw new JevRoutingConflictError("The fixed route does not support the requested thinking or effort.");
+    }
+  }
+  const next = structuredClone(input.route);
+  if (constraints.harness) {
+    next.harness = constraints.harness;
+    next.provenance.harness = constraints.provenance.harness ?? next.provenance.harness;
+  }
+  if (next.harness === "claude" && next.provenance.thinking === "parent" && constraints.thinking === undefined) {
+    next.thinking = undefined;
+  }
+  return fallback(next, reason);
 }
 
 function layered(input: RouteResolutionInput, field: "harness" | "model" | "thinking"):
