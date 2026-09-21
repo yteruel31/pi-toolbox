@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultJevCredentialPath, jevStorageErrorMessage, readJevConfig, readJevSetupSnapshot, resolveJevKey, saveJevSetup, testJevConnection } from "../src/agents/jev-config.js";
-import { ensureSafePath } from "../src/agents/jev-storage.js";
+import { ensureSafePath, readSafeText } from "../src/agents/jev-storage.js";
 
 const cleanup: string[] = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true }))));
@@ -54,16 +54,29 @@ describe("Jev setup storage", () => {
   });
 
   it.runIf(process.platform !== "win32")("keeps non-environment settings and credentials strict under owned 0775 ancestors", async () => {
-    const base = await root(), writable = join(base, "writable"), agentDir = join(writable, "agent"), credential = join(writable, "key.json");
+    const base = await root(), writable = join(base, "writable"), agentDir = join(writable, "agent"), credential = join(base, "key.json");
     await mkdir(writable); await chmod(writable, 0o775); await mkdir(agentDir, { mode: 0o700 });
     await writeFile(join(agentDir, "subagents-jev.json"), `${JSON.stringify({ version: 1, enabled: true, credential: { source: "file", value: credential } })}\n`, { mode: 0o600 });
     await writeFile(credential, '{"jev":"secret"}\n', { mode: 0o600 });
     await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe");
-    await expect(resolveJevKey({ version: 1, enabled: true, credential: { source: "file", value: credential } })).rejects.toThrow("Unsafe");
-    await expect(saveJevSetup({ agentDir, enabled: true, source: "file", reference: credential, key: "secret" })).rejects.toThrow("Unsafe");
-    const storeKeyring = vi.fn(async () => undefined);
-    await expect(saveJevSetup({ agentDir, enabled: true, source: "keyring", key: "secret", storeKeyring })).rejects.toThrow("Unsafe");
+    await expect(resolveJevKey({ version: 1, enabled: true, credential: { source: "file", value: credential } })).resolves.toBe("secret");
+
+    const freshFileDir = join(writable, "fresh-file");
+    await expect(saveJevSetup({ agentDir: freshFileDir, enabled: true, source: "file", reference: join(base, "fresh-key.json"), key: "secret" })).rejects.toThrow("Unsafe");
+    const keyringDir = join(writable, "keyring"); await mkdir(keyringDir, { mode: 0o700 });
+    await writeFile(join(keyringDir, "subagents-jev.json"), `${JSON.stringify({ version: 1, enabled: true, credential: { source: "keyring", value: "pi-subagents/jev" } })}\n`, { mode: 0o600 });
+    await expect(readJevConfig(keyringDir)).rejects.toThrow("Unsafe");
+    const freshKeyringDir = join(writable, "fresh-keyring"), storeKeyring = vi.fn(async () => undefined);
+    await expect(saveJevSetup({ agentDir: freshKeyringDir, enabled: true, source: "keyring", key: "secret", storeKeyring })).rejects.toThrow("Unsafe");
     expect(storeKeyring).not.toHaveBeenCalled();
+  });
+
+  it.runIf(process.platform !== "win32")("never relaxes private or repository-safe reads", async () => {
+    const base = await root(), writable = join(base, "writable"), privateFile = join(writable, "private.json");
+    await mkdir(writable); await chmod(writable, 0o775); await writeFile(privateFile, "secret", { mode: 0o600 });
+    await expect(readSafeText(privateFile, true, false, false, true)).rejects.toThrow("Unsafe");
+    const repo = join(base, "repo"); await mkdir(repo); await mkdir(join(repo, ".git")); const repositoryFile = join(repo, "key.json"); await writeFile(repositoryFile, "secret", { mode: 0o600 });
+    await expect(readSafeText(repositoryFile, false, false, true, true)).rejects.toThrow("Unsafe");
   });
 
   it.runIf(process.platform !== "win32")("rejects settings below world-writable owned ancestors", async () => {
@@ -85,11 +98,17 @@ describe("Jev setup storage", () => {
     await chmod(config, 0o600); await chmod(agentDir, 0o555); expect((await readJevConfig(agentDir))?.enabled).toBe(true); await chmod(agentDir, 0o700);
   });
 
-  it.runIf(process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() === 0)("rejects foreign-owned settings", async () => {
+  it.runIf(process.platform !== "win32" && typeof process.getuid === "function")("rejects foreign-owned settings paths while permitting a sticky system ancestor", async () => {
     const base = await root(), agentDir = join(base, "agent"), config = join(agentDir, "subagents-jev.json"); await mkdir(agentDir);
-    await writeFile(config, '{"version":1,"enabled":false,"credential":{"source":"environment","value":"JEV_API_KEY"}}');
-    const { chown } = await import("node:fs/promises"); await chown(config, 1, 1);
-    await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe");
+    await writeFile(config, '{"version":1,"enabled":false,"credential":{"source":"environment","value":"JEV_API_KEY"}}', { mode: 0o600 });
+    const actualUid = process.getuid!(), getuid = vi.spyOn(process, "getuid").mockReturnValue(actualUid + 1);
+    try {
+      await expect(readJevConfig(agentDir)).rejects.toThrow("Unsafe");
+      await expect(readSafeText(config, true, false)).rejects.toThrow("Unsafe");
+      await expect(ensureSafePath(join(base, "new-jev-file"), true)).rejects.toThrow("Unsafe");
+      await expect(ensureSafePath(join(tmpdir(), "new-jev-file"), true)).rejects.toThrow("Unsafe");
+    } finally { getuid.mockRestore(); }
+    await expect(ensureSafePath(join(base, "new-jev-file"), true)).resolves.toBeUndefined();
   });
 
   it("redacts keyring failures and never falls back", async () => {
@@ -112,6 +131,10 @@ describe("Jev setup storage", () => {
   it("rejects intermediate/final symlinks and repository destinations including .git files", async () => {
     const base = await root(), outside = join(base, "outside"); await mkdir(outside);
     const link = join(base, "link"); await symlink(outside, link); await expect(ensureSafePath(join(link, "key.json"), true, true)).rejects.toThrow("Unsafe");
+    await mkdir(join(outside, "agent"));
+    await writeFile(join(outside, "agent", "subagents-jev.json"), '{"version":1,"enabled":true,"credential":{"source":"environment","value":"JEV_API_KEY"}}\n', { mode: 0o600 });
+    await expect(readJevConfig(join(link, "agent"))).rejects.toThrow("Unsafe");
+    await expect(saveJevSetup({ agentDir: join(link, "agent"), enabled: true, source: "environment", reference: "JEV_API_KEY" })).rejects.toThrow("Unsafe");
     const target = join(base, "target"); await writeFile(target, "x"); const final = join(base, "final"); await symlink(target, final); await expect(ensureSafePath(final)).rejects.toThrow("Unsafe");
     const repo = join(base, "repo"), checkout = join(base, "checkout"); await mkdir(repo); await mkdir(checkout); await writeFile(join(repo, ".git"), "gitdir: elsewhere\n"); await mkdir(join(checkout, ".git"));
     await expect(saveJevSetup({ agentDir: join(base, "agent-a"), enabled: true, source: "file", reference: join(repo, "sub", "key.json"), key: "key" })).rejects.toThrow("Unsafe");

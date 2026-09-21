@@ -110,7 +110,7 @@ async function ensureOwnedDirectoryPath(directory: string, create: boolean): Pro
   }
 }
 export async function readSafeText(path: string, privateMode: boolean, allowMissing: boolean, rejectRepository = false, allowOwnedWritableAncestors = false): Promise<{ text?: string; revision?: JevRevision }> {
-  const checkPath = allowOwnedWritableAncestors
+  const checkPath = allowOwnedWritableAncestors && !privateMode && !rejectRepository
     ? (value: string, create: boolean) => ensureOwnedSettingsPath(value, create)
     : (value: string, create: boolean) => ensureSafePath(value, create, rejectRepository);
   await checkPath(path, false).catch(async error => {
