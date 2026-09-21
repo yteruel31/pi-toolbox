@@ -1,13 +1,10 @@
 import { getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import type { ClaudeSupportedModel } from "../harnesses/claude.js";
-import { describeError } from "../shared/errors.js";
 import { truncateText } from "../shared/truncate.js";
+import { JEV_MODEL, JEV_TIMEOUT_MS, requestJevChoice, type JevFetch } from "./jev-client.js";
 import type { HarnessKind, ThinkingLevel } from "../shared/types.js";
 import type { ResolvedRoute, RouteFieldProvenance } from "./types.js";
 
-export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
-export const JEV_MODEL = "jev-latest";
-export const JEV_TIMEOUT_MS = 5_000;
 export const JEV_MAX_CHOICES = 255;
 
 export interface JevConfig {
@@ -38,8 +35,6 @@ export interface JevRouteResult {
   used: boolean;
   fallback?: string;
 }
-
-export type JevFetch = typeof fetch;
 
 const CURATED: Record<string, string> = {
   "gpt-6-astra": "Best for the hardest end-to-end coding, application, research, and judgment work.",
@@ -107,42 +102,21 @@ export async function routeWithJev(
     return fallback(input.route, `Jev routing has ${candidates.length} valid choices, above the ${JEV_MAX_CHOICES} service limit.`);
   }
 
-  const controller = new AbortController();
-  let timedOut = false;
-  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, JEV_TIMEOUT_MS);
-  const onAbort = () => controller.abort();
-  input.signal?.addEventListener("abort", onAbort, { once: true });
-  if (input.signal?.aborted) onAbort();
   try {
     const criteria = Object.fromEntries(candidates.map((item) => [item.key, item.description]));
-    const response = await fetchImpl(JEV_ENDPOINT, {
-      method: "POST",
-      headers: { authorization: `Bearer ${input.apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        state: { task: bounded(input.task, 20_000), role: bounded(input.role ?? "generic subagent", 500) },
-        model: JEV_MODEL,
-        questions: {
-          route: {
-            type: "choice",
-            instructions: "Choose the available route that best balances capability and thinking effort for this task. Match task difficulty; don't maximize quality by default and don't optimize only for cost. Respect every explicit compatibility constraint encoded in the choices.",
-            criteria,
-          },
-        },
-      }),
-      signal: controller.signal,
+    const answer = await requestJevChoice({
+      apiKey: input.apiKey,
+      state: { task: input.task, role: bounded(input.role ?? "generic subagent", 500) },
+      criteria,
+      signal: input.signal,
+      fetchImpl,
     });
-    if (!response.ok) return fallback(input.route, `Jev returned HTTP ${response.status}.`);
-    const raw: unknown = await response.json();
-    const choice = parseChoice(raw);
-    const selected = candidates.find((item) => item.key === choice);
+    const selected = candidates.find((item) => item.key === answer.choice);
     if (!selected) return fallback(input.route, "Jev returned an unavailable route.");
     return { route: applyCandidate(input.route, selected), used: true };
-  } catch (error) {
-    if (input.signal?.aborted) throw error;
-    return fallback(input.route, timedOut ? "Jev routing timed out after 5 seconds." : `Jev routing failed: ${bounded(describeError(error), 180)}`);
-  } finally {
-    clearTimeout(timeout);
-    input.signal?.removeEventListener("abort", onAbort);
+  } catch {
+    if (input.signal?.aborted) throw new Error("Jev routing was cancelled.");
+    return fallback(input.route, "Jev routing failed or returned an invalid response.");
   }
 }
 
@@ -173,15 +147,6 @@ function applyCandidate(route: ResolvedRoute, selected: JevCandidate): ResolvedR
   if (!fixed(route.provenance.model)) { next.model = selected.model; next.provenance.model = "jev"; }
   if (!fixed(route.provenance.thinking)) { next.thinking = selected.thinking; next.provenance.thinking = "jev"; }
   return next;
-}
-
-function parseChoice(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const answers = (value as { answers?: unknown }).answers;
-  if (!answers || typeof answers !== "object") return undefined;
-  const route = (answers as { route?: unknown }).route;
-  if (!route || typeof route !== "object") return undefined;
-  return typeof (route as { choice?: unknown }).choice === "string" ? (route as { choice: string }).choice : undefined;
 }
 
 function encodeKey(harness: HarnessKind, model: string, thinking?: ThinkingLevel): string {
