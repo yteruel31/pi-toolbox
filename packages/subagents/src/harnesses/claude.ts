@@ -145,6 +145,9 @@ export interface ClaudeSupportedModel {
   resolvedModel?: string;
   displayName: string;
   description: string;
+  supportsEffort?: boolean;
+  supportedEffortLevels?: ClaudeEffortLevel[];
+  supportsAdaptiveThinking?: boolean;
 }
 
 export interface ClaudeQuery extends AsyncIterable<ClaudeSdkMessage> {
@@ -634,11 +637,23 @@ export async function listClaudeSupportedModels(
         typeof candidate.resolvedModel === "string"
           ? modelCatalogValue(candidate.resolvedModel)
           : undefined;
+      const supportedEffortLevels = Array.isArray(candidate.supportedEffortLevels)
+        ? candidate.supportedEffortLevels.filter((level): level is ClaudeEffortLevel =>
+            ["low", "medium", "high", "xhigh", "max"].includes(level),
+          )
+        : undefined;
       normalized.push({
         value,
         displayName: displayName || value,
         description,
         ...(resolvedModel ? { resolvedModel } : {}),
+        ...(typeof candidate.supportsEffort === "boolean"
+          ? { supportsEffort: candidate.supportsEffort }
+          : {}),
+        ...(supportedEffortLevels ? { supportedEffortLevels } : {}),
+        ...(typeof candidate.supportsAdaptiveThinking === "boolean"
+          ? { supportsAdaptiveThinking: candidate.supportsAdaptiveThinking }
+          : {}),
       });
     }
     return normalized;

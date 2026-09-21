@@ -107,6 +107,16 @@ A package can expose agents with:
 
 The compatibility key `pi-subagents.agents` is also accepted.
 
+## Optional Jev automatic routing
+
+Jev routing is off by default. When enabled, it fills only route fields that weren't fixed by spawn arguments, trusted project routing, user routing, or an agent definition. It chooses from the current Pi scoped models, or all available Pi models when the scope is empty, plus models reported by Claude Agent SDK discovery. Scoped thinking pins don't restrict Jev, only scoped model membership does. Fixed route fields are never overwritten, and incompatible or unavailable results fall back to the ordinary route with a bounded warning.
+
+The request sends only the task prompt, the selected role's name and description, candidate metadata, and compatibility constraints to `POST https://api.typesafe.ai/v1/systemone` using `jev-latest`. It doesn't send parent history or read extra files. Calls time out after five seconds and aren't retried. Model descriptions are internal selection metadata, not editable Setup fields. Curated descriptions were checked on 2026-09-21 against [OpenAI's model guide](https://learn.chatgpt.com/docs/models), [Anthropic's model overview](https://platform.claude.com/docs/en/models/overview), and [Anthropic's effort guide](https://platform.claude.com/docs/en/build-with-claude/effort); runtime catalogues remain the source of model availability and accepted effort levels.
+
+Use `/subagents`, then Setup, to stage the user-global opt-in and credential source. Nothing, including a key, is written until Save; Cancel discards the draft. API-key input is masked, and Test connection is an explicit action. Supported sources are an environment-variable reference, Linux Secret Service through `secret-tool`, or an explicitly selected private mode-0600 file outside repositories. The dedicated keyring namespace is `application=pi-subagents, service=jev`; keys are passed over stdin, never argv. There's no automatic fallback from keyring to a plaintext file.
+
+On Linux, install `libsecret-tools` and make sure Pi has a session D-Bus plus an unlocked Secret Service collection, such as GNOME Keyring. After Save, run `/reload`; active extension state isn't changed until reload. Never send Jev keys through chat, command arguments, project files, or repository configuration.
+
 ## Saved routing
 
 Use `/subagents agents` to edit routes, or write:
@@ -134,6 +144,7 @@ Parent defaults apply only to Pi. For Claude, unresolved model/thinking values a
 - `/subagents` — choose run inspection or routing in TUI mode.
 - `/subagents runs` — open the live run overlay.
 - `/subagents agents` — open the routing editor.
+- `/subagents setup` — open user-global Jev opt-in and credential setup.
 - `/btw <question>` — ask a one-off Pi side question using the shared cap. Its answer is shown to the human and persisted as a custom entry, but never enters parent-model context or triggers a parent turn.
 
 Both TUI panels use the full terminal and the active Pi theme. When a spawn supplies both a custom `name` and a named-agent profile, the parent transcript call heading, run lists, and details preserve the custom title and show its origin as `custom title (profile-name)`. With only a profile, the call heading shows `(profile-name)` without exposing the spawn prompt. Run list and detail metadata show the selected thinking level in parentheses after the model when available. In the run list, Enter opens the detailed structured transcript directly. Active Pi and Claude runs show a Pi `Editor`: Enter submits to that existing child, normal multiline/navigation editing stays available, PageUp/PageDown scroll the transcript, `r` refreshes with visible feedback, and `x` opens an in-panel cancellation confirmation (`y`/Enter confirms; `n`/Escape keeps the run active). Outside that confirmation, Escape returns to the list. Settled runs remain inspectable but become read-only. The transcript distinguishes lifecycle, user, assistant, and tool events and retains bounded tool input/output with omission accounting.

@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, type Model } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import {
   DefaultPackageManager,
@@ -15,6 +15,8 @@ import { Type } from "typebox";
 import { FileAgentDiscovery } from "./agents/discovery.js";
 import { MAX_AGENT_SKILLS } from "./agents/limits.js";
 import { DefaultRouteResolver } from "./agents/route-resolver.js";
+import { readJevConfig, resolveJevKey, saveJevSetup, testJevConnection } from "./agents/jev-config.js";
+import { routeWithJev } from "./agents/jev.js";
 import { FileRoutingStore } from "./agents/routing-store.js";
 import {
   appendPreloadedSkills,
@@ -35,6 +37,7 @@ import type { SubagentHarness } from "./core/harness.js";
 import { RunManager } from "./core/run-manager.js";
 import {
   ClaudeHarness,
+  listClaudeSupportedModels,
   type ClaudeHarnessOptions,
 } from "./harnesses/claude.js";
 import {
@@ -57,6 +60,7 @@ import {
   type RoutingModelCatalogDependencies,
 } from "./tui/model-catalog.js";
 import { routingModelDisplayValue } from "./tui/routing-editor.js";
+import { JEV_SETUP_OVERLAY, JevSetupPanel } from "./tui/jev-setup.js";
 import type { RunCounts } from "./tui/status.js";
 import { openPiRoutingOverlay, openPiRunsOverlay } from "./tui/pi-views.js";
 import { countRuns, statusText } from "./tui/status.js";
@@ -85,6 +89,7 @@ const THINKING_LEVELS = [
 ] as const;
 
 export interface ExtensionDependencies extends RoutingModelCatalogDependencies {
+  routeJev?: typeof routeWithJev;
   createPiHarness?(options: PiHarnessOptions): SubagentHarness;
   createClaudeHarness?(options: ClaudeHarnessOptions): SubagentHarness;
   createDiscovery?(ctx: ExtensionContext): Promise<FileAgentDiscovery>;
@@ -266,6 +271,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       sessionContext = ctx;
       const runtime = requireSession();
       const workingDir = await validateWorkingDirectory(params.working_dir, ctx);
+      if (_signal?.aborted) throw new DOMException("Aborted", "AbortError");
       const resolution = await resolveSpawn(
         ctx,
         params.agent,
@@ -277,7 +283,18 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         },
         dependencies,
       );
-      const baseHarness = resolution.route.harness === "claude"
+      const routed = await maybeRouteWithJev(
+        ctx,
+        params.prompt,
+        resolution.agent,
+        resolution.route,
+        dependencies,
+        _signal,
+      );
+      if (routed.fallback && ctx.hasUI) {
+        ctx.ui.notify(`Jev routing fallback: ${routed.fallback}`, "warning");
+      }
+      const baseHarness = routed.route.harness === "claude"
         ? runtime.claudeHarness
         : runtime.piHarness;
       const requestedSkills = resolution.agent?.skills ?? [];
@@ -301,15 +318,16 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         systemPrompt: resolution.agent?.systemPrompt,
         tools: resolution.agent?.tools,
         workingDir,
-        model: resolution.route.model,
-        thinkingLevel: resolution.route.thinking,
+        model: routed.route.model,
+        thinkingLevel: routed.route.thinking,
       });
       updateStatus();
       return textResult(
         `Started ${snapshot.id} (${snapshot.harness}, ${snapshot.status})${snapshot.title ? `: ${formatRunIdentity(snapshot)}` : ""}.`,
         {
           snapshot,
-          route: resolution.route,
+          route: routed.route,
+          routing: { jev: routed.used, fallback: routed.fallback },
           skills: { requested: requestedSkills },
         },
       );
@@ -518,13 +536,38 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       sessionContext = ctx;
       let mode = args.trim().toLowerCase();
       if (ctx.mode === "tui") {
+        if (mode === "config") mode = "setup";
         if (!mode) {
-          const choice = await ctx.ui.select("Subagents", ["runs", "agents"]);
+          const choice = await ctx.ui.select("Subagents", ["runs", "agents", "setup"]);
           if (!choice) return;
           mode = choice;
         }
         if (mode === "runs") {
           await openPiRunsOverlay(ctx, createRunsPort());
+          return;
+        }
+        if (mode === "setup") {
+          try {
+            const agentDir = getAgentDir();
+            const config = await readJevConfig(agentDir);
+            const saved = await ctx.ui.custom<boolean>((tui, theme, keybindings, done) => new JevSetupPanel({
+              theme,
+              keybindings,
+              config,
+              onRender: () => tui.requestRender(),
+              onDone: done,
+              onSave: (draft) => saveJevSetup({ agentDir, projectRoot: ctx.cwd, ...draft }),
+              onTest: async (draft, signal) => {
+                const key = draft.source === "environment"
+                  ? process.env[draft.reference ?? ""]
+                  : draft.key;
+                await testJevConnection(key ?? "", fetch, signal);
+              },
+            }), { overlay: true, overlayOptions: JEV_SETUP_OVERLAY });
+            if (saved) ctx.ui.notify("Jev routing settings saved. Run /reload to apply them.", "info");
+          } catch (error) {
+            ctx.ui.notify(`Jev Setup: ${truncateText(describeError(error), 300)}`, "error");
+          }
           return;
         }
         if (mode === "agents") {
@@ -662,6 +705,42 @@ function preloadUntilAbort(
     );
     if (signal.aborted) onAbort();
   });
+}
+
+async function maybeRouteWithJev(
+  ctx: ExtensionContext,
+  task: string,
+  agent: AgentDefinition | undefined,
+  route: ReturnType<DefaultRouteResolver["resolve"]>,
+  dependencies: ExtensionDependencies,
+  signal?: AbortSignal,
+) {
+  let config;
+  try {
+    config = await readJevConfig(getAgentDir());
+  } catch (error) {
+    return { route, used: false, fallback: truncateText(describeError(error), 240) };
+  }
+  if (!config?.enabled) return { route, used: false };
+  try {
+    const apiKey = await resolveJevKey(config, process.env, signal);
+    const piModels = (ctx.scopedModels?.length
+      ? ctx.scopedModels.map((entry) => entry.model)
+      : ctx.modelRegistry.getAvailable()) as Model<any>[];
+    const claudeModels = await (dependencies.listClaudeModels ?? listClaudeSupportedModels)({ cwd: ctx.cwd, signal });
+    return await (dependencies.routeJev ?? routeWithJev)({
+      task,
+      role: agent ? `${agent.name}: ${agent.description}` : "generic subagent",
+      route,
+      piModels,
+      claudeModels,
+      apiKey,
+      signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return { route, used: false, fallback: truncateText(describeError(error), 240) };
+  }
 }
 
 async function resolveSpawn(
