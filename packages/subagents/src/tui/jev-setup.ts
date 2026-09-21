@@ -54,8 +54,8 @@ export class JevSetupPanel implements Component, Focusable {
     if (draft.source !== "environment" && !draft.key && this.options.snapshot.config?.credential.source !== draft.source) {
       this.notice = `Enter a key for the newly selected ${draft.source === "file" ? "private file" : "keyring"}; another source will not be read.`; return true;
     }
-    if (draft.source === "environment" && !/^(?:JEV_API_KEY|TYPESAFE_API_KEY)$/.test(draft.reference ?? "")) {
-      this.notice = "Use JEV_API_KEY or TYPESAFE_API_KEY as the environment reference."; return true;
+    if (draft.source === "environment" && !/^[A-Za-z_][A-Za-z0-9_]{0,255}$/.test(draft.reference ?? "")) {
+      this.notice = "Use a valid environment variable name (for example JEV_API_KEY or TYPESAFE_API_KEY; max 256 characters)."; return true;
     }
     if (draft.source === "file" && !(draft.reference ?? "").startsWith("/")) { this.notice = "Choose an absolute private credential file path outside repositories."; return true; }
     return false;

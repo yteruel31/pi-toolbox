@@ -33,6 +33,13 @@ describe("Jev Setup panel", () => {
     expect(h.panel.render(72).join("\n").replace(/\x1b(?:\[[0-?]*[ -\/]*[@-~]|_pi:c\x07)/g, "")).toContain("/tmp/agent/jev-key.json");
   });
 
+  it("accepts custom bounded environment references and rejects shell-like syntax", async () => {
+    const custom = harness({ config: { version: 1, enabled: true, credential: { source: "environment", value: "CUSTOM_JEV_TOKEN" } } });
+    custom.input("t"); await tick(); expect((custom.tests[0] as any).draft.reference).toBe("CUSTOM_JEV_TOKEN");
+    const invalid = harness({ config: { version: 1, enabled: true, credential: { source: "environment", value: "$BAD KEY" } } });
+    invalid.input("t"); await tick(); expect(invalid.tests).toEqual([]); expect(invalid.panel.render(72).join("\n")).toContain("valid environment variable name");
+  });
+
   it("aborts explicit tests on cancel/dispose and ignores late completion", async () => {
     let resolve!: () => void; const test = vi.fn((_draft, _signal) => new Promise<void>((done) => { resolve = done; }));
     const h = harness({}, { test }); h.input("t"); await tick(); const signal = (h.tests[0] as any).signal as AbortSignal;

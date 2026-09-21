@@ -15,7 +15,7 @@ export function jevConfigPath(agentDir: string): string { return join(agentDir, 
 export function defaultJevCredentialPath(agentDir: string): string { return join(agentDir, "subagents-jev.credentials.json"); }
 export function validJevKey(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 16_384 && !/[\s\x00-\x1f\x7f-\x9f]/.test(value); }
 function validReference(source: JevCredentialSource, value: unknown): value is string {
-  return typeof value === "string" && value.length <= 4096 && (source === "environment" ? /^(?:JEV_API_KEY|TYPESAFE_API_KEY)$/.test(value) : source === "keyring" ? value === "pi-subagents/jev" : value.length > 0 && isAbsolute(value));
+  return typeof value === "string" && value.length <= 4096 && (source === "environment" ? /^[A-Za-z_][A-Za-z0-9_]{0,255}$/.test(value) : source === "keyring" ? value === "pi-subagents/jev" : value.length > 0 && isAbsolute(value));
 }
 function parseConfig(value: unknown): StoredJevConfig {
   if (!isRecord(value) || value.version !== 1 || typeof value.enabled !== "boolean" || !isRecord(value.credential) || !["environment", "keyring", "file"].includes(String(value.credential.source))) throw new JevStorageError("invalid");
