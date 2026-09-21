@@ -307,11 +307,11 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         const scoped = scopedIds.size === 0
           ? availablePiModels
           : availablePiModels.filter((model) => scopedIds.has(`${model.provider}/${model.id}`));
-        const fixedModel = resolution.route.model;
-        const fixed = fixedModel?.includes("/")
-          ? availablePiModels.find((model) => `${model.provider}/${model.id}` === fixedModel)
+        const fixedModel = fixedPiModelConstraint(resolution.resolutionInput);
+        const fixed = fixedModel
+          ? findUniquePiModel(availablePiModels, fixedModel)
           : undefined;
-        piModels = fixed && !scoped.includes(fixed) ? [...scoped, fixed] : scoped;
+        piModels = fixed ? [fixed] : scoped;
       }
       const routingHarness = runJevConfig?.enabled
         ? createJevBackgroundHarness({
@@ -864,6 +864,21 @@ function createOfficialRoutingStore(ctx: ExtensionContext): FileRoutingStore {
     cwd: ctx.cwd,
     projectTrusted: ctx.isProjectTrusted(),
   });
+}
+
+function fixedPiModelConstraint(input: RouteResolutionInput): string | undefined {
+  for (const entry of [input.explicit, input.projectRouting, input.userRouting, input.savedRouting, input.agent?.defaults]) {
+    if (typeof entry?.model === "string" && entry.model !== "inherit") return entry.model;
+  }
+  return undefined;
+}
+
+function findUniquePiModel(models: readonly Model<any>[], value: string): Model<any> | undefined {
+  if (value.includes("/")) {
+    return models.find((model) => `${model.provider}/${model.id}` === value);
+  }
+  const matches = models.filter((model) => model.id === value);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function modelRuntimeAdapter(ctx: ExtensionContext): PiModelRuntimeLike {
