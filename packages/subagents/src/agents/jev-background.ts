@@ -21,8 +21,12 @@ export interface JevBackgroundInput {
 export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentHarness {
   return {
     kind: input.route.harness,
-    supportsActiveMessages: false,
+    // Both production backends support active messaging. The manager still
+    // keeps the editor read-only until the selected backend attaches control.
+    supportsActiveMessages: true,
     async run(request) {
+      request.reportProgress("Routing pending.");
+      request.reportTranscript({ kind: "status", text: "Routing pending." });
       await abortable(new Promise<void>((resolve) => setImmediate(resolve)), request.signal);
       const constraints = deriveJevConstraints(input.route, input.resolutionInput);
       const clearlyPi = constraints.harness === "pi"
@@ -31,6 +35,7 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
       let catalogFallback: string | undefined;
       if (!clearlyPi) {
         try {
+          if (request.signal.aborted) throw abortError();
           claudeModels = await abortable(input.loadClaudeModels(request.signal), request.signal);
         } catch (error) {
           if (isAbort(error, request.signal)) throw abortError();
@@ -39,6 +44,7 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
       }
       let result: JevRouteResult;
       try {
+        if (request.signal.aborted) throw abortError();
         result = await abortable(input.routeJev({
           task: input.task,
           role: input.agent ? `${input.agent.name}: ${input.agent.description}` : "generic subagent",
@@ -47,7 +53,10 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
           tools: input.agent?.tools,
           piModels: input.piModels,
           claudeModels,
-          resolveApiKey: () => input.resolveApiKey(request.signal),
+          resolveApiKey: () => {
+            if (request.signal.aborted) return Promise.reject(abortError());
+            return input.resolveApiKey(request.signal);
+          },
           signal: request.signal,
         }), request.signal);
       } catch (error) {
@@ -60,7 +69,7 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
         provenance: result.route.provenance,
         fallback: result.fallback ?? catalogFallback,
       };
-      const routeText = `Routing resolved: ${result.route.harness}${result.route.model ? ` / ${result.route.model}` : ""}.`;
+      const routeText = formatResolvedRoute(result.route);
       request.reportProgress(routeText);
       request.reportTranscript({ kind: "status", text: routeText });
       if (diagnostic.fallback) {
@@ -72,6 +81,7 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
         model: result.route.model,
         thinkingLevel: result.route.thinking,
       }, diagnostic)) throw abortError();
+      if (request.signal.aborted) throw abortError();
       const actual = input.harnesses[result.route.harness];
       return actual.run({
         ...request,
@@ -82,13 +92,22 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
   };
 }
 
+function formatResolvedRoute(route: JevRouteResult["route"]): string {
+  const thinking = route.thinking ?? "default";
+  const model = route.model ?? "default";
+  return `Routing resolved: backend=${route.harness} (${route.provenance.harness}); model=${model} (${route.provenance.model}); thinking=${thinking} (${route.provenance.thinking}).`;
+}
+
 function abortError(): DOMException { return new DOMException("Aborted", "AbortError"); }
 function isAbort(error: unknown, signal: AbortSignal): boolean {
   return signal.aborted || (error instanceof DOMException && error.name === "AbortError");
 }
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(abortError());
+  if (signal.aborted) {
+    void promise.catch(() => undefined);
+    return Promise.reject(abortError());
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => { cleanup(); reject(abortError()); };
     const cleanup = () => signal.removeEventListener("abort", onAbort);

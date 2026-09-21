@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createJevBackgroundHarness } from "../src/agents/jev-background.js";
-import type { SubagentHarness } from "../src/core/harness.js";
+import type { HarnessActiveControl, SubagentHarness } from "../src/core/harness.js";
+import { RunManager } from "../src/core/run-manager.js";
 
 const route = { harness: "pi" as const, model: undefined, thinking: undefined, provenance: { harness: "parent" as const, model: "parent" as const, thinking: "parent" as const } };
 const resolutionInput = { explicit: {}, parent: { model: undefined, thinking: undefined } };
@@ -64,6 +65,52 @@ describe("Jev background harness", () => {
     expect(started).toEqual(["pi"]);
   });
 
+  it("keeps messaging read-only while routing and forwards active control after resolution", async () => {
+    let release!: () => void;
+    let resolveRun!: () => void;
+    let disposeCalls = 0;
+    const messages: string[] = [];
+    const control: HarnessActiveControl = {
+      async sendMessage(text) { messages.push(text); },
+      dispose() { disposeCalls += 1; },
+    };
+    const actual: SubagentHarness = {
+      kind: "pi", supportsActiveMessages: true,
+      run(request) {
+        request.setActiveControl(control);
+        return new Promise((resolve) => { resolveRun = () => resolve(outcome); });
+      },
+    };
+    const harness = createJevBackgroundHarness({
+      task: "task", route, resolutionInput, piModels: [], loadClaudeModels: async () => [], resolveApiKey: async () => "secret",
+      routeJev: () => new Promise((resolve) => { release = () => resolve({ route, used: false }); }),
+      harnesses: { pi: actual, claude: backend("claude", []) },
+    });
+    const manager = new RunManager();
+    const run = manager.spawn({ prompt: "task", harness, routing: { state: "pending" } });
+    expect(manager.check(run.id).messaging).toMatchObject({ supported: true, editable: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    release(); await new Promise((resolve) => setImmediate(resolve));
+    expect(manager.check(run.id).messaging).toEqual({ supported: true, editable: true });
+    await manager.sendMessage(run.id, "continue");
+    expect(messages).toEqual(["continue"]);
+    manager.cancel([run.id]); resolveRun(); await new Promise((resolve) => setImmediate(resolve));
+    expect(disposeCalls).toBe(1);
+  });
+
+  it("records pending and complete resolved diagnostics without leaking fallback errors", async () => {
+    const transcript: string[] = [];
+    const resolved = { harness: "pi" as const, model: "openai/model", thinking: "high" as const, provenance: { harness: "explicit" as const, model: "jev" as const, thinking: "saved-user" as const } };
+    const harness = createJevBackgroundHarness({ task: "task", route, resolutionInput, piModels: [], loadClaudeModels: async () => [], resolveApiKey: async () => "secret", routeJev: async () => ({ route: resolved, used: true }), harnesses: { pi: backend("pi", []), claude: backend("claude", []) } });
+    const req = request(new AbortController().signal);
+    req.reportTranscript = (entry) => { if (entry.kind === "status") transcript.push(entry.text); };
+    await harness.run(req);
+    expect(transcript[0]).toBe("Routing pending.");
+    expect(transcript.join(" ")).toContain("backend=pi (explicit)");
+    expect(transcript.join(" ")).toContain("model=openai/model (jev)");
+    expect(transcript.join(" ")).toContain("thinking=high (saved-user)");
+  });
+
   it("uses categorical warnings without leaking catalogue or routing errors", async () => {
     const progress: string[] = [];
     const harness = createJevBackgroundHarness({ task: "task", route, resolutionInput, piModels: [], loadClaudeModels: async () => { throw new Error("SECRET catalog payload"); }, resolveApiKey: async () => "secret", routeJev: async () => { throw new Error("SECRET SDK payload"); }, harnesses: { pi: backend("pi", []), claude: backend("claude", []) } });
@@ -72,5 +119,18 @@ describe("Jev background harness", () => {
     await harness.run(req);
     expect(progress.join(" ")).not.toContain("SECRET");
     expect(progress.join(" ")).toContain("Routing warning");
+  });
+
+  it("observes a supplied late rejection when already aborted", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const controller = new AbortController(); controller.abort();
+      const harness = createJevBackgroundHarness({ task: "task", route, resolutionInput, piModels: [], loadClaudeModels: async () => [], resolveApiKey: async () => "secret", routeJev: async () => ({ route, used: false }), harnesses: { pi: backend("pi", []), claude: backend("claude", []) } });
+      await expect(harness.run(request(controller.signal))).rejects.toMatchObject({ name: "AbortError" });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally { process.off("unhandledRejection", listener); }
   });
 });

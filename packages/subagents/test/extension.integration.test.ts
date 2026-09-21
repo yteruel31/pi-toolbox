@@ -18,7 +18,7 @@ import type {
 import { FileAgentDiscovery } from "../src/agents/discovery.js";
 import { FileRoutingStore } from "../src/agents/routing-store.js";
 import type { RoutingEntry } from "../src/agents/types.js";
-import { createPiSubagentsExtension } from "../src/extension.js";
+import { createPiSubagentsExtension, type ExtensionDependencies } from "../src/extension.js";
 import { buildClaudeOptions } from "../src/harnesses/claude.js";
 import { loadRoutingModelCatalog } from "../src/tui/model-catalog.js";
 
@@ -97,6 +97,12 @@ function fakePi(): FakeRuntime {
     },
   } as unknown as ExtensionAPI;
   return { pi, handlers, tools, commands, entries, messages, emitted };
+}
+
+const noLiveJevConfig = async () => undefined;
+
+function registerExtension(runtime: FakeRuntime, dependencies: ExtensionDependencies = {}): void {
+  createPiSubagentsExtension({ readJevConfig: noLiveJevConfig, ...dependencies })(runtime.pi);
 }
 
 function fakeContext(cwd: string, entries: FakeRuntime["entries"]): ExtensionContext {
@@ -201,7 +207,7 @@ async function routedFixture(profile = "gig-plan-reviewer") {
   const piHarness = new ControlledHarness("pi");
   const claudeHarness = new ControlledHarness("claude");
   const preloads: string[][] = [];
-  createPiSubagentsExtension({
+  registerExtension(runtime, {
     createPiHarness: () => piHarness,
     createClaudeHarness: () => claudeHarness,
     createDiscovery: async () => new FileAgentDiscovery({ agentDir }),
@@ -210,7 +216,7 @@ async function routedFixture(profile = "gig-plan-reviewer") {
       preloads.push([...names]);
       return { content: "Use the review checklist.", loaded: [...names], warnings: [] };
     },
-  })(runtime.pi);
+  });
   const ctx = fakeContext(cwd, runtime.entries);
   await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
   return { runtime, ctx, piHarness, claudeHarness, preloads, profile };
@@ -258,12 +264,12 @@ async function claudeDefaultsFixture(options: ClaudeDefaultsFixtureOptions) {
   const runtime = fakePi();
   const piHarness = new ControlledHarness("pi");
   const claudeHarness = new ControlledHarness("claude");
-  createPiSubagentsExtension({
+  registerExtension(runtime, {
     createPiHarness: () => piHarness,
     createClaudeHarness: () => claudeHarness,
     createDiscovery: async () => new FileAgentDiscovery({ agentDir }),
     createRoutingStore: () => routing,
-  })(runtime.pi);
+  });
   const baseContext = fakeContext(cwd, runtime.entries);
   const ctx = {
     ...baseContext,
@@ -501,7 +507,7 @@ describe("spawn profile selection", () => {
 
   it("describes every parameter and teaches profile selection in active tool guidelines", () => {
     const runtime = fakePi();
-    createPiSubagentsExtension()(runtime.pi);
+    registerExtension(runtime);
     for (const tool of runtime.tools.values()) {
       for (const schema of Object.values((tool.parameters as TObject).properties) as Array<{ description?: string }>) {
         expect(schema.description?.length).toBeGreaterThan(20);
@@ -612,7 +618,7 @@ describe("Pi extension composition", () => {
 
   it("renders named spawn calls with profile provenance and concise fallbacks", () => {
     const runtime = fakePi();
-    createPiSubagentsExtension()(runtime.pi);
+    registerExtension(runtime);
     const renderCall = runtime.tools.get("subagent_spawn")?.renderCall;
     expect(renderCall).toBeTypeOf("function");
     const theme = {
@@ -641,14 +647,14 @@ describe("Pi extension composition", () => {
     temporary.push(cwd);
     const runtime = fakePi();
     const harness = new ControlledHarness("pi");
-    createPiSubagentsExtension({
+    registerExtension(runtime, {
       createPiHarness: () => harness,
       createClaudeHarness: () => ({
         kind: "claude" as const,
         supportsActiveMessages: false,
         run: (request) => harness.run(request),
       }),
-    })(runtime.pi);
+    });
 
     expect([...runtime.tools.keys()]).toEqual([
       "subagent_spawn",
@@ -700,10 +706,10 @@ describe("Pi extension composition", () => {
     temporary.push(cwd);
     const runtime = fakePi();
     const harness = new ControlledHarness("pi");
-    createPiSubagentsExtension({
+    registerExtension(runtime, {
       createPiHarness: () => harness,
       createClaudeHarness: () => new ControlledHarness("claude"),
-    })(runtime.pi);
+    });
 
     const ctx = fakeContext(cwd, runtime.entries);
     expect(ctx.hasUI).toBe(false);
@@ -763,7 +769,7 @@ describe("Pi extension composition", () => {
     const runtime = fakePi();
     const piHarness = new ControlledHarness("pi");
     const claudeHarness = new ControlledHarness("claude");
-    createPiSubagentsExtension({
+    registerExtension(runtime, {
       createPiHarness: () => piHarness,
       createClaudeHarness: () => claudeHarness,
       createDiscovery: async () => discovery,
@@ -773,7 +779,7 @@ describe("Pi extension composition", () => {
         loaded: [...input.names],
         warnings: [],
       }),
-    })(runtime.pi);
+    });
     const ctx = fakeContext(cwd, runtime.entries);
     await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
 
@@ -829,10 +835,10 @@ describe("Pi extension composition", () => {
     temporary.push(cwd);
     const runtime = fakePi();
     runtime.entries.push({ customType: "pi-subagents-state-v1", data: persistedState() });
-    createPiSubagentsExtension({
+    registerExtension(runtime, {
       createPiHarness: () => new ControlledHarness("pi"),
       createClaudeHarness: () => new ControlledHarness("claude"),
-    })(runtime.pi);
+    });
     const ctx = fakeContext(cwd, runtime.entries);
     await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
 
@@ -853,10 +859,10 @@ describe("Pi extension composition", () => {
       data: persistedState("p".repeat(101)),
     });
     const harness = new ControlledHarness("pi");
-    createPiSubagentsExtension({
+    registerExtension(runtime, {
       createPiHarness: () => harness,
       createClaudeHarness: () => new ControlledHarness("claude"),
-    })(runtime.pi);
+    });
     const ctx = fakeContext(cwd, runtime.entries);
     await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
 
@@ -869,10 +875,10 @@ describe("Pi extension composition", () => {
     temporary.push(cwd);
     const runtime = fakePi();
     const harness = new ControlledHarness("pi");
-    createPiSubagentsExtension({
+    registerExtension(runtime, {
       createPiHarness: () => harness,
       createClaudeHarness: () => new ControlledHarness("claude"),
-    })(runtime.pi);
+    });
     const ctx = fakeContext(cwd, runtime.entries);
     await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
 
