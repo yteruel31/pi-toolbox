@@ -24,8 +24,13 @@ function parseConfig(value: unknown): StoredJevConfig {
   return value as unknown as StoredJevConfig;
 }
 export async function readJevSetupSnapshot(agentDir: string): Promise<JevSetupSnapshot> {
-  try { const result = await readSafeText(jevConfigPath(resolve(agentDir)), false, true, false, true); return { config: result.text === undefined ? undefined : parseConfig(JSON.parse(result.text)), revision: result.revision }; }
-  catch (error) { if (error instanceof JevStorageError) throw error; throw new JevStorageError("read"); }
+  try {
+    const path = jevConfigPath(resolve(agentDir));
+    const result = await readSafeText(path, false, true, false, true);
+    const config = result.text === undefined ? undefined : parseConfig(JSON.parse(result.text));
+    if (config && config.credential.source !== "environment") await ensureSafePath(path);
+    return { config, revision: result.revision };
+  } catch (error) { if (error instanceof JevStorageError) throw error; throw new JevStorageError("read"); }
 }
 export async function readJevConfig(agentDir: string): Promise<StoredJevConfig | undefined> { return (await readJevSetupSnapshot(agentDir)).config; }
 export async function resolveJevKey(config: StoredJevConfig, env = process.env, signal?: AbortSignal): Promise<string> {
@@ -49,7 +54,7 @@ export async function saveJevSetup(options: { agentDir: string; enabled: boolean
     const config: StoredJevConfig = { version: 1, enabled: options.enabled, credential: { source: options.source, value: reference } };
     let release: (() => Promise<void>) | undefined, configTemp: string | undefined, credentialTemp: string | undefined; let credentialWritten = false;
     try {
-      await makeSafeDirectory(agentDir, true); release = await acquireLock(configPath);
+      await makeSafeDirectory(agentDir, options.source === "environment"); release = await acquireLock(configPath);
       const current = await readJevSetupSnapshot(agentDir); if (!sameRevision(old.revision, current.revision)) throw new JevStorageError("changed");
       configTemp = await stagePrivate(configPath, `${JSON.stringify(config, null, 2)}\n`);
       let credentialRevision: JevRevision | undefined;
