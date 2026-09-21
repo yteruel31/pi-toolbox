@@ -45,7 +45,7 @@ test("operation/server/toolName and argumentMatches compare exact original scala
   for (const mismatch of [{ operation: "Call" }, { server: "inventory-other" }, { toolName: "look" }, { argumentMatches: { "ids.0": "42" } }, { argumentMatches: { missing: null } }] as ReturnType<typeof conditionSchema.parse>[]) {
     assert.equal(evaluate(c, [rule({ ...conditions, ...mismatch })]).decision, undefined);
   }
-  assert.equal(evaluate(candidate(), [policy({ conditions: { operation: "call" }, action: "Deny" })]).decision, undefined);
+  assert.equal(evaluate(candidate(), [policy({ conditions: { operation: "call" }, action: "Deny" })]).decision?.policyIds[0], "builtin.safe-read");
   assert.equal(evaluate(c, [rule({ pathPrefix: "/project" })]).decision, undefined);
   const denied = evaluate(c, [rule(conditions, "Deny")]).decision!;
   assert.equal(denied.action, "Deny");

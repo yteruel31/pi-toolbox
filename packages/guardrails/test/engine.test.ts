@@ -62,7 +62,7 @@ test("parent/session cancellation blocks pending assessments and later calls", a
   const b = bridge(); b.complete = async () => new Promise(() => {});
   const { engine, history, controller } = fixture(config({ policies: [] }), b);
   try {
-    const pending = engine.assess(candidate());
+    const pending = engine.assess(candidate({ args: { command: "opaque-command" } }));
     await new Promise((r) => setTimeout(r, 5)); controller.abort();
     assert.ok((await pending)?.block); assert.ok((await engine.assess(candidate()))?.block);
   } finally { history.close(); }

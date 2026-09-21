@@ -12,15 +12,15 @@ test("Deny > Ask > Allow, independent of order; disabled and actor scope are hon
     assert.equal(evaluatePolicies(candidate(), rules, []).decision?.action, "Deny");
   }
   assert.equal(evaluatePolicies(candidate(), [policy({ action: "Allow" }), policy({ id: "ask" })], []).decision?.action, "Ask");
-  assert.equal(evaluatePolicies(candidate(), [policy({ enabled: false })], []).decision, undefined);
-  assert.equal(evaluatePolicies(candidate({ actor: { kind: "subagent", runId: "1" } }), [policy({ scope: "main" })], []).decision, undefined);
+  assert.equal(evaluatePolicies(candidate(), [policy({ enabled: false })], []).decision?.action, "Allow");
+  assert.equal(evaluatePolicies(candidate({ actor: { kind: "subagent", runId: "1" } }), [policy({ scope: "main" })], []).decision?.policyIds[0], "builtin.safe-read");
   assert.equal(evaluatePolicies(candidate({ actor: { kind: "subagent", runId: "1" }, tool: "write", args: { path: "src/a.ts", content: "secret body" } }), [policy({ scope: "subagent", action: "Allow", conditions: { pathPrefix: "/project/src" } })], []).decision?.action, "Allow");
 });
 test("explicit exact simple shell allowances never apply to complex commands", () => {
   const allow = (command: string) => evaluatePolicies(candidate({ args: { command } }), [policy({ action: "Allow", conditions: { command } })], []).decision;
   assert.equal(allow("git status")?.action, "Allow");
   for (const command of ["git status; rm -rf /tmp/x", "echo $(rm -rf x)", "bash -c 'git status'", "cat <<EOF\nsecret\nEOF", "env X=x git status", "git status | cat", "echo `whoami`", "python3 -c pass", "git status && git diff", "g'it' status", "rm /tmp/*"]) {
-    assert.equal(complexShell(command), true, command); assert.equal(allow(command), undefined, command);
+    assert.equal(complexShell(command), true, command); assert.notEqual(allow(command)?.policyIds[0], "test", command);
   }
 });
 test("presets scan the whole command, including quoted/escaped and chained operations", () => {
@@ -44,7 +44,7 @@ test("policy self-write cannot be granted by a policy or natural assessment", ()
   const rules = [policy({ action: "Allow" })];
   for (const tool of ["write", "edit"] as const) assert.equal(evaluatePolicies(candidate({ tool, args: { path: "/project/.pi/guardrails.json" } }), rules, ["/project/.pi"]).decision?.action, "Deny");
   for (const command of ["echo disable > /project/.pi/guardrails.json", "rm -rf /project/.pi"]) assert.equal(evaluatePolicies(candidate({ args: { command } }), rules, ["/project/.pi"]).decision?.action, "Deny");
-  assert.equal(evaluatePolicies(candidate({ args: { command: "python -c 'modify guardrails.json'" } }), rules, ["/project/.pi"]).decision?.action, "Ask");
+  assert.equal(evaluatePolicies(candidate({ args: { command: "python -c 'modify guardrails.json'" } }), rules, ["/project/.pi"]).decision, undefined);
 });
 test("natural restrictions must be assessed before a structured Allow", () => {
   const result = evaluatePolicies(candidate(), [policy({ action: "Allow", conditions: { command: "git status" } }), policy({ id: "natural", kind: "natural", description: "Ask before reading this production checkout" })], []);

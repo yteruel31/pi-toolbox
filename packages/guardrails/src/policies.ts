@@ -6,6 +6,7 @@ import type { Policy } from "./config.js";
 import type { Candidate, Decision } from "./types.js";
 import { fileURLToPath } from "node:url";
 import { isOperationTool, operationMatches, operationOutputPaths, operationTarget, parsedUrl, validOperationArgs } from "./operations.js";
+import { deterministicDecision } from "./deterministic.js";
 
 /** Resolve existing ancestors without opening the target file, including new files below symlinks. */
 export function canonicalPath(path: string, cwd: string): string {
@@ -117,16 +118,23 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
   const matches = policies.filter((p) => (judgeEnabled || p.kind === "structured") && applicable(p, c, target));
   const structured = matches.filter((p) => p.kind === "structured");
   const natural = matches.filter((p) => p.kind === "natural");
-  for (const action of ["Deny", "Ask"] as const) {
-    const hits = structured.filter((p) => p.action === action);
-    if (hits.length) return { target, operation, natural, decision: result(action, hits.map((p) => `${p.name}: ${action}${isOperationTool(c.tool) ? " (operation conditions matched locally)" : ` (${JSON.stringify(p.conditions)})`}`).join("; "), hits.map((p) => p.id)) };
-  }
-  if (shell === "Ask") return { target, operation, natural, decision: result("Ask", "Shell effects cannot be resolved by the bounded local classifier. Human review is required while configuration/runtime protection is enabled.", ["builtin.shell-uncertain"]) };
+  const builtin = deterministicDecision(c, protectedPaths);
+  const unresolvedShell = c.tool === "bash" && shell === "Ask";
+  const denies = structured.filter((p) => p.action === "Deny");
+  if (denies.length) return { target, operation, natural, decision: result("Deny", denies.map((p) => `${p.name}: Deny${isOperationTool(c.tool) ? " (operation conditions matched locally)" : ` (${JSON.stringify(p.conditions)})`}`).join("; "), denies.map((p) => p.id)) };
+  if (builtin?.action === "Deny") return { target, operation, natural, decision: builtin };
+  const asks = structured.filter((p) => p.action === "Ask");
+  if (asks.length) return { target, operation, natural, decision: result("Ask", asks.map((p) => `${p.name}: Ask${isOperationTool(c.tool) ? " (operation conditions matched locally)" : ` (${JSON.stringify(p.conditions)})`}`).join("; "), asks.map((p) => p.id)) };
+  if (builtin?.action === "Ask") return { target, operation, natural, decision: builtin };
   const allows = structured.filter((p) => p.action === "Allow");
-  // Model mode still assesses complex shell Allows and applicable natural restrictions.
-  // Rule-only mode honors deterministic Allows as written; no match is permissive too.
-  if (allows.length && !natural.length && (!judgeEnabled || c.tool !== "bash" || (!complexShell(command) && allows.some((p) => p.conditions.command === command)))) {
-    return { target, operation, natural, decision: result("Allow", `Explicit allow: ${allows.map((p) => p.name).join(", ")}`, allows.map((p) => p.id)) };
+  if (!natural.length) {
+    // Built-in Allows are narrow proofs, never replacements for applicable restrictions.
+    if (builtin?.action === "Allow") return { target, operation, natural, decision: builtin };
+    if (allows.length && !unresolvedShell && (!judgeEnabled || c.tool !== "bash" || (!complexShell(command) && allows.some((p) => p.conditions.command === command)))) {
+      return { target, operation, natural, decision: result("Allow", `Explicit allow: ${allows.map((p) => p.name).join(", ")}`, allows.map((p) => p.id)) };
+    }
   }
+  // Unknown shell syntax is unresolved. Judge mode assesses it; rule-only mode uses
+  // its documented no-match Allow for both main and worker actors.
   return { target, operation, natural };
 }

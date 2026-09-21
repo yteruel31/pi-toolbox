@@ -4,6 +4,8 @@ import { GuardrailsEngine } from "../src/engine.js";
 import { HistoryStore } from "../src/history.js";
 import { bridge, candidate, config, policy } from "./helpers.js";
 
+const expectedWorkerAsks = (error: string | undefined, judgeEnabled: boolean) => error || judgeEnabled ? 1 : 0;
+
 for (const judgeEnabled of [true, false]) for (const error of [undefined, "Invalid configuration"]) {
   test(`shell hard decisions precede model/exact Allow and preserve approval boundaries (judge: ${judgeEnabled}, config error: ${!!error})`, async () => {
     const history = new HistoryStore(":memory:");
@@ -19,13 +21,14 @@ for (const judgeEnabled of [true, false]) for (const error of [undefined, "Inval
     try {
       for (const [i, command] of commands.entries()) {
         const main = candidate({ args: { command } });
-        assert.equal((await engine.evaluate(main)).decision.action, i === 0 ? "Ask" : "Deny");
+        const expected = i === 0 ? (error ? "Ask" : judgeEnabled ? "Ask" : "Allow") : "Deny";
+        assert.equal((await engine.evaluate(main)).decision.action, expected);
         assert.equal(!!(await engine.assess(main, approve))?.block, i !== 0);
-        assert.ok((await engine.assess(candidate({ args: { command }, actor: { kind: "subagent", runId: "worker" } }), approve))?.block);
+        assert.equal(!!(await engine.assess(candidate({ args: { command }, actor: { kind: "subagent", runId: "worker" } }), approve))?.block, i !== 0 || expected === "Ask");
       }
-      assert.equal(approvals, 1);
-      assert.equal(completions, 0);
-      assert.match(history.list().find((entry) => entry.actor.kind === "subagent" && entry.action === "Ask")!.reason, /Worker Ask is blocked/);
+      assert.equal(approvals, error || judgeEnabled ? 1 : 0);
+      assert.equal(completions, !error && judgeEnabled ? 3 : 0);
+      assert.equal(history.list().filter((entry) => entry.actor.kind === "subagent" && entry.action === "Ask").length, expectedWorkerAsks(error, judgeEnabled));
     } finally { history.close(); }
   });
 }
