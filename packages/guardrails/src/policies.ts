@@ -8,19 +8,24 @@ import { fileURLToPath } from "node:url";
 import { isOperationTool, operationMatches, operationOutputPaths, operationTarget, parsedUrl, validOperationArgs } from "./operations.js";
 import { deterministicDecision } from "./deterministic.js";
 
-/** Resolve existing ancestors without opening the target file, including new files below symlinks. */
+const unicodeSpaces = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/** Match Pi native-tool normalization, then resolve existing ancestors without opening the target file. */
 export function canonicalPath(path: string, cwd: string): string {
-  return resolveCanonicalPath(path.replace(/^@/, "").replace(/[\u00a0\u202f]/g, " "), cwd);
+  let normalized = path.replace(unicodeSpaces, " ").replace(/^@/, "");
+  if (normalized === "~" || normalized.startsWith("~/")) normalized = homedir() + normalized.slice(1);
+  if (/^file:\/\//.test(normalized)) normalized = fileURLToPath(normalized);
+  return resolveCanonicalPath(isAbsolute(normalized) ? resolve(normalized) : resolve(cwd, normalized), cwd);
 }
-/** Shell paths are literal: native @ shorthand and Unicode-space cleanup do not apply. */
+/** Shell paths remain literal and preserve component order during filesystem traversal. */
 export function canonicalShellPath(path: string, cwd: string): string {
-  return resolveCanonicalPath(path, cwd);
-}
-function resolveCanonicalPath(path: string, cwd: string): string {
   let expanded = path;
   if (expanded === "~" || expanded.startsWith("~/")) expanded = homedir() + expanded.slice(1);
-  let current = isAbsolute(expanded) ? sep : resolve(cwd);
-  let components = expanded.split(sep).filter(Boolean);
+  return resolveCanonicalPath(expanded, cwd);
+}
+function resolveCanonicalPath(path: string, cwd: string): string {
+  let current = isAbsolute(path) ? sep : resolve(cwd);
+  let components = path.split(sep).filter(Boolean);
   let links = 0;
   while (components.length) {
     const component = components.shift()!;
