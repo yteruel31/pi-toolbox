@@ -45,8 +45,15 @@ export function decisionIcon(e: HistoryEntry, theme: Theme): string {
   return theme.fg(c === "auto" ? "success" : c === "human" ? "accent" : c === "attention" ? "warning" : "error", c === "auto" || c === "human" ? "✓" : c === "attention" ? "!" : "✕");
 }
 export function historyDetail(e: HistoryEntry): string[] {
+  const probability = (value: number) => `${(value * 100).toFixed(1)}%`;
+  const jev = e.jev ? [
+    `Jev probabilities: Allow ${probability(e.jev.probabilities.Allow)} · Ask ${probability(e.jev.probabilities.Ask)} · Deny ${probability(e.jev.probabilities.Deny)}`,
+    `Jev thresholds: Allow ≥ ${probability(e.jev.thresholds.allow)} · Deny ≥ ${probability(e.jev.thresholds.deny)} · restriction > ${probability(e.jev.thresholds.restrictive)}`,
+    `Jev restriction probabilities: ${e.jev.restrictions.map(([policyId, value]) => `${policyId} ${probability(value)}`).join(", ") || "none"}`,
+    `Jev reason categories: ${e.jev.reasons.join(", ") || "none"}`,
+  ] : [];
   return [e.summary, "", `Decision: ${e.action} · ${e.origin}`, `State: ${e.state}`, `Target: ${e.target}`, `Operation: ${e.operation}`, `Reason: ${e.reason}`,
-    `Human choice: ${e.choice ?? "none (automatic decision)"}`, `Execution: ${e.execution} (Pi observation only)`,
+    ...jev, `Human choice: ${e.choice ?? "none (automatic decision)"}`, `Execution: ${e.execution} (Pi observation only)`,
     `Actor: ${actorLabel(e)}`, `Project: ${e.project}`, `Session: ${e.sessionId}`, `Cwd: ${e.cwd}`,
     `Child session: ${e.actor.kind === "subagent" ? e.actor.childSessionId ?? "not reported" : "not applicable"}`,
     `Branch leaf: ${e.leafId ?? "not recorded"}`, `Policies: ${e.policyIds.join(", ") || "none"}`,

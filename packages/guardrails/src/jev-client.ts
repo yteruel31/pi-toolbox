@@ -80,13 +80,28 @@ export async function judgeJev(options: { config: Config; apiKey: string; candid
     const signal = options.signal ?? new AbortController().signal;
     const value = options.deadlineOwned ? await invoke(signal) : await bounded(invoke, config.timeoutMs, signal);
     const result = validate(value, restrictivePolicies, config.jev.model); route = `typesafe/${result.model}`;
-    const restrictive = restrictivePolicies.filter(p => (result.restrictions[p.id] ?? 0) > (1 - config.jev.allowThreshold));
+    const restrictiveThreshold = 1 - config.jev.allowThreshold;
+    const restrictive = restrictivePolicies.filter(p => (result.restrictions[p.id] ?? 0) > restrictiveThreshold);
     const denies = restrictivePolicies.filter(p => p.action === "Deny" && (result.restrictions[p.id] ?? 0) >= config.jev.denyThreshold);
     let action: Decision["action"] = denies.length || result.generic.probabilities.Deny >= config.jev.denyThreshold ? "Deny"
       : result.generic.probabilities.Allow >= config.jev.allowThreshold && restrictive.length === 0 ? "Allow" : "Ask";
-    if (action === "Allow" && (view.assessmentIncomplete || /omitted|\[redacted\]|\[credentials\]/.test(JSON.stringify(view.args)))) action = "Ask";
+    const inputJson = JSON.stringify(view.args);
+    const incompleteInput = Boolean(view.assessmentIncomplete || /omitted/.test(inputJson));
+    const redactedInput = /\[redacted\]|\[credentials\]/.test(inputJson);
+    if (action === "Allow" && (incompleteInput || redactedInput)) action = "Ask";
     const matched = action === "Deny" ? denies : restrictive;
-    return { action, origin: "model", reason: action === "Allow" ? "Jev Allow probability met the automatic threshold and no restrictive policy exceeded its limit." : action === "Deny" ? "Jev Deny probability or restrictive-policy probability met the Deny threshold." : "Jev probabilities or restrictive-policy evidence require human review.", policyIds: matched.map(p => p.id), historyIds: [], model: { route, thinking: "off", durationMs: Date.now() - started } };
+    const reasons: NonNullable<Decision["jev"]>["reasons"] = [];
+    if (result.generic.probabilities.Allow >= config.jev.allowThreshold) reasons.push("generic-allow");
+    if (result.generic.probabilities.Deny >= config.jev.denyThreshold) reasons.push("generic-deny");
+    if (restrictive.length) reasons.push("restrictive-policy");
+    if (action === "Ask" && !restrictive.length && result.generic.probabilities.Allow < config.jev.allowThreshold && result.generic.probabilities.Deny < config.jev.denyThreshold) reasons.push("generic-uncertain");
+    if (incompleteInput) reasons.push("incomplete-input");
+    if (redactedInput) reasons.push("redacted-input");
+    return { action, origin: "model", reason: action === "Allow" ? "Jev Allow probability met the automatic threshold and no restrictive policy exceeded its limit." : action === "Deny" ? "Jev Deny probability or restrictive-policy probability met the Deny threshold." : "Jev probabilities or restrictive-policy evidence require human review.", policyIds: matched.map(p => p.id), historyIds: [], model: { route, thinking: "off", durationMs: Date.now() - started }, jev: {
+      probabilities: result.generic.probabilities,
+      restrictions: restrictivePolicies.map((p) => [p.id, result.restrictions[p.id]]),
+      thresholds: { allow: config.jev.allowThreshold, deny: config.jev.denyThreshold, restrictive: restrictiveThreshold }, reasons,
+    } };
   } catch {
     return { action: options.signal?.aborted || config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", reason: options.signal?.aborted ? "Assessment cancelled. Tool not authorized." : "Jev assessment unavailable, timed out, or returned an invalid result. Human approval required; headless calls are blocked.", policyIds: [], historyIds: [], model: { route, thinking: "off", durationMs: Date.now() - started } };
   }
