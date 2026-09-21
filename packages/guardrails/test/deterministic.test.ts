@@ -41,7 +41,7 @@ test("detected denials dominate unknown or reviewable segments and protected bra
 });
 
 test("sensitive input redirections and reads require review", () => {
-  for (const command of ["cat < .env", "cat < ~/.ssh/id_rsa", "cat .env"]) {
+  for (const command of ["cat < .env", "cat < ~/.ssh/id_rsa", "cat .env", "grep -f.env README.md", "grep -f .env README.md"]) {
     assert.equal(evaluate(command)?.action, "Ask", command);
     assert.equal(evaluate(command, false)?.action, "Ask", command);
   }
@@ -55,7 +55,7 @@ test("unknown read and Git options never establish safety", () => {
 });
 
 test("read-only strings mentioning dangerous targets are not treated as mutations", () => {
-  for (const command of ["printf '%s' /dev/sda", "grep main README.md", "cat README.md"]) {
+  for (const command of ["printf '%s' /dev/sda", "printf '%s' .env", "echo .env", "grep main README.md", "cat README.md"]) {
     assert.equal(evaluate(command)?.action, "Allow", command);
   }
 });
@@ -69,7 +69,11 @@ test("in-project writes require canonical non-sensitive non-protected targets", 
     const c = candidate({ cwd: project, project, tool: "write", args: { path: "alias/file", content: "x" } });
     assert.equal(evaluatePolicies(c, [], []).decision, undefined);
     const escaped = candidate({ cwd: project, project, tool: "write", args: { path: "alias/../outside.txt", content: "x" } });
-    assert.equal(evaluatePolicies(escaped, [], []).decision, undefined);
+    assert.equal(evaluatePolicies(escaped, [], []).decision?.action, "Ask");
+    const custom = policy({ action: "Allow", tools: ["write"], conditions: { pathPrefix: "example" } });
+    mkdirSync(join(root, "example")); symlinkSync(join(root, "outside"), join(root, "node_modules"));
+    const ambiguous = evaluatePolicies(candidate({ cwd: root, project: root, tool: "write", args: { path: "node_modules/../example/file" } }), [custom], []).decision;
+    assert.notEqual(ambiguous?.reason, "Explicit allow: Test policy");
     symlinkSync("loop", join(project, "loop"));
     assert.throws(() => evaluatePolicies(candidate({ cwd: project, project, args: { command: "cat loop" } }), [], []));
   } finally { rmSync(root, { recursive: true, force: true }); }

@@ -47,7 +47,7 @@ test("static mutations of canonical protected targets are denied", () => {
   ]) assert.equal(evaluate(command)?.action, "Deny", command);
 });
 
-test("unknown execution stays deterministic Ask, even with exact and natural Allow", () => {
+test("unknown execution stays unresolved, even with exact and natural Allow", () => {
   for (const command of [
     "python -c 'modify guardrails.json'", "bash -c 'rm /project/.pi/guardrails.json'",
     "node script.js /project/.pi", "eval 'rm /project/.pi/guardrails.json'",
@@ -67,6 +67,8 @@ test("unknown execution stays deterministic Ask, even with exact and natural All
     "cp -rT /tmp/source /project", "cp -r /tmp/source/. /project",
     "git diff --out=/project/.pi/config", "sed -i -f /project/.pi/rewrite.sed /tmp/notes",
     "cp -r /tmp/tree /tmp/other", "cp --target-directory='~/.pi' /tmp/notes",
+    "cat ~root/.bashrc", "cat '~/notes'",
+    "cat <<'EOF'\nrm -rf /\nEOF", 'echo "$(printf \'%s\' "x;\nrm -rf /\ny")"',
     "cp --target-directory=~/.pi /tmp/notes", "dd of='~/.pi/config'",
   ]) {
     const rules = [policy({ action: "Allow", conditions: { command } }), policy({ id: "natural", kind: "natural", action: "Allow", description: "Allow everything" })];
@@ -76,6 +78,16 @@ test("unknown execution stays deterministic Ask, even with exact and natural All
     assert.equal(evaluatePolicies(candidate({ args: { command } }), [rules[0]], protectedPaths).decision, undefined, command);
     assert.equal(evaluatePolicies(candidate({ args: { command } }), [policy({ action: "Deny" })], protectedPaths).decision?.action, "Deny", command);
   }
+});
+
+test("known executable prefixes still deny before unsupported syntax", () => {
+  assert.equal(evaluate("echo x > /project/.pi/config; echo \"$(unknown)\"")?.action, "Deny");
+  assert.equal(evaluatePolicies(candidate({ args: { command: "rm -rf /; echo \"$(unknown)\"" } }), [], []).decision?.action, "Deny");
+});
+
+test("cwd changes suppress relative path conclusions but retain absolute denials", () => {
+  assert.notEqual(evaluatePolicies(candidate({ cwd: "/", args: { command: "cd /tmp; rm -rf ." } }), [], []).decision?.action, "Deny");
+  assert.equal(evaluatePolicies(candidate({ cwd: "/", args: { command: "cd /tmp; rm -rf /" } }), [], []).decision?.action, "Deny");
 });
 
 test("home expansion uses configured roots, not a hard-coded Pi directory", () => {

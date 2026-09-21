@@ -1,7 +1,7 @@
 import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { shellSelfProtection } from "./shell-self-protection.js";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Policy } from "./config.js";
 import type { Candidate, Decision } from "./types.js";
 import { fileURLToPath } from "node:url";
@@ -16,29 +16,27 @@ function resolveCanonicalPath(path: string, cwd: string, links: number): string 
   if (links > 40) throw new Error("Cannot resolve target safely");
   let expanded = path.replace(/^@/, "").replace(/[\u00a0\u202f]/g, " ");
   if (expanded === "~" || expanded.startsWith("~/")) expanded = homedir() + expanded.slice(1);
-  const absolute = resolve(cwd, expanded);
-  let ancestor = absolute;
-  const tail: string[] = [];
-  for (;;) {
-    try { return resolve(realpathSync(ancestor), ...tail); }
-    catch (e) {
-      if (!["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException).code ?? "")) throw new Error("Cannot resolve target safely");
-      // realpath can't follow a dangling link, but writes can create its protected target.
-      let link = false;
-      try { link = lstatSync(ancestor).isSymbolicLink(); }
-      catch (error) {
-        if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw new Error("Cannot resolve target safely");
+  let current = isAbsolute(expanded) ? sep : resolve(cwd);
+  const components = expanded.split(sep).filter(Boolean);
+  for (let i = 0; i < components.length; i++) {
+    const component = components[i];
+    if (component === ".") continue;
+    if (component === "..") { current = dirname(current); continue; }
+    const next = join(current, component);
+    try {
+      const stat = lstatSync(next);
+      if (stat.isSymbolicLink()) {
+        const destination = readlinkSync(next);
+        return resolveCanonicalPath(resolve(current, destination, ...components.slice(i + 1)), cwd, links + 1);
       }
-      if (link) {
-        let destination: string;
-        try { destination = readlinkSync(ancestor); }
-        catch { throw new Error("Cannot resolve target safely"); }
-        return resolveCanonicalPath(resolve(dirname(ancestor), destination, ...tail), cwd, links + 1);
-      }
-      if (dirname(ancestor) === ancestor) return absolute;
-      tail.unshift(basename(ancestor)); ancestor = dirname(ancestor);
+      current = realpathSync(next);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (code === "ENOENT") return resolve(current, ...components.slice(i));
+      throw new Error("Cannot resolve target safely");
     }
   }
+  return current;
 }
 export function within(root: string, target: string): boolean {
   const rel = relative(root, target);
@@ -81,6 +79,9 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
   const oversized = isOperationTool(c.tool) ? !validOperationArgs(c.args) : c.tool === "bash" ? typeof c.args.command !== "string" || c.args.command.length > 16000 : typeof c.args.path !== "string" || c.args.path.length > 4096;
   if (oversized) return { target: c.cwd, operation: c.tool, natural: [], decision: { action: "Deny", origin: "policy", reason: "Tool arguments are invalid or exceed the assessment budget (16000 command / 4096 path characters; operations: 64 KB, 12 levels, 32 URLs).", policyIds: ["builtin.argument-budget"], historyIds: [] } };
   const { target, operation } = describeCandidate(c);
+  if (c.tool !== "bash" && String(c.args.path ?? "").split(sep).includes("..")) {
+    return { target, operation, natural: [], decision: { action: "Ask", origin: "policy", reason: "Path traversal crosses a symbolic link and cannot establish a safe policy target.", policyIds: ["builtin.ambiguous-path"], historyIds: [] } };
+  }
   const result = (action: Decision["action"], reason: string, policyIds: string[]): Decision => ({ action, origin: "policy", reason, policyIds, historyIds: [] });
   const command = String(c.args.command ?? "");
   const self = (c.tool === "write" || c.tool === "edit") && protectedPaths.some((p) => within(canonicalPath(p, c.cwd), target));
