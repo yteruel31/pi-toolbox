@@ -2,7 +2,7 @@ import { resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import type { Candidate, Decision } from "./types.js";
 import { canonicalPath, canonicalShellPath, within } from "./policies.js";
-import { analyzeShell, parseOperands, shellPathUsable, type ShellSegment } from "./shell-analysis.js";
+import { analyzeShell, destinationChild, parseOperands, parseSedOperands, shellPathUsable, type ShellSegment } from "./shell-analysis.js";
 
 export type DeterministicVerdict = "Allow" | "Ask" | "Deny" | undefined;
 type Segment = ShellSegment;
@@ -38,12 +38,11 @@ function mutatingPaths(words: string[]): string[] | undefined {
       if (!parsed) return undefined;
       const sources = parsed.target ? parsed.paths : parsed.paths.slice(0, -1), destination = parsed.target ?? parsed.paths.at(-1);
       if (!destination) return undefined;
-      return [...(name === "mv" ? sources : []), destination, ...sources.map((source) => resolve(destination, source.split("/").at(-1)!))];
+      return [...(name === "mv" ? sources : []), destination, ...sources.map((source) => destinationChild(destination, source))];
     }
     case "sed": {
-      const inplace = args.some((arg) => arg === "-i" || /^-i.+/.test(arg) || arg.startsWith("--in-place"));
-      if (!inplace) return [];
-      parsed = parseOperands(args, /^(?:-i.*|--in-place(?:=.*)?)$/, new Set(["-e", "--expression", "-f", "--file"])); return parsed?.paths;
+      const sed = parseSedOperands(args);
+      return sed ? (sed.inPlace ? sed.paths : []) : undefined;
     }
     case "dd": return args.filter((arg) => arg.startsWith("of=")).map((arg) => arg.slice(3));
     default: return [];
@@ -112,6 +111,23 @@ function safeRead(words: string[]): boolean {
 function readPaths(words: string[]): string[] | undefined {
   const [name, ...args] = words;
   if (["echo", "printf", "pwd", "true", "false", ":"].includes(name)) return [];
+  if (name === "git") {
+    let i = 0;
+    while (i < args.length && args[i].startsWith("-")) i++;
+    const sub = args[i++];
+    if (sub === "show") {
+      const operands = args.slice(i).filter((arg) => !arg.startsWith("-"));
+      if (operands.length !== 1) return undefined;
+      const colon = operands[0].indexOf(":");
+      return colon >= 0 && operands[0].slice(colon + 1) ? [operands[0].slice(colon + 1)] : undefined;
+    }
+    if (sub === "diff") {
+      const separator = args.indexOf("--", i);
+      if (separator < 0 || separator === args.length - 1) return undefined;
+      return args.slice(separator + 1);
+    }
+    return ["status", "rev-parse"].includes(sub ?? "") ? [] : undefined;
+  }
   if (name === "grep") {
     const optionFiles = args.filter((arg) => /^-f.+/.test(arg)).map((arg) => arg.slice(2));
     const hasOptionPattern = args.some((arg) => arg === "-e" || arg === "--regexp" || arg === "-f" || arg === "--file" || /^-(?:e|f).+/.test(arg) || /^--(?:regexp|file)=.+/.test(arg));
@@ -144,8 +160,9 @@ function evaluateParsed(parsed: Segment[], complete: boolean, uncertainCwd: bool
     if (paths.filter(usable).some((path) => isSensitivePath(path, c.cwd, true) || isDevice(path, c.cwd, true))) return decision("Deny", "builtin.dangerous-path", "Mutation of an identified credential or device path is denied.");
     if (["rm", "rmdir", "unlink", "shred", "truncate", "dd"].includes(words[0]) && paths.filter(usable).some((path) => isRootOrHome(path, c.cwd, true))) return decision("Deny", "builtin.catastrophic-shell", "Destructive mutation of the filesystem root or home directory is denied.");
     const safe = safeRead(words);
-    if (!safe) allSafe = false;
-    if (safe && readPaths(words)?.filter(usable).some((path) => isSensitivePath(path, c.cwd, true))) ask = true;
+    const reads = safe ? readPaths(words) : undefined;
+    if (!safe || reads === undefined) allSafe = false;
+    if (reads?.filter(usable).some((path) => isSensitivePath(path, c.cwd, true))) ask = true;
   }
   if (ask) return decision("Ask", "builtin.sensitive-path", "Reading an identified credential path requires review.");
   return allSafe ? decision("Allow", "builtin.safe-read", "Narrow read-only shell form recognized.") : undefined;

@@ -15,7 +15,8 @@ test("read-only investigation is not shell self-modification", () => {
     "rg guardrails packages/guardrails/src", "grep -n 'guardrails.json' /project/.pi/guardrails.json",
     "cat '/project/.pi/guardrails.json'", "head -n 5 /project/.pi/guardrails.json",
     "git log --oneline yoann/guardrails-self-protection", "git status --short -- guardrails.json",
-    "rg --files /installed/pi-guardrails", "printf '%s' guardrails",
+    "rg --files /installed/pi-guardrails", "printf '%s' guardrails", "sed -n '/project\\/.pi/p' README.md",
+    "sed -e '/project\\/.pi/p' README.md", "sed -f /project/.pi/read-rules.sed README.md",
   ]) assert.notEqual(evaluate(command)?.policyIds[0], "builtin.self-protection", command);
 });
 
@@ -38,7 +39,8 @@ test("static mutations of canonical protected targets are denied", () => {
     "cp /tmp/new /project/.pi/guardrails.json", "cp -t /project/.pi /tmp/new",
     "mv /project/.pi /tmp/backup", "install -m 600 /tmp/new /project/.pi/new",
     "truncate -s 0 /project/.pi/guardrails.json", "chmod 600 /project/.pi/guardrails.json",
-    "sed -i 's/true/false/' /project/.pi/guardrails.json", "dd if=/tmp/new of=/project/.pi/guardrails.json",
+    "sed -i 's/true/false/' /project/.pi/guardrails.json", "sed -i -e 's/true/false/' /project/.pi/guardrails.json",
+    "sed --in-place=.bak --file=/tmp/rules.sed /project/.pi/guardrails.json", "dd if=/tmp/new of=/project/.pi/guardrails.json",
     "git status; rm /project/.pi/guardrails.json", "true && rm /project/.pi/guardrails.json",
     "rm ../project/.pi/guardrails.json", "echo x &>/project/.pi/log", "echo x >|/project/.pi/log",
     "chmod 600 > /tmp/log /project/.pi/guardrails.json", 'chmod "600">/tmp/log /project/.pi/guardrails.json',
@@ -112,6 +114,10 @@ test("relative and symlink shell destinations use real ancestors and component b
     writeFileSync(join(root, "private", "config"), "fixture");
     symlinkSync(join(root, "private", "config"), join(root, "staging", "config"));
     assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "cp /tmp/config staging" } }), [], [join(root, "private")]).decision?.action, "Deny");
+    const relativeCwd = join(root, "candidate-cwd"); mkdirSync(relativeCwd); mkdirSync(join(relativeCwd, "staging"));
+    symlinkSync(join(root, "private", "config"), join(relativeCwd, "staging", "config"));
+    assert.equal(evaluatePolicies(candidate({ cwd: relativeCwd, args: { command: "cp /tmp/config staging" } }), [], [join(root, "private")]).decision?.action, "Deny");
+    assert.equal(evaluatePolicies(candidate({ cwd: relativeCwd, args: { command: "cp /tmp/config staging/../staging" } }), [], [join(root, "private")]).decision?.action, "Deny");
     symlinkSync(join(root, "private", "missing"), join(root, "dangling"));
     assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "echo x > dangling" } }), [], [join(root, "private")]).decision?.action, "Deny");
     for (const tool of ["write", "edit"] as const) {
