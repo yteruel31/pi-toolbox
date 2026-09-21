@@ -33,6 +33,15 @@ export const policySchema = z.object({
 }).strict().refine((p) => p.kind !== "natural" || Boolean(p.description), "Natural policies need a description");
 export type Policy = z.infer<typeof policySchema> & { source?: "global" | "project" };
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const jevCredentialSources = ["environment", "keyring", "file"] as const;
+export type JevCredentialSource = typeof jevCredentialSources[number];
+const jevSchema = z.object({
+  model: z.literal("jev-latest").default("jev-latest"),
+  allowThreshold: z.number().min(0.5).max(1).default(0.95),
+  denyThreshold: z.number().min(0.5).max(1).default(0.8),
+  credential: z.object({ source: z.enum(jevCredentialSources).default("environment"), reference: text(4096).default("TYPESAFE_API_KEY") }).strict()
+    .refine((v) => v.source === "environment" ? /^[A-Za-z_][A-Za-z0-9_]{0,255}$/.test(v.reference) : v.source === "keyring" ? v.reference === "pi-guardrails/jev" : v.reference.startsWith("/"), "Invalid Jev credential reference"),
+}).strict();
 export const coverageSchema = z.object({
   bash: z.boolean().default(true), read: z.boolean().default(true),
   write: z.boolean().default(true), edit: z.boolean().default(true),
@@ -43,6 +52,8 @@ export const configSchema = z.object({
   enabled: z.boolean(),
   coverage: coverageSchema.default(() => coverageSchema.parse({})),
   judgeEnabled: z.boolean().default(true),
+  backend: z.enum(["pi", "jev"]).default("pi"),
+  jev: jevSchema.default(() => jevSchema.parse({ credential: {} })),
   thinking: z.enum(thinkingLevels),
   model: z.string().max(200).refine((s) => s === "" || /^[^\s/]+\/[^\s]+$/.test(s)),
   timeoutMs: z.number().int().min(100).max(60000),
@@ -65,7 +76,7 @@ export const operationPresets: Policy[] = [
 ].map((p) => ({ ...p, enabled: true, scope: "both", kind: "structured", action: "Ask" })) as Policy[];
 export const availablePresets: Policy[] = [...presets, ...operationPresets];
 export function defaultConfig(): Config {
-  return { version: 1, enabled: false, coverage: coverageSchema.parse({}), judgeEnabled: true, thinking: "off", model: "", timeoutMs: 15000, maxOutputTokens: 1024, errorBehavior: "ask", policies: structuredClone(presets) };
+  return { version: 1, enabled: false, coverage: coverageSchema.parse({}), judgeEnabled: true, backend: "pi", jev: jevSchema.parse({ credential: {} }), thinking: "off", model: "", timeoutMs: 15000, maxOutputTokens: 1024, errorBehavior: "ask", policies: structuredClone(presets) };
 }
 export interface ConfigSnapshot { config: Config; policies: Policy[]; revision: string; error?: string; projectStatus: string }
 /** Invalid snapshots never qualify for a bypass. Shared by storage-unavailable gates. */
@@ -114,7 +125,7 @@ export class ConfigStore {
       return { config: { ...config, enabled: true }, policies: [], revision: hash(raw), error: "Invalid or unreadable guardrails configuration. Repair it outside agent tools.", projectStatus: "Configuration rejected" };
     }
   }
-  async save(config: Config, expectedRevision: string): Promise<void> {
+  async save(config: Config, expectedRevision: string, afterRevisionCheck?: () => Promise<void>): Promise<void> {
     const parsed = configSchema.parse(config);
     await mkdir(dirname(this.globalPath), { recursive: true, mode: 0o700 });
     const lockPath = `${this.globalPath}.lock`;
@@ -122,6 +133,7 @@ export class ConfigStore {
     const temp = `${this.globalPath}.${randomUUID()}.tmp`;
     try {
       if (hash(await readConfig(this.globalPath)) !== expectedRevision) throw new Error("Configuration changed elsewhere. Reopen the panel before saving.");
+      await afterRevisionCheck?.();
       const file = await open(temp, "wx", 0o600);
       try { await file.writeFile(JSON.stringify(parsed, null, 2) + "\n"); await file.sync(); } finally { await file.close(); }
       await rename(temp, this.globalPath);

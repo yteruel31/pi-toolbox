@@ -30,6 +30,8 @@ interface Options {
   history: HistoryStore;
   sessionId: string;
   catalog: () => JudgeCatalog;
+  defaultJevFile?: string;
+  stageJevKey?: (value: string | undefined) => void;
   state: PanelState;
   maxRows: () => number;
   onRender: () => void;
@@ -72,7 +74,7 @@ export class GuardrailsPanel implements Component, Focusable {
     this.seen = new Set(this.rows.map((e) => e.id));
     this.unsubscribe = o.history.subscribe(() => this.update());
     this.input.setValue(o.state.filter.search ?? "");
-    this.settings = new SetupSettings({ draft: o.draft, state: o.state, theme: o.theme, keybindings: o.keybindings, catalog: o.catalog, save: () => this.finish({ type: "save" }) });
+    this.settings = new SetupSettings({ draft: o.draft, state: o.state, theme: o.theme, keybindings: o.keybindings, catalog: o.catalog, defaultJevFile: o.defaultJevFile, stageJevKey: o.stageJevKey, save: () => this.finish({ type: "save" }) });
   }
   private update(): void {
     if (this.closed) return;
@@ -82,7 +84,7 @@ export class GuardrailsPanel implements Component, Focusable {
     this.newCount = latest.filter((e) => !this.seen.has(e.id)).length;
     this.o.onRender();
   }
-  dispose(): void { if (!this.closed) { this.closed = true; this.unsubscribe(); } }
+  dispose(): void { if (!this.closed) { this.closed = true; this.unsubscribe(); this.settings.dispose(); } }
   private finish(action: PanelAction): void { this.dispose(); this.o.onDone(action); }
   private policies(): Policy[] { return [...this.o.draft.policies, ...this.o.snapshot.policies.filter((p) => p.source === "project")]; }
   private filtered(): HistoryEntry[] { return filterHistory(this.rows, { ...this.o.state.filter, sessionId: this.o.state.global ? undefined : this.o.sessionId }); }
@@ -97,9 +99,13 @@ export class GuardrailsPanel implements Component, Focusable {
   }
   handleInput(data: string): void {
     if (this.closed) return;
-    // Pasted text is data, never a sequence of save/edit/approval keystrokes.
-    if (this.paste || data.includes("\x1b[200~")) { this.paste = !data.includes("\x1b[201~"); return; }
     const s = this.o.state;
+    // Active Setup editors consume every bracketed-paste frame before navigation/action dispatch.
+    if (s.tab === "Setup" && this.settings.inSubmenu && (this.paste || data.includes("\x1b[200~"))) {
+      this.paste = !data.includes("\x1b[201~"); this.settings.handleInput(data); this.o.onRender(); return;
+    }
+    // Elsewhere paste is inert and can never trigger actions.
+    if (this.paste || data.includes("\x1b[200~")) { this.paste = !data.includes("\x1b[201~"); return; }
     const kb = this.o.keybindings;
     const esc = matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || kb.matches(data, "tui.select.cancel");
     if (s.tab === "Setup" && this.settings.inSubmenu) {

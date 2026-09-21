@@ -9,6 +9,7 @@ import { ConfigStore, configSchema, policySchema, availablePresets, bypasses, ty
 import { GuardrailsEngine, type Approval } from "./engine.js";
 import { HistoryStore } from "./history.js";
 import { piBridge, type CompletionBridge } from "./judge.js";
+import { defaultJevCredentialPath, resolveJevCredential, saveJevCredential } from "./jev-credentials.js";
 import { judgeCatalog } from "./model-catalog.js";
 import { canonicalPath } from "./policies.js";
 import { isTool, type Candidate } from "./types.js";
@@ -20,6 +21,8 @@ interface Dependencies {
   agentDir?: string;
   history?: (path: string) => HistoryStore;
   bridge?: CompletionBridge;
+  resolveJevCredential?: typeof resolveJevCredential;
+  saveJevCredential?: typeof saveJevCredential;
 }
 export function createGuardrailsExtension(deps: Dependencies = {}) {
   return (pi: ExtensionAPI): void => {
@@ -53,6 +56,7 @@ export function createGuardrailsExtension(deps: Dependencies = {}) {
         current.engine = new GuardrailsEngine({
           load: () => store.load(current.ctx.isProjectTrusted()), bridge: current.bridge, history: current.history,
           protectedPaths: [agentDir, join(project, CONFIG_DIR_NAME), resolve(dirname(fileURLToPath(import.meta.url)), "..")], signal: current.controller.signal,
+          jevCredential: deps.resolveJevCredential ?? resolveJevCredential,
         });
         current.unsubscribe = pi.events.on(CHILD_CHANNEL, (data) => provideChildGate(data, current.engine!, { sessionId: current.sessionId, project, signal: current.controller.signal }));
       } catch {
@@ -118,19 +122,31 @@ export function createGuardrailsExtension(deps: Dependencies = {}) {
         current.ctx = ctx;
         let snapshot = await current.store.load(ctx.isProjectTrusted());
         let draft: Config = structuredClone(snapshot.config);
+        let stagedJevKey: string | undefined;
         const state = initialPanelState();
         while (!current.controller.signal.aborted) {
           const action = await ctx.ui.custom<PanelAction>((tui, theme, keybindings, done) => new GuardrailsPanel({
             theme, keybindings, snapshot, draft, state, sessionId: current.sessionId, history: current.history!,
-            catalog: () => judgeCatalog(current.ctx),
+            catalog: () => judgeCatalog(current.ctx), defaultJevFile: defaultJevCredentialPath(deps.agentDir ?? getAgentDir()),
+            stageJevKey: (value) => { stagedJevKey = value; },
             maxRows: () => panelRows(tui.terminal.rows), onRender: () => tui.requestRender(), onDone: done,
           }), { overlay: true, overlayOptions: GUARDRAILS_OVERLAY });
-          if (!action || action.type === "close" || current.controller.signal.aborted) break;
+          if (!action || action.type === "close" || current.controller.signal.aborted) { stagedJevKey = undefined; break; }
           try {
             if (action.type === "save") {
               if (!await ctx.ui.confirm("Save guardrails configuration?", `Protection: ${draft.enabled ? "enabled" : "disabled"}. Saves global settings and explicit policies. No tool will be executed.`)) continue;
-              await current.store.save(configSchema.parse(draft), snapshot.revision);
-              snapshot = await current.store.load(ctx.isProjectTrusted()); draft = structuredClone(snapshot.config);
+              const parsed = configSchema.parse(draft);
+              let credentialStored = false;
+              try {
+                await current.store.save(parsed, snapshot.revision, stagedJevKey ? async () => {
+                  await (deps.saveJevCredential ?? saveJevCredential)(parsed.jev.credential.source, parsed.jev.credential.reference, stagedJevKey!);
+                  credentialStored = true;
+                } : undefined);
+              } catch {
+                state.notice = credentialStored ? "Credential stored, but configuration was not published. Reopen Setup and retry Save; the saved key may be replaced." : "Save rejected or credential persistence failed. No configuration was published; reopen Setup if configuration changed elsewhere.";
+                continue;
+              }
+              snapshot = await current.store.load(ctx.isProjectTrusted()); draft = structuredClone(snapshot.config); stagedJevKey = undefined;
               state.notice = "Global configuration saved. Applies to subsequent main and Pi worker calls.";
             } else if (action.type === "new" || action.type === "edit") {
               const previous = action.type === "edit" ? draft.policies.find((p) => p.id === action.id) : undefined;
@@ -160,7 +176,7 @@ export function createGuardrailsExtension(deps: Dependencies = {}) {
               }
               const candidate = mainCandidate(ctx, parsed.tool, parsed.args, `test-${randomUUID()}`);
               if (actor === "Pi subagent") candidate.actor = { kind: "subagent", runId: "dry-run" };
-              const testEngine = new GuardrailsEngine({ load: async () => ({ ...snapshot, config: { ...draft, enabled: true }, policies: [...draft.policies, ...snapshot.policies.filter((p) => p.source === "project")] }), bridge: current.bridge, history: current.history, protectedPaths: [deps.agentDir ?? getAgentDir(), join(current.project, CONFIG_DIR_NAME), resolve(dirname(fileURLToPath(import.meta.url)), "..")], signal: current.controller.signal });
+              const testEngine = new GuardrailsEngine({ load: async () => ({ ...snapshot, config: { ...draft, enabled: true }, policies: [...draft.policies, ...snapshot.policies.filter((p) => p.source === "project")] }), bridge: current.bridge, history: current.history, protectedPaths: [deps.agentDir ?? getAgentDir(), join(current.project, CONFIG_DIR_NAME), resolve(dirname(fileURLToPath(import.meta.url)), "..")], signal: current.controller.signal, jevCredential: async (config, signal) => stagedJevKey ?? (deps.resolveJevCredential ?? resolveJevCredential)(config, signal) });
               const evaluated = await testEngine.evaluate(candidate, current.controller.signal);
               state.notice = `TEST ONLY, not executed or recorded. ${evaluated.decision.action} · ${evaluated.decision.origin}: ${evaluated.decision.reason}`;
               state.detail = true; state.scroll = 0;

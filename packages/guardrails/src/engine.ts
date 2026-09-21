@@ -3,6 +3,7 @@ import { bypasses, type ConfigSnapshot } from "./config.js";
 import type { Block, Candidate, Decision, HistoryEntry } from "./types.js";
 import type { CompletionBridge } from "./judge.js";
 import { bounded, judge } from "./judge.js";
+import { judgeJev, type JevFetch } from "./jev-client.js";
 import { HistoryStore, relevantHistory } from "./history.js";
 import { evaluatePolicies } from "./policies.js";
 import { candidateView, sanitize, sanitizePath } from "./sanitize.js";
@@ -18,6 +19,8 @@ export interface EngineOptions {
   history: HistoryStore;
   protectedPaths: string[];
   signal: AbortSignal;
+  jevCredential?: (config: ConfigSnapshot["config"], signal: AbortSignal) => Promise<string>;
+  jevFetch?: JevFetch;
 }
 export class GuardrailsEngine {
   private calls = new Map<string, HistoryEntry>();
@@ -32,13 +35,27 @@ export class GuardrailsEngine {
     if (evaluated.decision) return { ...evaluated, enabled: true, decision: evaluated.decision };
     if (!snapshot.config.judgeEnabled) return { ...evaluated, enabled: true, decision: ruleOnlyAllow() };
     const history = relevantHistory(this.options.history.list(), c, evaluated.target, evaluated.operation, evaluated.natural.map((p) => p.id));
-    const decision = await judge(this.options.bridge, snapshot.config, c, evaluated.natural, history, evaluated.target, evaluated.operation, signal);
+    const decision = await this.modelDecision(snapshot, c, evaluated.natural, history, evaluated.target, evaluated.operation, signal);
     return { ...evaluated, enabled: true, decision };
   }
   private describe(c: Candidate, snapshot: ConfigSnapshot): ReturnType<typeof evaluatePolicies> {
-    const evaluated = evaluatePolicies(c, snapshot.error ? [] : snapshot.policies, this.options.protectedPaths, snapshot.config.judgeEnabled);
+    const sensitivePaths = snapshot.config.jev.credential.source === "file" ? [snapshot.config.jev.credential.reference] : [];
+    const evaluated = evaluatePolicies(c, snapshot.error ? [] : snapshot.policies, this.options.protectedPaths, snapshot.config.judgeEnabled, sensitivePaths);
     if (snapshot.error && evaluated.decision?.action !== "Deny") evaluated.decision = this.configError(snapshot);
     return evaluated;
+  }
+  private async modelDecision(snapshot: ConfigSnapshot, c: Candidate, natural: ConfigSnapshot["policies"], history: HistoryEntry[], target: string, operation: string, signal?: AbortSignal): Promise<Decision> {
+    if (snapshot.config.backend === "pi") return judge(this.options.bridge, snapshot.config, c, natural, history, target, operation, signal);
+    const credential = this.options.jevCredential;
+    if (!credential) return { action: snapshot.config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", reason: "Jev credentials are unavailable. Human approval required; headless calls are blocked.", policyIds: [], historyIds: [] };
+    try {
+      return await bounded(async deadlineSignal => {
+        const key = await credential(snapshot.config, deadlineSignal);
+        return judgeJev({ config: snapshot.config, apiKey: key, candidate: c, policies: natural, history, target, operation, signal: deadlineSignal, fetchImpl: this.options.jevFetch, deadlineOwned: true });
+      }, snapshot.config.timeoutMs, signal);
+    } catch {
+      return { action: signal?.aborted || snapshot.config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", reason: signal?.aborted ? "Assessment cancelled. Tool not authorized." : "Jev credentials are unavailable. Human approval required; headless calls are blocked.", policyIds: [], historyIds: [] };
+    }
   }
   private configError(snapshot: ConfigSnapshot): Decision {
     return { action: snapshot.config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", reason: snapshot.error!, policyIds: [], historyIds: [] };
@@ -62,7 +79,7 @@ export class GuardrailsEngine {
         state: "assessing", execution: "not-observed",
       });
       // Keep one config snapshot for this call. Concurrent UI edits apply to subsequent calls.
-      const decision = described.decision ?? (!snapshot.config.judgeEnabled ? ruleOnlyAllow() : await judge(this.options.bridge, snapshot.config, c, described.natural,
+      const decision = described.decision ?? (!snapshot.config.judgeEnabled ? ruleOnlyAllow() : await this.modelDecision(snapshot, c, described.natural,
         relevantHistory(this.options.history.list(), c, described.target, described.operation, described.natural.map((p) => p.id)), described.target, described.operation, combined));
       entry = { ...entry, ...decision, state: decision.action === "Ask" ? "review" : decision.action === "Deny" ? "denied" : "allowed", updatedAt: Date.now() };
       if (combined.aborted) entry = { ...entry, state: "denied", reason: "Assessment cancelled. Tool not authorized." };

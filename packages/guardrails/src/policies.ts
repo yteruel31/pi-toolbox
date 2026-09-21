@@ -90,7 +90,7 @@ export function applicable(p: Policy, c: Candidate, target: string): boolean {
   if (p.conditions.command && (c.tool !== "bash" || c.args.command !== p.conditions.command)) return false;
   return true;
 }
-export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPaths: string[], judgeEnabled = true): { decision?: Decision; natural: Policy[]; target: string; operation: string } {
+export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPaths: string[], judgeEnabled = true, sensitivePaths: string[] = []): { decision?: Decision; natural: Policy[]; target: string; operation: string } {
   const oversized = isOperationTool(c.tool) ? !validOperationArgs(c.args) : c.tool === "bash" ? typeof c.args.command !== "string" || c.args.command.length > 16000 : typeof c.args.path !== "string" || c.args.path.length > 4096;
   if (oversized) return { target: c.cwd, operation: c.tool, natural: [], decision: { action: "Deny", origin: "policy", reason: "Tool arguments are invalid or exceed the assessment budget (16000 command / 4096 path characters; operations: 64 KB, 12 levels, 32 URLs).", policyIds: ["builtin.argument-budget"], historyIds: [] } };
   const { target, operation } = describeCandidate(c);
@@ -117,7 +117,7 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
   const matches = policies.filter((p) => (judgeEnabled || p.kind === "structured") && applicable(p, c, target));
   const structured = matches.filter((p) => p.kind === "structured");
   const natural = matches.filter((p) => p.kind === "natural");
-  const builtin = deterministicDecision(c, protectedPaths);
+  const builtin = deterministicDecision(c, protectedPaths, sensitivePaths);
   const unresolvedShell = c.tool === "bash" && shell === "Ask";
   const denies = structured.filter((p) => p.action === "Deny");
   if (denies.length) return { target, operation, natural, decision: result("Deny", denies.map((p) => `${p.name}: Deny${isOperationTool(c.tool) ? " (operation conditions matched locally)" : ` (${JSON.stringify(p.conditions)})`}`).join("; "), denies.map((p) => p.id)) };
