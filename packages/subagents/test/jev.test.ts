@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Model } from "@earendil-works/pi-ai";
-import { buildJevCandidates, JEV_MAX_CHOICES, routeWithJev } from "../src/agents/jev.js";
-import type { ResolvedRoute } from "../src/agents/types.js";
+import { buildJevCandidates, deriveJevConstraints, JEV_MAX_CHOICES, JevRoutingConflictError, routeWithJev } from "../src/agents/jev.js";
+import type { AgentDefinition, ResolvedRoute, RouteResolutionInput } from "../src/agents/types.js";
 
 function piModel(id: string, thinkingLevelMap?: Record<string, string | null>): Model<any> {
   return { id, name: id, provider: "openai-codex", api: "openai-responses", baseUrl: "", reasoning: true, thinkingLevelMap, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1, maxTokens: 1 } as Model<any>;
@@ -10,7 +10,62 @@ function route(overrides: Partial<ResolvedRoute> = {}): ResolvedRoute {
   return { harness: "pi", model: "parent/model", thinking: "medium", provenance: { harness: "parent", model: "parent", thinking: "parent" }, ...overrides };
 }
 
+function agent(defaults: AgentDefinition["defaults"], tools?: string[]): AgentDefinition {
+  return { name: "worker", description: "Work", systemPrompt: "Work", defaults, tools, source: { scope: "package", path: "/agent.md" } };
+}
+function resolution(overrides: Partial<RouteResolutionInput> = {}): RouteResolutionInput {
+  return { explicit: {}, parent: { model: "parent/model", thinking: "medium" }, ...overrides };
+}
+
 describe("Jev route selection", () => {
+  it("derives every explicit layer before parent and treats generic agent defaults as fixed", () => {
+    expect(deriveJevConstraints(route(), resolution({
+      explicit: { model: "explicit" }, projectRouting: { thinking: "high" },
+      userRouting: { harness: "claude" }, agent: agent({ harness: "pi", model: "agent", thinking: "low" }),
+    }))).toMatchObject({ harness: "claude", model: "explicit", thinking: "high" });
+    expect(deriveJevConstraints(route({ model: "agent", provenance: { harness: "parent", model: "agent-default", thinking: "parent" } }))).toMatchObject({ model: "agent" });
+  });
+
+  it("infers Claude before applying profile effort and preserves higher-priority thinking", () => {
+    expect(deriveJevConstraints(route(), resolution({ agent: agent({ model: "claude-sonnet-5", effort: "max", thinking: "low" }) }))).toMatchObject({ harness: "claude", thinking: "max" });
+    expect(deriveJevConstraints(route(), resolution({ explicit: { thinking: "off" }, agent: agent({ model: "claude-sonnet-5", effort: "max" }) }))).toMatchObject({ harness: "claude", thinking: "off" });
+    expect(deriveJevConstraints(route(), resolution({ agent: agent({ effort: "max" }) })).harness).toBeUndefined();
+  });
+
+  it("preserves profile model inherit as a fixed omission", async () => {
+    const fetcher = vi.fn();
+    const result = await routeWithJev({ task: "task", route: route({ model: undefined, provenance: { harness: "agent-default", model: "agent-default", thinking: "parent" } }), resolutionInput: resolution({ agent: agent({ harness: "claude", model: "inherit" }) }), piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], apiKey: "key" }, fetcher);
+    expect(result.route.model).toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("throws on backend/model conflicts and never calls Jev", async () => {
+    const fetcher = vi.fn();
+    await expect(routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { harness: "pi", model: "claude-sonnet-5", thinking: "high" } }), piModels: [], claudeModels: [], apiKey: "key" }, fetcher)).rejects.toBeInstanceOf(JevRoutingConflictError);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("matches exact Claude aliases and never wrong-provider suffixes", async () => {
+    const claudeModels = [{ value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", description: "", supportsEffort: true, supportedEffortLevels: ["high" as const] }];
+    const exact = await routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { model: "anthropic/claude-sonnet-5", thinking: "high" } }), piModels: [piModel("claude-sonnet-5")], claudeModels, apiKey: "key" }, vi.fn());
+    expect(exact.route.harness).toBe("claude");
+    expect(exact.route.model).toBe("anthropic/claude-sonnet-5");
+    const wrong = await routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { model: "other/sonnet" } }), piModels: [], claudeModels, apiKey: "key" }, vi.fn());
+    expect(wrong.fallback).toContain("No compatible");
+  });
+
+  it("uses authoritative Claude effort metadata and conservative tool compatibility", () => {
+    const candidates = buildJevCandidates([], [
+      { value: "unknown", displayName: "Unknown", description: "Factual", supportsEffort: false },
+      { value: "claude-haiku-4-5", displayName: "Haiku", description: "Fast", supportsEffort: false },
+      { value: "claude-fable-5-1", displayName: "Fable", description: "Slow", supportsEffort: false },
+      { value: "sonnet", displayName: "Sonnet", description: "Balanced", supportsEffort: true, supportedEffortLevels: ["low"] },
+    ], "claude");
+    expect(candidates.filter((candidate) => candidate.model === "unknown").map((candidate) => candidate.thinking)).toEqual([undefined]);
+    expect(candidates.some((candidate) => candidate.model === "claude-haiku-4-5" && candidate.thinking === "off")).toBe(true);
+    expect(candidates.some((candidate) => candidate.model === "claude-fable-5-1" && candidate.thinking === "off")).toBe(false);
+    expect(candidates.filter((candidate) => candidate.model === "sonnet").map((candidate) => candidate.thinking)).toEqual(["low"]);
+  });
   it("uses runtime thinking metadata and Claude SDK effort metadata", () => {
     const candidates = buildJevCandidates(
       [piModel("always", { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: null })],
@@ -33,8 +88,9 @@ describe("Jev route selection", () => {
   it("preserves explicit fields and validates the exact returned candidate", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
-      const choice = Object.keys(body.questions.route.criteria)[1];
-      return new Response(JSON.stringify({ model: "jev-latest", answers: { route: { type: "choice", choice, confidence: 0.8, probabilities: Object.fromEntries(Object.keys(body.questions.route.criteria).map((key: string) => [key, key === choice ? 0.8 : 0.2])) } }, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
+      const keys = Object.keys(body.questions.route.criteria);
+      const choice = keys[1];
+      return new Response(JSON.stringify({ model: "jev-latest", answers: { route: { type: "choice", choice, confidence: 0.8, probabilities: Object.fromEntries(keys.map((key: string) => [key, key === choice ? 0.8 : 0.2 / (keys.length - 1)])) } }, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
     });
     const result = await routeWithJev({ task: "hard task", role: "reviewer", route: route({ harness: "claude", model: undefined, thinking: undefined, provenance: { harness: "explicit", model: "parent", thinking: "parent" } }), piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "Balanced", supportsEffort: true, supportedEffortLevels: ["low", "high"] }], apiKey: "key" }, fetcher);
     expect(result.route.harness).toBe("claude");
