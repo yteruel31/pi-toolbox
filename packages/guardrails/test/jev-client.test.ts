@@ -47,6 +47,39 @@ test("malformed, oversized, retryable HTTP, cancellation and redacted candidates
   assert.equal(redacted.action, "Ask");
 });
 
+test("bounded arithmetic scripts preserve classifier evidence while arbitrary or sensitive scripts stay incomplete", async () => {
+  for (const command of ["python3 -c 'print(2 + 2)'", "python -c \"print((8 * 3) - 1)\""]) {
+    let candidateState: any;
+    const result = await judgeJev({ config: config({ backend: "jev" }), apiKey: "key", candidate: candidate({ args: { command } }), policies: [], history: [], target: "/project", operation: "shell-complex", fetchImpl: fake(reply(), (body) => { candidateState = body.state.untrusted_candidate; }) });
+    assert.equal(result.action, "Allow", command);
+    assert.equal(candidateState.assessmentIncomplete, false);
+    assert.equal(candidateState.args.command, command, "classifier evidence preserves executable syntax");
+  }
+  for (const command of [
+    "python3 -c 'print(secret)'", "python3 -c 'import os; print(os.environ)'", "python3 -c 'print(2 + \\\n2)'",
+    "python3 -c 'print(2 + 2)'\npython3 -c 'print(3)'", "TOKEN='hidden' python3 -c 'print(2 + 2)'",
+    "python3 -c 'print(\"-----BEGIN PRIVATE KEY-----\")'", "python3 -c 'print(1234567890123456789012345678901234567890)'",
+    "python3 -c 'print(2 + $VALUE)'", "python3 -c 'print(2 + 2)'; touch file", "python3 -c 'print(2 +)'",
+    "python3 -c 'print((2 + 2)'", "python3 -c 'print(2 2)'", "python3 -c 'print(2 + \u0007 2)'",
+  ]) {
+    let candidateState: any;
+    const result = await judgeJev({ config: config({ backend: "jev" }), apiKey: "key", candidate: candidate({ args: { command } }), policies: [], history: [], target: "/project", operation: "shell-complex", fetchImpl: fake(reply(), (body) => { candidateState = body.state.untrusted_candidate; }) });
+    assert.equal(result.action, "Ask", command);
+    assert.equal(candidateState.assessmentIncomplete, true);
+    assert.doesNotMatch(JSON.stringify(candidateState), /hidden|os\.environ|PRIVATE KEY/);
+    assert.match(result.reason, /^Assessment evidence has gaps/);
+  }
+});
+
+test("multiline and oversized shell evidence stays bounded and fail-closed", async () => {
+  let serialized = "";
+  const multiline = await judgeJev({ config: config({ backend: "jev" }), apiKey: "key", candidate: candidate({ args: { command: "python3 -c 'print(2)'\npython3 -c 'print(3)'" } }), policies: [], history: [], target: "/project", operation: "shell-complex", fetchImpl: fake(reply(), (body) => { serialized = JSON.stringify(body.state.untrusted_candidate); }) });
+  assert.equal(multiline.action, "Ask"); assert.ok(serialized.length < 5000); assert.doesNotMatch(serialized, /print\(2\)/);
+  let calls = 0;
+  const oversized = await judgeJev({ config: config({ backend: "jev" }), apiKey: "key", candidate: candidate({ args: { command: `python3 -c '${"2 + ".repeat(5000)}2'` } }), policies: [], history: [], target: "/project", operation: "shell-complex", fetchImpl: fake(reply(), () => { calls++; }) });
+  assert.equal(oversized.action, "Ask"); assert.equal(oversized.origin, "model"); assert.equal(calls, 1); assert.match(oversized.reason, /^Assessment evidence has gaps/);
+});
+
 test("up to 200 merged restrictions are represented; larger sets fail closed rather than truncate", async () => {
   const twoHundred = Array.from({ length: 200 }, (_, i) => natural(`p${i}`, "Ask", `Restriction ${i}`));
   assert.equal((await assess(reply(undefined, Array(200).fill(0)), twoHundred)).action, "Allow");

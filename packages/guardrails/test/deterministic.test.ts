@@ -20,6 +20,15 @@ test("narrow built-in reads allow only when no higher restriction applies", () =
   assert.equal(natural.natural.length, 1);
 });
 
+test("explicit destructive-files policy remains Ask for both actors and judge modes", () => {
+  const destructive = policy({ id: "destructive-files", action: "Ask", conditions: { preset: "files" } });
+  for (const judgeEnabled of [true, false]) for (const actor of [{ kind: "main" }, { kind: "subagent", runId: "worker" }] as const) {
+    const result = evaluatePolicies(candidate({ args: { command: "rmdir /tmp/guardrails-isolated.12345678" }, actor }), [destructive], ["/project/.pi"], judgeEnabled);
+    assert.equal(result.decision?.action, "Ask", `${actor.kind}, judge ${judgeEnabled}`);
+    assert.equal(result.decision?.policyIds[0], "destructive-files");
+  }
+});
+
 test("opaque shell remains unresolved instead of receiving unconditional Ask", () => {
   for (const command of ["touch file", "ls \"$(touch file)\"", "node script.js", "npm test", "git branch -D feature/example", "git remote set-url origin example", "git tag -d example", "test -X helper"]) {
     const on = evaluatePolicies(candidate({ args: { command } }), [], [], true);
