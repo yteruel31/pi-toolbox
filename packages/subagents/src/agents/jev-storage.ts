@@ -57,9 +57,10 @@ export async function ensureSafePath(path: string, create = false, rejectReposit
     if (cursor !== absolute && !info.isDirectory()) throw new JevStorageError("unsafe");
     if (info.isDirectory() && process.platform !== "win32") {
       const mode = info.mode & 0o777;
-      const stickySystem = info.uid === 0 && (mode & 0o1000) !== 0;
-      const systemAncestor = info.uid === 0 && !inside(resolve(process.env.HOME || root), cursor);
-      if (info.uid !== process.getuid?.() && !stickySystem && !systemAncestor && cursor !== root || (mode & 0o022) !== 0 && !stickySystem && !systemAncestor) throw new JevStorageError("unsafe");
+      const stickySystem = info.uid === 0 && (info.mode & 0o1000) !== 0;
+      const systemAncestor = info.uid === 0 && !inside(resolve(process.env.HOME || root), cursor) && (mode & 0o022) === 0;
+      const destinationDirectory = cursor === dirname(absolute);
+      if (destinationDirectory && info.uid !== process.getuid?.() || info.uid !== process.getuid?.() && !stickySystem && !systemAncestor && cursor !== root || (mode & 0o022) !== 0 && !stickySystem) throw new JevStorageError("unsafe");
     }
   }
   if (rejectRepository) {

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { resolve, dirname, join } from "node:path";
+import { resolve, dirname, isAbsolute, join } from "node:path";
 import { rename, rm } from "node:fs/promises";
 import { requestJevConnection, type JevFetch } from "./jev-client.js";
 import { acquireLock, ensureSafePath, JevStorageError, jevStorageErrorMessage, makeSafeDirectory, readSafeText, sameRevision, stagePrivate, type JevRevision } from "./jev-storage.js";
@@ -15,7 +15,7 @@ export function jevConfigPath(agentDir: string): string { return join(agentDir, 
 export function defaultJevCredentialPath(agentDir: string): string { return join(agentDir, "subagents-jev.credentials.json"); }
 export function validJevKey(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 16_384 && !/[\s\x00-\x1f\x7f-\x9f]/.test(value); }
 function validReference(source: JevCredentialSource, value: unknown): value is string {
-  return typeof value === "string" && value.length <= 4096 && (source === "environment" ? /^[A-Za-z_][A-Za-z0-9_]{0,255}$/.test(value) : source === "keyring" ? value === "pi-subagents/jev" : value.length > 0);
+  return typeof value === "string" && value.length <= 4096 && (source === "environment" ? /^(?:JEV_API_KEY|TYPESAFE_API_KEY)$/.test(value) : source === "keyring" ? value === "pi-subagents/jev" : value.length > 0 && isAbsolute(value));
 }
 function parseConfig(value: unknown): StoredJevConfig {
   if (!isRecord(value) || value.version !== 1 || typeof value.enabled !== "boolean" || !isRecord(value.credential) || !["environment", "keyring", "file"].includes(String(value.credential.source))) throw new JevStorageError("invalid");
@@ -39,7 +39,9 @@ export async function saveJevSetup(options: { agentDir: string; enabled: boolean
   const agentDir = resolve(options.agentDir); const configPath = jevConfigPath(agentDir);
   return queued(configPath, async () => {
     const old = options.snapshot ?? await readJevSetupSnapshot(agentDir);
-    const reference = options.source === "environment" ? options.reference?.trim() : options.source === "file" ? resolve(options.reference?.trim() || defaultJevCredentialPath(agentDir)) : "pi-subagents/jev";
+    const suppliedReference = options.reference?.trim();
+    if (options.source === "file" && suppliedReference && !isAbsolute(suppliedReference)) throw new JevStorageError("invalid");
+    const reference = options.source === "environment" ? suppliedReference : options.source === "file" ? suppliedReference || defaultJevCredentialPath(agentDir) : "pi-subagents/jev";
     if (!validReference(options.source, reference)) throw new JevStorageError("invalid");
     if (options.source === "file" && reference === configPath) throw new JevStorageError("invalid");
     const retaining = old.config?.credential.source === options.source && old.config.credential.value === reference && options.key === undefined;

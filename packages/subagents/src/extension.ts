@@ -15,7 +15,7 @@ import { Type } from "typebox";
 import { FileAgentDiscovery } from "./agents/discovery.js";
 import { MAX_AGENT_SKILLS } from "./agents/limits.js";
 import { DefaultRouteResolver } from "./agents/route-resolver.js";
-import { readJevConfig, resolveJevKey, saveJevSetup, testJevConnection } from "./agents/jev-config.js";
+import { defaultJevCredentialPath, jevStorageErrorMessage, readJevConfig, readJevSetupSnapshot, resolveJevKey, saveJevSetup, testJevConnection, type StoredJevConfig } from "./agents/jev-config.js";
 import { routeWithJev } from "./agents/jev.js";
 import { FileRoutingStore } from "./agents/routing-store.js";
 import {
@@ -60,7 +60,7 @@ import {
   type RoutingModelCatalogDependencies,
 } from "./tui/model-catalog.js";
 import { routingModelDisplayValue } from "./tui/routing-editor.js";
-import { JEV_SETUP_OVERLAY, JevSetupPanel } from "./tui/jev-setup.js";
+import { JEV_SETUP_OVERLAY, JevSetupPanel, jevSetupRows } from "./tui/jev-setup.js";
 import type { RunCounts } from "./tui/status.js";
 import { openPiRoutingOverlay, openPiRunsOverlay } from "./tui/pi-views.js";
 import { countRuns, statusText } from "./tui/status.js";
@@ -549,24 +549,26 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         if (mode === "setup") {
           try {
             const agentDir = getAgentDir();
-            const config = await readJevConfig(agentDir);
+            const snapshot = await readJevSetupSnapshot(agentDir);
             const saved = await ctx.ui.custom<boolean>((tui, theme, keybindings, done) => new JevSetupPanel({
               theme,
               keybindings,
-              config,
+              snapshot,
+              defaultFile: defaultJevCredentialPath(agentDir),
+              maxRows: () => jevSetupRows(tui.terminal.rows),
               onRender: () => tui.requestRender(),
               onDone: done,
-              onSave: (draft) => saveJevSetup({ agentDir, projectRoot: ctx.cwd, ...draft }),
+              onSave: (draft) => saveJevSetup({ agentDir, projectRoot: ctx.cwd, snapshot, ...draft }),
               onTest: async (draft, signal) => {
-                const key = draft.source === "environment"
-                  ? process.env[draft.reference ?? ""]
-                  : draft.key;
+                const matching = snapshot.config?.credential.source === draft.source;
+                const config: StoredJevConfig = { version: 1, enabled: draft.enabled, credential: { source: draft.source, value: draft.source === "keyring" ? "pi-subagents/jev" : draft.reference ?? "" } };
+                const key = draft.key ?? (matching ? await resolveJevKey(config, process.env, signal) : undefined);
                 await testJevConnection(key ?? "", fetch, signal);
               },
             }), { overlay: true, overlayOptions: JEV_SETUP_OVERLAY });
             if (saved) ctx.ui.notify("Jev routing settings saved. Run /reload to apply them.", "info");
           } catch (error) {
-            ctx.ui.notify(`Jev Setup: ${truncateText(describeError(error), 300)}`, "error");
+            ctx.ui.notify(`Jev Setup: ${jevStorageErrorMessage(error)}`, "error");
           }
           return;
         }
@@ -581,6 +583,10 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
           await openPiRoutingOverlay(ctx, createRoutingPort(ctx), models.catalog);
           return;
         }
+      }
+      if (mode === "setup" || mode === "config") {
+        showHuman(ctx, "Jev Setup requires Pi's interactive TUI. Re-run Pi in TUI mode, then use /subagents setup.");
+        return;
       }
       if (mode === "agents") {
         const { catalog, routes, routingWarnings } = await discoverResolvedAgents(ctx, dependencies);
