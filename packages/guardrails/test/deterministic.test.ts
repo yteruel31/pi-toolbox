@@ -45,6 +45,8 @@ test("sensitive input redirections and reads require review", () => {
     assert.equal(evaluate(command)?.action, "Ask", command);
     assert.equal(evaluate(command, false)?.action, "Ask", command);
   }
+  assert.equal(evaluate("grep -e .env README.md")?.action, "Allow");
+  assert.equal(evaluate("echo -n hi")?.action, "Allow");
 });
 
 test("unknown read and Git options never establish safety", () => {
@@ -52,6 +54,17 @@ test("unknown read and Git options never establish safety", () => {
     "ls --definitely-invalid", "git diff --outpu=.pi/settings.json", "git diff --ext-dif",
     "git --config-env=core.fsmonitor=GUARDRAILS_TEST_HELPER status", "git -p log", "git --paginate log",
   ]) assert.equal(evaluate(command), undefined, command);
+});
+
+test("literal shell aliases and Unicode-space paths are not native-normalized", () => {
+  const root = mkdtempSync(join(tmpdir(), "guardrails-shell-literal-"));
+  try {
+    mkdirSync(join(root, "private"));
+    symlinkSync(join(root, "private", ".env"), join(root, "@alias"));
+    assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "cat @alias" } }), [], []).decision?.action, "Ask");
+    assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "rm @alias" } }), [], []).decision?.action, "Deny");
+    assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "cat 'name\u00a0with-space'" } }), [], []).decision?.action, "Allow");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("read-only strings mentioning dangerous targets are not treated as mutations", () => {
@@ -69,7 +82,7 @@ test("in-project writes require canonical non-sensitive non-protected targets", 
     const c = candidate({ cwd: project, project, tool: "write", args: { path: "alias/file", content: "x" } });
     assert.equal(evaluatePolicies(c, [], []).decision, undefined);
     const escaped = candidate({ cwd: project, project, tool: "write", args: { path: "alias/../outside.txt", content: "x" } });
-    assert.equal(evaluatePolicies(escaped, [], []).decision?.action, "Ask");
+    assert.equal(evaluatePolicies(escaped, [], []).decision, undefined);
     const custom = policy({ action: "Allow", tools: ["write"], conditions: { pathPrefix: "example" } });
     mkdirSync(join(root, "example")); symlinkSync(join(root, "outside"), join(root, "node_modules"));
     const ambiguous = evaluatePolicies(candidate({ cwd: root, project: root, tool: "write", args: { path: "node_modules/../example/file" } }), [custom], []).decision;

@@ -83,6 +83,7 @@ test("unknown execution stays unresolved, even with exact and natural Allow", ()
 test("known executable prefixes still deny before unsupported syntax", () => {
   assert.equal(evaluate("echo x > /project/.pi/config; echo \"$(unknown)\"")?.action, "Deny");
   assert.equal(evaluatePolicies(candidate({ args: { command: "rm -rf /; echo \"$(unknown)\"" } }), [], []).decision?.action, "Deny");
+  assert.equal(evaluate("echo x > /tmp/incomplete$(unknown)")?.action, undefined);
 });
 
 test("cwd changes suppress relative path conclusions but retain absolute denials", () => {
@@ -118,7 +119,7 @@ test("relative and symlink shell destinations use real ancestors and component b
     }
     mkdirSync(join(root, "private", "subdir"));
     symlinkSync(join(root, "private", "subdir"), join(root, "nested-alias"));
-    assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "rm nested-alias/../config" } }), [], [join(root, "private")]).decision, undefined);
+    assert.equal(evaluatePolicies(candidate({ cwd: root, args: { command: "rm nested-alias/../config" } }), [], [join(root, "private")]).decision?.action, "Deny");
     for (const tool of ["write", "edit"] as const) {
       assert.equal(evaluatePolicies(candidate({ cwd: root, tool, args: { path: "alias/new" } }), [], [join(root, "private")]).decision?.action, "Deny");
     }

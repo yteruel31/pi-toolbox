@@ -10,29 +10,39 @@ import { deterministicDecision } from "./deterministic.js";
 
 /** Resolve existing ancestors without opening the target file, including new files below symlinks. */
 export function canonicalPath(path: string, cwd: string): string {
-  return resolveCanonicalPath(path, cwd, 0);
+  return resolveCanonicalPath(path.replace(/^@/, "").replace(/[\u00a0\u202f]/g, " "), cwd);
 }
-function resolveCanonicalPath(path: string, cwd: string, links: number): string {
-  if (links > 40) throw new Error("Cannot resolve target safely");
-  let expanded = path.replace(/^@/, "").replace(/[\u00a0\u202f]/g, " ");
+/** Shell paths are literal: native @ shorthand and Unicode-space cleanup do not apply. */
+export function canonicalShellPath(path: string, cwd: string): string {
+  return resolveCanonicalPath(path, cwd);
+}
+function resolveCanonicalPath(path: string, cwd: string): string {
+  let expanded = path;
   if (expanded === "~" || expanded.startsWith("~/")) expanded = homedir() + expanded.slice(1);
   let current = isAbsolute(expanded) ? sep : resolve(cwd);
-  const components = expanded.split(sep).filter(Boolean);
-  for (let i = 0; i < components.length; i++) {
-    const component = components[i];
+  let components = expanded.split(sep).filter(Boolean);
+  let links = 0;
+  while (components.length) {
+    const component = components.shift()!;
     if (component === ".") continue;
     if (component === "..") { current = dirname(current); continue; }
     const next = join(current, component);
     try {
       const stat = lstatSync(next);
       if (stat.isSymbolicLink()) {
+        if (++links > 40) throw new Error("Cannot resolve target safely");
         const destination = readlinkSync(next);
-        return resolveCanonicalPath(resolve(current, destination, ...components.slice(i + 1)), cwd, links + 1);
+        if (isAbsolute(destination)) current = sep;
+        components = [...destination.split(sep).filter(Boolean), ...components];
+        continue;
       }
       current = realpathSync(next);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code ?? "";
-      if (code === "ENOENT") return resolve(current, ...components.slice(i));
+      if (code === "ENOENT") {
+        current = join(current, component);
+        continue;
+      }
       throw new Error("Cannot resolve target safely");
     }
   }
@@ -79,31 +89,14 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
   const oversized = isOperationTool(c.tool) ? !validOperationArgs(c.args) : c.tool === "bash" ? typeof c.args.command !== "string" || c.args.command.length > 16000 : typeof c.args.path !== "string" || c.args.path.length > 4096;
   if (oversized) return { target: c.cwd, operation: c.tool, natural: [], decision: { action: "Deny", origin: "policy", reason: "Tool arguments are invalid or exceed the assessment budget (16000 command / 4096 path characters; operations: 64 KB, 12 levels, 32 URLs).", policyIds: ["builtin.argument-budget"], historyIds: [] } };
   const { target, operation } = describeCandidate(c);
-  if (c.tool !== "bash" && String(c.args.path ?? "").split(sep).includes("..")) {
-    return { target, operation, natural: [], decision: { action: "Ask", origin: "policy", reason: "Path traversal crosses a symbolic link and cannot establish a safe policy target.", policyIds: ["builtin.ambiguous-path"], historyIds: [] } };
-  }
   const result = (action: Decision["action"], reason: string, policyIds: string[]): Decision => ({ action, origin: "policy", reason, policyIds, historyIds: [] });
   const command = String(c.args.command ?? "");
   const self = (c.tool === "write" || c.tool === "edit") && protectedPaths.some((p) => within(canonicalPath(p, c.cwd), target));
   const protectedRoots = c.tool === "bash" ? protectedPaths.map((p) => canonicalPath(p, c.cwd)) : [];
-  let uncertainShellPath = false;
-  const shellVerdict = c.tool === "bash" && protectedRoots.length ? shellSelfProtection(command, (path, includeParents) => {
-    // Native @path shorthand and Unicode space normalization aren't shell syntax.
-    const expanded = path === "~" || path.startsWith("~/") ? homedir() + path.slice(1) : path;
-    const parts = expanded.split(sep);
-    const symlinkParent = parts.some((part, i) => {
-      if (part !== "..") return false;
-      const prefix = parts.slice(0, i).join(sep) || ".";
-      return canonicalPath(prefix, c.cwd) !== resolve(c.cwd, prefix);
-    });
-    if (/[\u00a0\u202f]/.test(path) || symlinkParent) {
-      // Lexical '..' normalization before symlink traversal can resolve a different target than the OS.
-      uncertainShellPath = true; return false;
-    }
-    const resolved = canonicalPath(expanded.startsWith("@") ? resolve(c.cwd, expanded) : expanded, c.cwd);
+  const shell = c.tool === "bash" ? shellSelfProtection(command, (path, includeParents) => {
+    const resolved = canonicalShellPath(path, c.cwd);
     return protectedRoots.some((root) => within(root, resolved) || (includeParents && within(resolved, root)));
   }) : undefined;
-  const shell = shellVerdict === "Deny" ? shellVerdict : uncertainShellPath ? "Ask" : shellVerdict;
   const localOperationPaths = operationOutputPaths(c);
   if (c.tool === "web-access" && validOperationArgs(c.args)) {
     for (const value of c.args.urls ?? []) {
@@ -130,7 +123,7 @@ export function evaluatePolicies(c: Candidate, policies: Policy[], protectedPath
   const allows = structured.filter((p) => p.action === "Allow");
   if (!natural.length) {
     // Built-in Allows are narrow proofs, never replacements for applicable restrictions.
-    if (builtin?.action === "Allow") return { target, operation, natural, decision: builtin };
+    if (builtin?.action === "Allow" && !unresolvedShell) return { target, operation, natural, decision: builtin };
     if (allows.length && !unresolvedShell && (!judgeEnabled || c.tool !== "bash" || (!complexShell(command) && allows.some((p) => p.conditions.command === command)))) {
       return { target, operation, natural, decision: result("Allow", `Explicit allow: ${allows.map((p) => p.name).join(", ")}`, allows.map((p) => p.id)) };
     }

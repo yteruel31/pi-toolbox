@@ -8,7 +8,7 @@ type Touches = (path: string, includeParents?: boolean) => boolean;
 // This is a classification boundary, not an autoapproval list. All other policies still run.
 function readOnly(words: string[]): boolean {
   const [name, ...args] = words;
-  if (["cat", "head", "tail", "ls", "stat", "pwd", "wc", "echo", "true", "false", ":"].includes(name)) return true;
+  if (["cat", "head", "tail", "ls", "stat", "pwd", "wc", "echo", "test", "[", "true", "false", ":"].includes(name)) return true;
   if (name === "printf") return !args.some((arg) => arg.startsWith("-v"));
   if (name === "grep") return true;
   if (name === "rg") return !args.some((arg) => /^--(?:pre|hostname-bin)(?:=|$)/.test(arg));
