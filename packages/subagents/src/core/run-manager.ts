@@ -42,6 +42,7 @@ import {
   type RunInspection,
   type RunListEntry,
   type RunResult,
+  type RunRoutingDiagnostic,
   type RunSnapshot,
   type RunStatus,
   type RunTranscriptEntry,
@@ -125,6 +126,8 @@ export interface SpawnRunRequest {
   workingDir?: string;
   model?: string;
   thinkingLevel?: ThinkingLevel;
+  /** Initial detached routing state while a background router is preparing. */
+  routing?: RunRoutingDiagnostic;
   /**
    * When false the settled result is never queued for parent delivery
    * (/btw side questions). Defaults to true.
@@ -151,6 +154,7 @@ interface InternalRun {
   requestedModel: string | undefined;
   effectiveModel: string | undefined;
   thinkingLevel: ThinkingLevel | undefined;
+  routing: RunRoutingDiagnostic | undefined;
   cancelRequested: boolean;
   autoDeliver: boolean;
   consumption: ResultConsumption;
@@ -246,6 +250,7 @@ export class RunManager {
       requestedModel: request.model,
       effectiveModel: undefined,
       thinkingLevel: request.thinkingLevel,
+      routing: this.normalizeRouting(request.routing),
       cancelRequested: false,
       autoDeliver: request.autoDeliver !== false,
       consumption: request.autoDeliver === false ? "suppressed" : "none",
@@ -308,6 +313,15 @@ export class RunManager {
               run.effectiveModel = truncateText(sanitizeTerminalText(String(model)), 200);
               this.hooks.onChange?.();
             }
+          },
+          reportRouting: (route, diagnostic) => {
+            if (this.isSettled(run) || run.cancelRequested) return false;
+            run.harness = route.harness;
+            run.requestedModel = route.model;
+            run.thinkingLevel = route.thinkingLevel;
+            run.routing = this.normalizeRouting(diagnostic);
+            this.persist();
+            return true;
           },
           setActiveControl: (control) => this.attachActiveControl(run, control),
         }),
@@ -750,6 +764,7 @@ export class RunManager {
           ? undefined
           : truncateText(previewSource, this.maxResultPreviewChars),
       consumption: run.consumption,
+      routing: this.cloneRouting(run.routing),
     });
   }
 
@@ -791,6 +806,7 @@ export class RunManager {
         elapsedMs: this.elapsedMs(run),
         model: run.effectiveModel ?? run.requestedModel,
         thinkingLevel: run.thinkingLevel,
+        routing: this.cloneRouting(run.routing),
       };
     });
   }
@@ -893,6 +909,7 @@ export class RunManager {
           activityDropped: run.activity.dropped,
           transcript: run.transcript.entries().map((entry) => ({ ...entry })),
           transcriptDropped: run.transcript.dropped,
+          routing: this.cloneRouting(run.routing),
         } satisfies PersistedRunRecord;
       }),
     };
@@ -925,6 +942,7 @@ export class RunManager {
         requestedModel: record.requestedModel,
         effectiveModel: record.effectiveModel,
         thinkingLevel: record.thinkingLevel,
+        routing: this.normalizeRouting(record.routing),
         cancelRequested: record.cancelRequested,
         autoDeliver: record.autoDeliver,
         consumption: record.consumption,
@@ -1030,6 +1048,7 @@ export class RunManager {
       autoDeliver: run.autoDeliver,
       consumption: run.consumption,
       usage: run.usage,
+      routing: this.cloneRouting(run.routing),
     };
   }
 
@@ -1053,6 +1072,25 @@ export class RunManager {
       settledAt: run.settledAt,
       durationMs: Math.max(0, run.settledAt - run.createdAt),
       settlementSeq: run.settlementSeq,
+      routing: this.cloneRouting(run.routing),
     };
+  }
+
+  private normalizeRouting(value: RunRoutingDiagnostic | undefined): RunRoutingDiagnostic | undefined {
+    if (!value || !["pending", "resolved", "fallback"].includes(value.state)) return undefined;
+    const provenance = value.provenance && Object.fromEntries(
+      Object.entries(value.provenance)
+        .filter(([key]) => ["harness", "model", "thinking"].includes(key))
+        .map(([key, entry]) => [key, truncateText(sanitizeTerminalText(String(entry)), 80)]),
+    );
+    return {
+      state: value.state,
+      ...(provenance && Object.keys(provenance).length ? { provenance } : {}),
+      ...(value.fallback === undefined ? {} : { fallback: truncateText(sanitizeTerminalText(String(value.fallback)), 400) }),
+    };
+  }
+
+  private cloneRouting(value: RunRoutingDiagnostic | undefined): RunRoutingDiagnostic | undefined {
+    return value ? { ...value, ...(value.provenance ? { provenance: { ...value.provenance } } : {}) } : undefined;
   }
 }

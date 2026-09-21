@@ -7,6 +7,7 @@
 import type {
   HarnessKind,
   RunTranscriptInput,
+  RunRoutingDiagnostic,
   RunUsage,
   ThinkingLevel,
 } from "../shared/types.js";
@@ -52,6 +53,11 @@ export interface HarnessRunRequest {
   reportTranscript(entry: RunTranscriptInput): void;
   /** Report the effective model once known. Calls after settlement ignored. */
   reportEffectiveModel(model: string): void;
+  /** Report the resolved backend, model, thinking, and bounded routing diagnostics. */
+  reportRouting?(
+    route: { harness: HarnessKind; model?: string; thinkingLevel?: ThinkingLevel },
+    diagnostic: RunRoutingDiagnostic,
+  ): boolean;
   /**
    * Hand ownership of a live input channel to the manager. Returns false when
    * the run already settled; the harness must then dispose the control.

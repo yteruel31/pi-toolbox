@@ -32,7 +32,9 @@ export interface JevRouteInput {
   tools?: readonly string[];
   piModels: readonly Model<any>[];
   claudeModels: readonly ClaudeSupportedModel[];
-  apiKey: string;
+  /** Compatibility value; new callers should lazily resolve only before a request. */
+  apiKey?: string;
+  resolveApiKey?: () => Promise<string>;
   signal?: AbortSignal;
 }
 
@@ -169,8 +171,10 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
 
   try {
     const criteria = Object.fromEntries(candidates.map((item) => [item.key, item.description]));
+    const apiKey = input.apiKey ?? await input.resolveApiKey?.();
+    if (!apiKey) return fallback(input.route, "Jev credentials are unavailable.");
     const answer = await requestJevChoice({
-      apiKey: input.apiKey,
+      apiKey,
       state: { task: input.task, role: bounded(input.role ?? "generic subagent", 500) },
       criteria,
       signal: input.signal,
