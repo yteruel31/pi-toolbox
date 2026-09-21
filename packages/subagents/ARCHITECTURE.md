@@ -94,6 +94,14 @@ For the Claude harness, profile `effort` is the profile-level source for resolve
 
 Unresolved Claude model/thinking values stay undefined rather than inheriting parent Pi values. The special profile default `model: inherit` is intentionally normalized to an omitted SDK model while retaining `agent-default` provenance; explicit or saved strings are not rewritten. Each resolved field retains provenance for display. Untrusted project mappings are excluded before resolution, and catalogue warnings include invalid profile effort diagnostics (spawn does not duplicate catalogue warnings).
 
+## Optional Jev routing
+
+Jev is an opt-in user-global layer that runs after ordinary per-field precedence and before parent defaults are used to start a child. It only fills fields whose provenance is `parent` or `agent-default`; explicit spawn values and trusted project or user mappings remain fixed. Candidate construction uses Pi's current scoped models, or all available models when unscoped, with runtime thinking metadata, and Claude SDK `supportedModels()` metadata. A fixed backend filters incompatible candidates instead of being rewritten.
+
+One bounded choice question carries the task, role, candidate descriptions, and explicit constraints. It carries no parent transcript or extra file content. Catalogues above the service's 255-choice limit aren't truncated. Timeout, transport, malformed answer, and unavailable-choice failures make one visible fallback to the ordinary route, with no retry.
+
+Jev credentials use a dedicated `pi-subagents` namespace. Setup stages the opt-in and credential choice until Save, supports environment references, Linux Secret Service, or an explicitly chosen private file, and never silently falls back to weaker storage.
+
 ## Pi extension adapter
 
 The default factory only registers tools, commands, and handlers. It starts no child process, watcher, or timer before `session_start`.

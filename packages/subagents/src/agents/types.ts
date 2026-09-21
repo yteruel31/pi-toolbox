@@ -141,6 +141,7 @@ export type RouteFieldProvenance =
   | "saved-project"
   | "saved-user"
   | "agent-default"
+  | "jev"
   | "parent";
 
 export interface RouteResolver {

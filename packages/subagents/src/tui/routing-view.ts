@@ -381,6 +381,7 @@ const PROVENANCE_LABEL: Record<RouteFieldProvenance, string> = {
   "saved-project": "proj",
   "saved-user": "user",
   "agent-default": "agent",
+  jev: "jev",
   parent: "parent",
 };
 
