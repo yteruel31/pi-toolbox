@@ -85,6 +85,33 @@ export function shellPathUsable(path: string, uncertainCwd: boolean): boolean {
 }
 
 /** Parse only known option layouts; unknown options cannot hide paths or scripts. */
+export function destinationChild(destination: string, source: string): string {
+  const child = source.split("/").at(-1);
+  return child ? `${destination.replace(/\/$/, "")}/${child}` : destination;
+}
+
+/** Extract targets from supported sed layouts without treating the script as a path. */
+export function parseSedOperands(args: string[]): { paths: string[]; inPlace: boolean } | undefined {
+  const paths: string[] = [];
+  let inPlace = false, explicitScript = false, positionalScript = false, end = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!end && arg === "--") { end = true; continue; }
+    if (!end && (arg === "-e" || arg === "--expression" || arg === "-f" || arg === "--file")) {
+      if (!args[++i]) return undefined;
+      explicitScript = true;
+      continue;
+    }
+    if (!end && /^(?:-e.+|-f.+|--(?:expression|file)=.+)$/.test(arg)) { explicitScript = true; continue; }
+    if (!end && (arg === "-i" || /^-i.+/.test(arg) || arg === "--in-place" || arg.startsWith("--in-place="))) { inPlace = true; continue; }
+    if (!end && arg.startsWith("-")) return undefined;
+    if (!explicitScript && !positionalScript) { positionalScript = true; continue; }
+    paths.push(arg);
+  }
+  if (!explicitScript && !positionalScript) return undefined;
+  return { paths, inPlace };
+}
+
 export function parseOperands(args: string[], flags: RegExp, values: Set<string>): { paths: string[]; target?: string; optionPaths: string[] } | undefined {
   const paths: string[] = [], optionPaths: string[] = [];
   let target: string | undefined, end = false;

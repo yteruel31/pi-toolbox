@@ -41,7 +41,7 @@ test("detected denials dominate unknown or reviewable segments and protected bra
 });
 
 test("sensitive input redirections and reads require review", () => {
-  for (const command of ["cat < .env", "cat < ~/.ssh/id_rsa", "cat .env", "grep -f.env README.md", "grep -f .env README.md"]) {
+  for (const command of ["cat < .env", "cat < ~/.ssh/id_rsa", "cat .env", "grep -f.env README.md", "grep -f .env README.md", "git show HEAD:.env", "git diff -- .env", "git diff --stat -- .env"]) {
     assert.equal(evaluate(command)?.action, "Ask", command);
     assert.equal(evaluate(command, false)?.action, "Ask", command);
   }
@@ -53,7 +53,19 @@ test("unknown read and Git options never establish safety", () => {
   for (const command of [
     "ls --definitely-invalid", "git diff --outpu=.pi/settings.json", "git diff --ext-dif",
     "git --config-env=core.fsmonitor=GUARDRAILS_TEST_HELPER status", "git -p log", "git --paginate log",
+    "git diff HEAD", "git show HEAD", "git log -- .env",
   ]) assert.equal(evaluate(command), undefined, command);
+});
+
+test("sed mutation extraction distinguishes scripts from identified targets", () => {
+  for (const command of ["sed -i '/.env/d' README.md", "sed -i -e 's/true/false/' README.md", "sed --in-place=.bak --expression='s/a/b/' README.md"]) {
+    assert.notEqual(evaluate(command)?.action, "Deny", command);
+  }
+  for (const command of ["sed -i -e 's/true/false/' .pi/settings.json", "sed --in-place=.bak --file=rules.sed .pi/settings.json"]) {
+    assert.equal(evaluate(command)?.action, "Deny", command);
+    assert.equal(evaluate(command, false)?.action, "Deny", command);
+  }
+  assert.equal(evaluate("sed -n '/.env/p' README.md")?.action, undefined);
 });
 
 test("literal shell aliases and Unicode-space paths are not native-normalized", () => {

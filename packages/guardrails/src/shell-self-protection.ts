@@ -1,6 +1,6 @@
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 
-import { analyzeShell, parseOperands, shellPathUsable } from "./shell-analysis.js";
+import { analyzeShell, destinationChild, parseOperands, parseSedOperands, shellPathUsable } from "./shell-analysis.js";
 
 type Verdict = "Deny" | "Ask" | undefined;
 type Touches = (path: string, includeParents?: boolean) => boolean;
@@ -52,15 +52,15 @@ function mutation(words: string[], touches: Touches): Verdict {
         if (touches(destination)) return "Deny";
         // A directory operand may contain a child symlink even when the directory isn't protected.
         if (!sources.length || sources.some((path) => [".", "..", ""].includes(basename(path)))) return "Ask";
-        if (sources.some((path) => touches(join(destination, basename(path)), true))) return "Deny";
+        if (sources.some((path) => touches(destinationChild(destination, path), true))) return "Deny";
         if (name === "cp" && args.some((arg) => /^-[^-]*[rRaT]/.test(arg) || ["--recursive", "--archive", "--no-target-directory"].includes(arg))) return "Ask";
         return undefined;
       }
       break;
     case "sed": {
-      // Script syntax can itself execute commands or write files. Only identify an explicit -i target.
-      const inplace = args[0] === "-i" || args[0]?.startsWith("-i") || args[0]?.startsWith("--in-place");
-      if (inplace && args.length >= 3 && !args[1].startsWith("-") && args.slice(2).every((arg) => !arg.startsWith("-")) && args.slice(2).some((path) => touches(path, true))) return "Deny";
+      const sed = parseSedOperands(args);
+      if (!sed) return "Ask";
+      if (sed.inPlace && sed.paths.some((path) => touches(path, true))) return "Deny";
       return "Ask";
     }
     case "dd":
