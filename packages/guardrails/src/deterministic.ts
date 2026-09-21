@@ -1,7 +1,7 @@
 import { resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import type { Candidate, Decision } from "./types.js";
-import { canonicalPath, within } from "./policies.js";
+import { canonicalPath, canonicalShellPath, within } from "./policies.js";
 import { analyzeShell, parseOperands, shellPathUsable, type ShellSegment } from "./shell-analysis.js";
 
 export type DeterministicVerdict = "Allow" | "Ask" | "Deny" | undefined;
@@ -16,9 +16,10 @@ function decision(action: Exclude<DeterministicVerdict, undefined>, id: string, 
 
 function expand(path: string): string { return path === "~" || path.startsWith("~/") ? homedir() + path.slice(1) : path; }
 function canonical(path: string, cwd: string): string { return canonicalPath(expand(path), cwd); }
-function isSensitivePath(path: string, cwd: string): boolean { return sensitive.test(canonical(path, cwd).replaceAll(sep, "/")); }
-function isDevice(path: string, cwd: string): boolean { return /^\/dev(?:\/|$)/.test(canonical(path, cwd)); }
-function isRootOrHome(path: string, cwd: string): boolean { const absolute = canonical(path, cwd); return absolute === "/" || absolute === resolve(homedir()); }
+function shellCanonical(path: string, cwd: string): string { return canonicalShellPath(expand(path), cwd); }
+function isSensitivePath(path: string, cwd: string, shell = false): boolean { return sensitive.test((shell ? shellCanonical : canonical)(path, cwd).replaceAll(sep, "/")); }
+function isDevice(path: string, cwd: string, shell = false): boolean { return /^\/dev(?:\/|$)/.test((shell ? shellCanonical : canonical)(path, cwd)); }
+function isRootOrHome(path: string, cwd: string, shell = false): boolean { const absolute = (shell ? shellCanonical : canonical)(path, cwd); return absolute === "/" || absolute === resolve(homedir()); }
 
 function mutatingPaths(words: string[]): string[] | undefined {
   const [name, ...args] = words; let parsed: ReturnType<typeof parseOperands>;
@@ -93,7 +94,7 @@ function safeRead(words: string[]): boolean {
   if (["echo", "cat", "head", "tail", "stat", "wc", "grep", "rg", "ls", "test", "["].includes(name)) {
     const allowed: Record<string, RegExp> = {
       cat: /^(?:--|-n|-b|-s|-E|-T|-A)$/, head: /^(?:--|-q|-v|-n\d*|-c\d*)$/, tail: /^(?:--|-q|-v|-n\d*|-c\d*)$/,
-      stat: /^(?:--|-L|-f|-c.*|--format=.*|--printf=.*)$/, wc: /^(?:--|-[clmwL]+)$/, grep: /^(?:--|-[EinclHhsv]+|-e.*|-f.*)$/, rg: /^(?:--|-[inl]+|--(?:hidden|no-ignore|files))$/,
+      echo: /^(?:--|-n|-e|-E|-[neE]+)$/, stat: /^(?:--|-L|-f|-c.*|--format=.*|--printf=.*)$/, wc: /^(?:--|-[clmwL]+)$/, grep: /^(?:--|-[EinclHhsv]+|-e|-f|-e.+|-f.+)$/, rg: /^(?:--|-[inl]+|--(?:hidden|no-ignore|files))$/,
       ls: /^(?:--|-[AacdFfhilLmnopqRrStuUxZ1]+|--color=(?:auto|always|never))$/, test: /^(?:--|-[abcdefghknoprstuw])$/, "[": /^(?:--|-[abcdefghknoprstuw])$/,
     };
     return args.every((arg) => !arg.startsWith("-") || allowed[name].test(arg)) && !args.some((arg) => arg === "-x" || arg === "-X") && common.test("--");
@@ -113,8 +114,12 @@ function readPaths(words: string[]): string[] | undefined {
   if (["echo", "printf", "pwd", "true", "false", ":"].includes(name)) return [];
   if (name === "grep") {
     const optionFiles = args.filter((arg) => /^-f.+/.test(arg)).map((arg) => arg.slice(2));
+    const hasOptionPattern = args.some((arg) => arg === "-e" || arg === "--regexp" || arg === "-f" || arg === "--file" || /^-(?:e|f).+/.test(arg) || /^--(?:regexp|file)=.+/.test(arg));
     const parsed = parseOperands(args, /^(?:--|-[EinclHhsv]+|-e.+|-f.+)$/, new Set(["-e", "--regexp", "-f", "--file"]));
-    return parsed && [...parsed.paths.slice(1), ...optionFiles, ...parsed.optionPaths];
+    if (!parsed) return undefined;
+    const separateFiles: string[] = [];
+    for (let i = 0; i < args.length; i++) if ((args[i] === "-f" || args[i] === "--file") && args[i + 1]) separateFiles.push(args[++i]);
+    return [...parsed.paths.slice(hasOptionPattern ? 0 : 1), ...optionFiles, ...separateFiles];
   }
   if (["cat", "head", "tail", "stat", "wc", "rg", "ls", "test", "["].includes(name)) return args.filter((arg) => !arg.startsWith("-"));
   return [];
@@ -128,19 +133,19 @@ function evaluateParsed(parsed: Segment[], complete: boolean, uncertainCwd: bool
     if (redirections.some((r) => r.operator !== "<")) allSafe = false;
     for (const redirection of redirections) {
       if (!usable(redirection.path)) { allSafe = false; continue; }
-      if (redirection.operator === "<") { if (isSensitivePath(redirection.path, c.cwd)) ask = true; continue; }
-      if (isSensitivePath(redirection.path, c.cwd) || isDevice(redirection.path, c.cwd) || isRootOrHome(redirection.path, c.cwd)) return decision("Deny", "builtin.dangerous-path", "Shell writes to credential, device, root or home targets are denied.");
+      if (redirection.operator === "<") { if (isSensitivePath(redirection.path, c.cwd, true)) ask = true; continue; }
+      if (isSensitivePath(redirection.path, c.cwd, true) || isDevice(redirection.path, c.cwd, true) || isRootOrHome(redirection.path, c.cwd, true)) return decision("Deny", "builtin.dangerous-path", "Shell writes to credential, device, root or home targets are denied.");
     }
     if (!words.length) continue;
     if (/^mkfs(?:\.|$)/.test(words[0])) return decision("Deny", "builtin.catastrophic-shell", "Disk formatting is denied.");
     if (gitDestructive(words)) return decision("Deny", "builtin.protected-branch", "Destructive Git operations targeting main or master are denied.");
     const paths = mutatingPaths(words);
     if (paths === undefined) { allSafe = false; continue; }
-    if (paths.filter(usable).some((path) => isSensitivePath(path, c.cwd) || isDevice(path, c.cwd))) return decision("Deny", "builtin.dangerous-path", "Mutation of an identified credential or device path is denied.");
-    if (["rm", "rmdir", "unlink", "shred", "truncate", "dd"].includes(words[0]) && paths.filter(usable).some((path) => isRootOrHome(path, c.cwd))) return decision("Deny", "builtin.catastrophic-shell", "Destructive mutation of the filesystem root or home directory is denied.");
+    if (paths.filter(usable).some((path) => isSensitivePath(path, c.cwd, true) || isDevice(path, c.cwd, true))) return decision("Deny", "builtin.dangerous-path", "Mutation of an identified credential or device path is denied.");
+    if (["rm", "rmdir", "unlink", "shred", "truncate", "dd"].includes(words[0]) && paths.filter(usable).some((path) => isRootOrHome(path, c.cwd, true))) return decision("Deny", "builtin.catastrophic-shell", "Destructive mutation of the filesystem root or home directory is denied.");
     const safe = safeRead(words);
-    if (paths.length || !safe) allSafe = false;
-    if (safe && readPaths(words)?.filter(usable).some((path) => isSensitivePath(path, c.cwd))) ask = true;
+    if (!safe) allSafe = false;
+    if (safe && readPaths(words)?.filter(usable).some((path) => isSensitivePath(path, c.cwd, true))) ask = true;
   }
   if (ask) return decision("Ask", "builtin.sensitive-path", "Reading an identified credential path requires review.");
   return allSafe ? decision("Allow", "builtin.safe-read", "Narrow read-only shell form recognized.") : undefined;
@@ -151,11 +156,6 @@ export function deterministicDecision(c: Candidate, protectedPaths: string[]): D
   if (c.tool === "mcp" || c.tool === "web-access") return undefined;
   if (c.tool !== "bash") {
     const path = String(c.args.path ?? "");
-    // Resolve each lexical prefix before `..`: resolving the whole string first
-    // would erase symlink traversal order and could falsely prove containment.
-    const expandedPath = expand(path);
-    const parts = expandedPath.split(sep);
-    if (parts.some((part, i) => part === ".." && canonical(parts.slice(0, i).join(sep) || ".", c.cwd) !== resolve(c.cwd, parts.slice(0, i).join(sep) || "."))) return undefined;
     if (c.tool === "read" && isSensitivePath(path, c.cwd)) return decision("Ask", "builtin.sensitive-path", "Reading an identified credential path requires review.");
     if ((c.tool === "write" || c.tool === "edit") && (isSensitivePath(path, c.cwd) || isDevice(path, c.cwd))) return decision("Deny", "builtin.dangerous-path", "Writing an identified credential or device path is denied.");
     if (c.tool === "write" || c.tool === "edit") {

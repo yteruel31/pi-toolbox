@@ -40,6 +40,13 @@ test("path matching uses component boundaries and real ancestors, without readin
     assert.equal(evaluatePolicies(candidate({ tool: "read", args: { path: "/project/secretish/file" } }), [policy({ conditions: { pathPrefix: "/project/secret" } })], []).decision, undefined);
   } finally { rmSync(root, { recursive: true }); }
 });
+test("path traversal preserves self-protection and explicit Deny precedence", () => {
+  const protectedWrite = candidate({ tool: "write", args: { path: "/project/src/../.pi/config", content: "x" } });
+  assert.equal(evaluatePolicies(protectedWrite, [policy({ action: "Allow" })], ["/project/.pi"]).decision?.action, "Deny");
+  const denied = candidate({ tool: "write", args: { path: "/project/src/../a", content: "x" } });
+  assert.equal(evaluatePolicies(denied, [policy({ action: "Deny", tools: ["write"] })], []).decision?.action, "Deny");
+});
+
 test("policy self-write cannot be granted by a policy or natural assessment", () => {
   const rules = [policy({ action: "Allow" })];
   for (const tool of ["write", "edit"] as const) assert.equal(evaluatePolicies(candidate({ tool, args: { path: "/project/.pi/guardrails.json" } }), rules, ["/project/.pi"]).decision?.action, "Deny");

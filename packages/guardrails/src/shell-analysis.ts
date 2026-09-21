@@ -63,6 +63,12 @@ export function analyzeShell(command: string): ShellAnalysis {
     } else segments.at(-1)!.words.push(token.value);
   }
   if (!validTokens) complete = false;
+  if (!complete) {
+    // Only boundaries prove that a prefix segment was complete. Never classify
+    // words or redirections from the segment interrupted by unsupported syntax.
+    const boundaryCount = tokens.filter((token) => token.kind === "operator" && [";", "\n", "&&", "||", "|"].includes(token.value)).length;
+    segments.splice(boundaryCount);
+  }
   while (segments.length && !segments.at(-1)!.words.length && !segments.at(-1)!.redirections.length) segments.pop();
 
   let changed = false;
