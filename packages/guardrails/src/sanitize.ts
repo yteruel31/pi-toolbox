@@ -23,13 +23,53 @@ function redact(value: string, limit: number, opaque: RegExp): string {
     .slice(0, limit);
 }
 export function safeCommand(command: string): string {
-  // Embedded scripts, heredocs and quoted literals can contain arbitrary file bodies.
+  // Display only: embedded scripts, heredocs and quoted literals can contain arbitrary file bodies.
   if (command.length > 16000) return "[oversized command omitted]";
   if (/<<|\n|\r/.test(command)) return "[multiline command omitted; assessment requires approval]";
   return sanitize(command
     .replace(/\b[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s;|&]+)/g, "[assignment omitted]")
     .replace(/--?(?:password|passwd|token|secret|api-key|header|data|data-raw|user)\s+(?:"[^"]*"|'[^']*'|[^\s]+)/gi, "[sensitive option omitted]")
     .replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, "[quoted literal omitted]"), 4000);
+}
+
+const arithmeticTokens = /\d+(?:\.\d+)?|[()+*/%\-]/gy;
+function boundedArithmetic(expression: string): boolean {
+  if (!expression || expression.length > 200) return false;
+  let offset = 0; let expectingValue = true; let depth = 0;
+  while (offset < expression.length) {
+    while (/\s/.test(expression[offset] ?? "")) offset++;
+    if (offset === expression.length) break;
+    arithmeticTokens.lastIndex = offset;
+    const match = arithmeticTokens.exec(expression);
+    if (!match || match.index !== offset) return false;
+    const token = match[0]; offset = arithmeticTokens.lastIndex;
+    if (/^\d/.test(token)) {
+      if (!expectingValue || token.length > 20) return false;
+      expectingValue = false;
+    } else if (token === "(") {
+      if (!expectingValue || ++depth > 8) return false;
+    } else if (token === ")") {
+      if (expectingValue || depth-- <= 0) return false;
+    } else {
+      if (expectingValue) return false;
+      expectingValue = true;
+    }
+  }
+  return !expectingValue && depth === 0;
+}
+/**
+ * A classifier-only shell view. It preserves the original syntax only for a deliberately
+ * tiny grammar whose literals cannot carry arbitrary text; everything else stays redacted.
+ */
+export function assessmentCommand(command: string): { command: string; complete: boolean } {
+  const display = safeCommand(command);
+  if (command.length > 16000 || /<<|\n|\r/.test(command)) return { command: display, complete: false };
+  const match = command.match(/^\s*python(?:3(?:\.\d+)?)?\s+-c\s+(["'])([\s\S]*)\1\s*$/);
+  if (!match) return { command: display, complete: display === command };
+  const print = match[2].match(/^\s*print\s*\(([\s\S]*)\)\s*$/);
+  if (!print || !boundedArithmetic(print[1])) return { command: display, complete: false };
+  const evidenced = sanitize(command, 4000);
+  return { command: evidenced, complete: evidenced === command };
 }
 const queryName = /^(?:query|q|search|filter|term)$/i;
 const sensitiveName = /token|secret|password|passwd|api.?key|credential|authorization|cookie|header|body|content|payload|prompt|subject|text|html|data|document|attachment/i;
@@ -79,8 +119,9 @@ export function candidateView(c: Candidate, target: string, operation: string) {
   if (cwd !== c.cwd || safeTarget !== target || (!operationArgs && c.tool !== "bash" && path !== safePath)) gaps.add("sanitized-value");
   if (!operationArgs && (c.tool === "write" || c.tool === "edit")) gaps.add("hidden-write-body");
   const command = c.tool === "bash" ? String(c.args.command ?? "") : "";
-  const safeShell = c.tool === "bash" ? safeCommand(command) : "";
-  if (c.tool === "bash" && safeShell !== command) gaps.add("shell-redaction");
+  const shellView = c.tool === "bash" ? assessmentCommand(command) : { command: "", complete: true };
+  const safeShell = shellView.command;
+  if (c.tool === "bash" && !shellView.complete) gaps.add("shell-redaction");
   const incomplete = gaps.size > 0;
   return {
     tool: c.tool, cwd, actor: c.actor.kind === "main" ? { kind: "main" } : {

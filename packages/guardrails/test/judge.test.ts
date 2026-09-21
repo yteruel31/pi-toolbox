@@ -49,6 +49,15 @@ test("redacted bodies do not auto-allow, and non-stop/tool output fails closed",
   const b = bridge(); b.complete = async () => response({}, "length");
   assert.equal((await judge(b, config(), candidate(), [], [], "/project", "git status")).origin, "error");
 });
+test("bounded arithmetic reaches the judge without quoted payload while redacted scripts still cannot auto-allow", async () => {
+  let sent = "";
+  const b = bridge(); b.complete = async (_m, context) => { sent = JSON.stringify(context); return response({ action: "Allow", reason: "local arithmetic", policyIds: [], historyIds: [] }); };
+  assert.equal((await judge(b, config(), candidate({ args: { command: "python3 -c 'print(2 + 2)'" } }), [], [], "/project", "shell-complex")).action, "Allow");
+  assert.match(sent, /python3 -c 'print\(2 \+ 2\)'/); assert.doesNotMatch(sent, /quoted literal omitted/);
+  assert.equal((await judge(b, config(), candidate({ args: { command: "python3 -c 'print(secret)'" } }), [], [], "/project", "shell-complex")).action, "Ask");
+  assert.doesNotMatch(sent, /print\(secret\)/);
+});
+
 test("Pi bridge follows current parent model and dedicated registered routes, not parent thinking", () => {
   let ctx = { model: { provider: "fake", id: "a" }, scopedModels: [], modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) } } as unknown as ExtensionContext;
   const b = piBridge(() => ctx);

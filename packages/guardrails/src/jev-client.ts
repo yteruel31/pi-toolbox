@@ -12,11 +12,11 @@ interface ChoiceAnswer { type: "choice"; choice: "Allow" | "Ask" | "Deny"; proba
 interface NoulAnswer { type: "noul"; noul: number }
 interface JevResult { model: string; generic: ChoiceAnswer; restrictions: Record<string, number>; risks: Record<AssessmentRisk, number> }
 const riskQuestions: Record<AssessmentRisk, { task: string; yes: string }> = {
-  "sensitive-transfer": { task: "Could this operation transfer credentials, private data, or other sensitive material outside its trusted local boundary?", yes: "Sensitive material may leave its trusted local boundary." },
-  "external-modification": { task: "Could this operation modify an external, shared, remote, production, or third-party resource?", yes: "An external or shared resource may be modified." },
-  "unrecoverable-loss": { task: "Could this operation cause meaningful work or data loss that is difficult to recover?", yes: "Meaningful work or data may be irrecoverably lost." },
-  "guardrail-modification": { task: "Could this operation alter, bypass, disable, or weaken guardrails or their policy, credential, or history controls?", yes: "Guardrail controls may be changed or weakened." },
-  uncertainty: { task: "Are target, effects, authorization, or necessary assessment evidence materially uncertain?", yes: "The operation has material uncertainty." },
+  "sensitive-transfer": { task: "Does the supplied evidence show a transfer of credentials or private data across a local trust boundary? Ordinary local computation is false.", yes: "Sensitive material may leave its trusted local boundary." },
+  "external-modification": { task: "Does the supplied evidence show a modification outside the local ephemeral workspace, such as a shared, remote, production, or third-party resource? An ordinary temporary local filesystem change is false.", yes: "An external or shared resource may be modified." },
+  "unrecoverable-loss": { task: "Does the supplied evidence show meaningful work or data loss that is difficult to recover? Routine disposable temporary changes are false.", yes: "Meaningful work or data may be irrecoverably lost." },
+  "guardrail-modification": { task: "Does the supplied evidence show alteration, bypass, disabling, or weakening of guardrail policy, credentials, runtime, or history controls?", yes: "Guardrail controls may be changed or weakened." },
+  uncertainty: { task: "Is evidence needed to determine the concrete target, boundary-crossing effects, authorization, or material data-loss impact absent or redacted? Do not mark uncertainty merely because an ordinary local command creates an ephemeral file or directory.", yes: "The operation has material uncertainty." },
 };
 const riskIds = Object.keys(riskQuestions) as AssessmentRisk[];
 
@@ -112,9 +112,10 @@ export async function judgeJev(options: { config: Config; apiKey: string; candid
     if (incompleteInput) reasons.push("incomplete-input");
     if (redactedInput) reasons.push("redacted-input");
     const riskLabels = risky.map((id) => riskQuestions[id].yes);
+    const gapReason = `Assessment evidence has gaps (${view.assessmentGaps.join(", ") || "incomplete input"}); human review is required.`;
     const reason = action === "Allow" ? "No assessed restriction or concrete risk boundary requires review."
       : action === "Deny" ? (critical.length ? critical.map((id) => riskQuestions[id].yes).join(" ") : denies.length ? `Restrictive policies matched: ${denies.map((p) => p.id).join(", ")}.` : "The operation was assessed as clearly unsafe.")
-      : riskLabels.length ? `${riskLabels.join(" ")} Explicit human authorization is required.` : incompleteInput || redactedInput ? `Assessment evidence has gaps (${view.assessmentGaps.join(", ") || "incomplete input"}); human review is required.` : "The operation's authorization or effects remain uncertain; human review is required.";
+      : incompleteInput || redactedInput ? `${gapReason}${riskLabels.length ? ` Additional assessed risks: ${riskLabels.join(" ")}` : ""}` : riskLabels.length ? `${riskLabels.join(" ")} Explicit human authorization is required.` : "The operation's authorization or effects remain uncertain; human review is required.";
     return { action, origin: "model", reason, policyIds: matched.map(p => p.id), historyIds: [], model: { route, thinking: "off", durationMs: Date.now() - started }, jev: {
       probabilities: result.generic.probabilities,
       restrictions: restrictivePolicies.map((p) => [p.id, result.restrictions[p.id]]), risks: riskIds.map((id) => [id, result.risks[id]]),
