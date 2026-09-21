@@ -32,14 +32,16 @@ describe("Jev route selection", () => {
     expect(deriveJevConstraints(route(), resolution({ agent: agent({ effort: "max" }) })).harness).toBeUndefined();
   });
 
-  it("preserves profile and resolved model inherit as fixed omissions without resolving credentials", async () => {
+  it("preserves compatible profile and resolved model inherit without resolving credentials", async () => {
     const fetcher = vi.fn();
     const resolveApiKey = vi.fn(async () => "key");
     const inherited = route({ harness: "claude", model: undefined, provenance: { harness: "agent-default", model: "agent-default", thinking: "parent" } });
-    const raw = await routeWithJev({ task: "task", route: inherited, resolutionInput: resolution({ agent: agent({ harness: "claude", model: "inherit" }) }), piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], resolveApiKey }, fetcher);
-    const resolved = await routeWithJev({ task: "task", route: inherited, piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], resolveApiKey }, fetcher);
+    const raw = await routeWithJev({ task: "task", route: inherited, resolutionInput: resolution({ agent: agent({ harness: "claude", model: "inherit" }) }), tools: ["Read"], piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], resolveApiKey }, fetcher);
+    const resolved = await routeWithJev({ task: "task", route: inherited, tools: ["Read"], piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], resolveApiKey }, fetcher);
     expect(raw.route).toEqual(inherited);
     expect(resolved.route).toEqual(inherited);
+    await expect(routeWithJev({ task: "task", route: inherited, resolutionInput: resolution({ agent: agent({ harness: "claude", model: "inherit" }) }), tools: ["bash"], piModels: [], claudeModels: [], resolveApiKey }, fetcher)).rejects.toBeInstanceOf(JevRoutingConflictError);
+    await expect(routeWithJev({ task: "task", route: inherited, tools: ["bash"], piModels: [], claudeModels: [], resolveApiKey }, fetcher)).rejects.toBeInstanceOf(JevRoutingConflictError);
     expect(fetcher).not.toHaveBeenCalled();
     expect(resolveApiKey).not.toHaveBeenCalled();
   });
@@ -85,6 +87,21 @@ describe("Jev route selection", () => {
     const result = await routeWithJev({ task: "task", route: original, piModels: [piModel("one", { low: "low" }), piModel("two", { low: "low" })], claudeModels: [], apiKey: "key" }, vi.fn(async () => { throw new Error("offline"); }));
     expect(result.route).toEqual(original);
     expect(result.fallback).toContain("failed");
+  });
+
+  it.each([
+    ["missing credentials", undefined, undefined],
+    ["service failure", "key", vi.fn(async () => { throw new Error("offline"); })],
+    ["malformed response", "key", vi.fn(async () => new Response("{}"))],
+  ])("rejects an invalid actual fallback route on %s", async (_case, apiKey, fetcher) => {
+    const original = route({ model: "openai-codex/parent", thinking: "high" });
+    const models = [piModel("parent", { off: null, minimal: null, low: "low", medium: null, high: null, xhigh: null, max: null }), piModel("high-a", { high: "high" }), piModel("high-b", { high: "high" })];
+    await expect(routeWithJev({ task: "task", route: original, resolutionInput: resolution({ explicit: { thinking: "high" } }), piModels: models, claudeModels: [], apiKey }, fetcher)).rejects.toBeInstanceOf(JevRoutingConflictError);
+  });
+
+  it("validates generic inherited thinking against the exact current fallback model", async () => {
+    const original = route({ model: "openai-codex/parent", thinking: "high" });
+    await expect(routeWithJev({ task: "task", route: original, piModels: [piModel("parent", { off: null, minimal: null, low: "low", medium: null, high: null, xhigh: null, max: null }), piModel("other-a", { low: "low", high: "high" }), piModel("other-b", { low: "low", high: "high" })], claudeModels: [], apiKey: "key" }, vi.fn(async () => { throw new Error("offline"); }))).rejects.toBeInstanceOf(JevRoutingConflictError);
   });
 
   it("throws on backend/model conflicts and never calls Jev", async () => {

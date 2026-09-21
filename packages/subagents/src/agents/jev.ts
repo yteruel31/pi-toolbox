@@ -145,6 +145,9 @@ export function buildJevCandidates(
 export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = fetch): Promise<JevRouteResult> {
   const constraints = deriveJevConstraints(input.route, input.resolutionInput);
   if (constraints.model === undefined && constraints.provenance.model === "agent-default") {
+    if (input.tools && !toolsCompatible(constraints.harness ?? input.route.harness, input.tools)) {
+      throw new JevRoutingConflictError("The fixed route is incompatible with the tool allowlist.");
+    }
     return { route: input.route, used: false };
   }
   const inferred = constraints.model ? inferHarness(constraints.model, input.claudeModels) : undefined;
@@ -245,13 +248,15 @@ function safeFallback(input: JevRouteInput, constraints: JevConstraints, reason:
   if (input.tools && !toolsCompatible(harness, input.tools)) {
     throw new JevRoutingConflictError("The fixed route is incompatible with the tool allowlist.");
   }
-  const thinking = effectiveThinking(constraints, input.resolutionInput, harness);
+  const thinking = constraints.thinking ?? input.route.thinking ?? profileThinking(input.resolutionInput, harness)?.value;
   if (thinking !== undefined) {
-    const catalog = buildJevCandidates(input.piModels, input.claudeModels, harness);
-    const compatible = catalog.some((item) =>
-      (!constraints.model || modelMatches(item, constraints.model, input.piModels, input.claudeModels)) &&
-      thinkingMatches(item, thinking));
-    if (catalog.length > 0 && !compatible) {
+    const actualModel = constraints.model ?? input.route.model;
+    const actualCandidates = actualModel === undefined ? [] : buildJevCandidates(input.piModels, input.claudeModels, harness)
+      .filter((item) => modelMatches(item, actualModel, input.piModels, input.claudeModels) ||
+        (item.harness === "pi" && !actualModel.includes("/") &&
+          input.piModels.filter((model) => model.id === actualModel).length === 1 &&
+          item.model === `${input.piModels.find((model) => model.id === actualModel)!.provider}/${actualModel}`));
+    if (actualCandidates.length > 0 && !actualCandidates.some((item) => thinkingMatches(item, thinking))) {
       throw new JevRoutingConflictError("The fixed route does not support the requested thinking or effort.");
     }
   }
@@ -326,8 +331,15 @@ function inferHarness(model: string, claudeModels: readonly ClaudeSupportedModel
 
 function modelMatches(candidate: JevCandidate, model: string, piModels: readonly Model<any>[], claudeModels: readonly ClaudeSupportedModel[]): boolean {
   if (candidate.model === model) return true;
+  if (candidate.harness === "pi") {
+    const exact = piModels.find((item) => `${item.provider}/${item.id}` === candidate.model);
+    if (exact && model === exact.id && piModels.filter((item) => item.id === model).length === 1) return true;
+  }
   if (model.includes("/")) {
-    if (candidate.harness !== "claude" || !model.startsWith("anthropic/")) return false;
+    if (candidate.harness === "pi") {
+      return candidate.model === model;
+    }
+    if (!model.startsWith("anthropic/")) return false;
     const normalized = model.slice("anthropic/".length);
     const metadata = claudeModels.find((item) => item.value === candidate.model);
     return normalized === candidate.model || normalized === metadata?.resolvedModel;
