@@ -121,16 +121,25 @@ describe("Jev background harness", () => {
     expect(progress.join(" ")).toContain("Routing warning");
   });
 
-  it("observes a supplied late rejection when already aborted", async () => {
+  it("rejects promptly and observes a late routing rejection after cancellation", async () => {
     const unhandled: unknown[] = [];
+    const started: string[] = [];
     const listener = (reason: unknown) => unhandled.push(reason);
     process.on("unhandledRejection", listener);
     try {
-      const controller = new AbortController(); controller.abort();
-      const harness = createJevBackgroundHarness({ task: "task", route, resolutionInput, piModels: [], loadClaudeModels: async () => [], resolveApiKey: async () => "secret", routeJev: async () => ({ route, used: false }), harnesses: { pi: backend("pi", []), claude: backend("claude", []) } });
-      await expect(harness.run(request(controller.signal))).rejects.toMatchObject({ name: "AbortError" });
+      let rejectRoute!: (error: Error) => void;
+      const routeJev = vi.fn(() => new Promise<any>((_resolve, reject) => { rejectRoute = reject; }));
+      const controller = new AbortController();
+      const harness = createJevBackgroundHarness({ task: "task", route, resolutionInput, piModels: [], loadClaudeModels: async () => [], resolveApiKey: async () => "secret", routeJev, harnesses: { pi: backend("pi", started), claude: backend("claude", started) } });
+      const pending = harness.run(request(controller.signal));
+      await vi.waitFor(() => expect(routeJev).toHaveBeenCalledTimes(1));
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(started).toEqual([]);
+      rejectRoute(new Error("late routing failure"));
       await new Promise((resolve) => setImmediate(resolve));
       expect(unhandled).toEqual([]);
+      expect(started).toEqual([]);
     } finally { process.off("unhandledRejection", listener); }
   });
 });
