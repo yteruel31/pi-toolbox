@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalPath, complexShell, evaluatePolicies } from "../src/policies.js";
+import { canonicalPath, canonicalShellPath, complexShell, evaluatePolicies } from "../src/policies.js";
 import { presets } from "../src/config.js";
 import { candidate, policy } from "./helpers.js";
 
@@ -28,13 +28,19 @@ test("presets scan the whole command, including quoted/escaped and chained opera
     assert.equal(evaluatePolicies(candidate({ args: { command } }), presets, []).decision?.action, "Ask", command);
   }
 });
-test("path matching uses component boundaries and real ancestors, without reading secret contents", () => {
+test("path matching uses native normalization, component boundaries and real ancestors", () => {
   const root = mkdtempSync(join(tmpdir(), "guardrails-path-"));
   try {
     mkdirSync(join(root, "private"));
     writeFileSync(join(root, "private", ".env"), "DO_NOT_READ=hidden");
     symlinkSync(join(root, "private"), join(root, "alias"));
     assert.equal(canonicalPath("@alias/new.txt", root), join(root, "private/new.txt"));
+    assert.equal(canonicalPath("alias/../.pi/settings.json", root), join(root, ".pi/settings.json"));
+    assert.equal(canonicalShellPath("alias/../.pi/settings.json", root), join(root, ".pi/settings.json"));
+    symlinkSync(join(root, "private", "child"), join(root, "escape"));
+    assert.equal(canonicalShellPath("escape/../.pi/settings.json", root), join(root, "private/.pi/settings.json"));
+    assert.equal(canonicalPath("name\u2007with-space", root), join(root, "name with-space"));
+    assert.equal(canonicalPath(new URL(`file://${root}/alias/../file`).href, root), join(root, "file"));
     const c = candidate({ cwd: root, tool: "read", args: { path: "alias/.env" } });
     assert.equal(evaluatePolicies(c, presets, []).decision?.action, "Ask");
     assert.equal(evaluatePolicies(candidate({ tool: "read", args: { path: "/project/secretish/file" } }), [policy({ conditions: { pathPrefix: "/project/secret" } })], []).decision, undefined);

@@ -94,11 +94,11 @@ test("in-project writes require canonical non-sensitive non-protected targets", 
     const c = candidate({ cwd: project, project, tool: "write", args: { path: "alias/file", content: "x" } });
     assert.equal(evaluatePolicies(c, [], []).decision, undefined);
     const escaped = candidate({ cwd: project, project, tool: "write", args: { path: "alias/../outside.txt", content: "x" } });
-    assert.equal(evaluatePolicies(escaped, [], []).decision, undefined);
+    assert.equal(evaluatePolicies(escaped, [], []).decision?.action, "Allow");
     const custom = policy({ action: "Allow", tools: ["write"], conditions: { pathPrefix: "example" } });
     mkdirSync(join(root, "example")); symlinkSync(join(root, "outside"), join(root, "node_modules"));
-    const ambiguous = evaluatePolicies(candidate({ cwd: root, project: root, tool: "write", args: { path: "node_modules/../example/file" } }), [custom], []).decision;
-    assert.notEqual(ambiguous?.reason, "Explicit allow: Test policy");
+    const normalized = evaluatePolicies(candidate({ cwd: root, project: root, tool: "write", args: { path: "node_modules/../example/file" } }), [custom], []).decision;
+    assert.equal(normalized?.action, "Allow");
     symlinkSync("loop", join(project, "loop"));
     assert.throws(() => evaluatePolicies(candidate({ cwd: project, project, args: { command: "cat loop" } }), [], []));
   } finally { rmSync(root, { recursive: true, force: true }); }
