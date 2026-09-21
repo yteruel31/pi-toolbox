@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AuthorizationDenied } from "@yteruel31/pi-operation-hooks";
-import { authorized, inAuthorizationScope, providerUrls } from "./authorization.js";
+import { authorized, inAuthorizationScope, inspectIncoming, providerUrls } from "./authorization.js";
 import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { StringEnum, type ImageContent, type Usage } from "@earendil-works/pi-ai";
@@ -101,12 +101,13 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
   register("web_search", "Search with Gemini, Brave or OpenAI. Up to four queries; explicit provider or configured default. Bounded results with citations and stored content.", schemas.web_search, async (_id, params, signal, _update, ctx) => {
     const queries = selected(params.query, params.queries, "query");
     if (params.answerModel && !params.synthesize) throw new Error("answerModel requires synthesize: true");
-    const results = await service.search(queries, params, signal);
+    const results = await inspectIncoming(await service.search(queries, params, signal), signal);
     const documents: Document[] = results.map((result) => ({ title: result.query, query: result.query, content: `${result.answer}\n\n${result.sources.map((source, i) => `${i + 1}. ${source.title} <${source.url}>\n${source.snippet ?? ""}`).join("\n\n")}` }));
     const warnings: string[] = [];
     if (params.includeContent) {
       const urls = [...new Set(results.flatMap((result) => result.sources.map((source) => source.url)))].slice(0, 5);
-      await authorized("fetch_content", { urls, render: "never", internal: true, destinationKind: "page" }, urls, signal, () => mapBounded(urls, async (url) => { try { documents.push(await service.fetch({ url, render: "never" }, ctx.cwd, signal)); } catch (error) { signal?.throwIfAborted(); if (error instanceof AuthorizationDenied) throw error; warnings.push(`Could not fetch source: ${url}`); } }));
+      const fetched = await authorized("fetch_content", { urls, render: "never", internal: true, destinationKind: "page" }, urls, signal, () => mapBounded(urls, async (url) => { try { return await service.fetch({ url, render: "never" }, ctx.cwd, signal); } catch (error) { signal?.throwIfAborted(); if (error instanceof AuthorizationDenied) throw error; warnings.push(`Could not fetch source: ${url}`); return undefined; } }));
+      documents.push(...fetched.filter((document): document is Document => document !== undefined));
     }
     let usage: Usage | undefined;
     if (params.synthesize) {
@@ -120,7 +121,7 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
     const urls = selected(params.url, params.urls, "url");
     if (params.mode === "answer" && !params.prompt) throw new Error("answer mode requires prompt");
     if (params.mode !== "answer" && (params.prompt || params.answerModel)) throw new Error("prompt and answerModel require answer mode");
-    const fetched = await mapBounded(urls, (url) => service.fetch({ ...params, url }, ctx.cwd, signal));
+    const fetched = await inspectIncoming(await mapBounded(urls, (url) => service.fetch({ ...params, url }, ctx.cwd, signal)), signal);
     const images = fetched.flatMap((result) => result.images ?? []);
     if (images.length > 12 || images.reduce((total, image) => total + image.data.length, 0) > 16 * 1024 * 1024) throw new Error("Image batch exceeds 12 images / 12 MiB; fetch fewer sources or frames");
     const documents: Document[] = fetched.map(({ title, content, url, method }) => ({ title, content, url, method }));
@@ -133,22 +134,25 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
     }
     return output(`responseId: ${responseId}\n${preview}\nFull extracted text is available through get_search_content.`, { summary: `${urls.length} source(s), ${documents.reduce((n, d) => n + d.content.length, 0)} chars`, responseId }, images, usage);
   });
-  register("get_search_content", "Read stored search, fetch, source-check or research content by responseId. Select a document, paginate by character offset, or find exact/case-insensitive passages.", schemas.get_search_content, async (_id, params) => {
+  register("get_search_content", "Read stored search, fetch, source-check or research content by responseId. Select a document, paginate by character offset, or find exact/case-insensitive passages.", schemas.get_search_content, async (_id, params, signal) => {
     const documents = params.responseId.length === 64 ? [{ title: "Research report", content: await research.content(params.responseId) }] : await service.store.get(params.responseId);
     let budget = config.cache.inlineChars;
-    let text = JSON.stringify(retrieve(documents, params, budget));
+    let selected = retrieve(documents, params, budget);
+    let text = JSON.stringify(selected);
     while (Buffer.byteLength(text) > 32_000 && budget > 1) {
       budget = Math.max(1, Math.floor(budget / 2));
-      text = JSON.stringify(retrieve(documents, params.findText === undefined ? { ...params, limit: Math.min(params.limit ?? budget, budget) } : params, budget));
+      selected = retrieve(documents, params.findText === undefined ? { ...params, limit: Math.min(params.limit ?? budget, budget) } : params, budget);
+      text = JSON.stringify(selected);
     }
     if (Buffer.byteLength(text) > 32_000) throw new Error("Document metadata exceeds retrieval output budget");
-    return output(text, { summary: "Stored content", responseId: params.responseId });
+    return output(JSON.stringify(await inspectIncoming(selected, signal)), { summary: "Stored content", responseId: params.responseId });
   });
   register("source_check", "Check a claim against up to five fetched web sources with a Pi model assessment and mechanically verified exact quotations. Verdicts are model judgments, not proof.", schemas.source_check, async (_id, params, signal, _update, ctx) => {
-    const results = await service.search(params.queries ?? [params.claim.slice(0, 500)], params, signal);
+    const results = await inspectIncoming(await service.search(params.queries ?? [params.claim.slice(0, 500)], params, signal), signal);
     const urls = [...new Set(results.flatMap((result) => result.sources.map((source) => source.url)))].slice(0, 5);
     const documents: Document[] = []; const errors: Array<{ url: string; error: string }> = [];
-    await authorized("fetch_content", { urls, render: "never", internal: true, destinationKind: "page" }, urls, signal, () => mapBounded(urls, async (url) => { try { documents.push(await service.fetch({ url, render: "never" }, ctx.cwd, signal)); } catch (error) { signal?.throwIfAborted(); if (error instanceof AuthorizationDenied) throw error; errors.push({ url, error: "Source extraction failed" }); } }));
+    const fetched = await authorized("fetch_content", { urls, render: "never", internal: true, destinationKind: "page" }, urls, signal, () => mapBounded(urls, async (url) => { try { return await service.fetch({ url, render: "never" }, ctx.cwd, signal); } catch (error) { signal?.throwIfAborted(); if (error instanceof AuthorizationDenied) throw error; errors.push({ url, error: "Source extraction failed" }); return undefined; } }));
+    documents.push(...fetched.filter((document): document is Document => document !== undefined));
     let usage: Usage | undefined;
     let assessment: unknown = { status: "missing-evidence", explanation: "No source text was retrieved", evidence: [] };
     if (documents.length) {

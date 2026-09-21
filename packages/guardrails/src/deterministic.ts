@@ -2,7 +2,9 @@ import { resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import type { Candidate, Decision } from "./types.js";
 import { canonicalPath, canonicalShellPath, within } from "./policies.js";
+import { operationRiskDecision, recognizedReadOnlyOperation, validOperationArgs } from "./operations.js";
 import { analyzeShell, destinationChild, parseOperands, parseSedOperands, shellPathUsable, type ShellSegment } from "./shell-analysis.js";
+import { inspectLocalTarget } from "./local-facts.js";
 
 export type DeterministicVerdict = "Allow" | "Ask" | "Deny" | undefined;
 type Segment = ShellSegment;
@@ -50,6 +52,11 @@ function mutatingPaths(words: string[]): string[] | undefined {
     case "dd": return args.filter((arg) => arg.startsWith("of=")).map((arg) => arg.slice(3));
     default: return [];
   }
+}
+
+function knownDestructive(words: string[]): boolean {
+  const command = words.join(" ");
+  return /^(?:git (?:reset --hard|clean (?:-[A-Za-z]*[fdx]|--force)|restore (?:--worktree )?\.|stash clear|worktree remove(?: --force)?\b)|docker volume rm\b|(?:dropdb\b|mysqladmin drop\b|psql\b.*\bDROP\s+(?:DATABASE|TABLE)\b))/i.test(command);
 }
 
 function gitDestructive(words: string[]): boolean {
@@ -156,39 +163,61 @@ function readPaths(words: string[]): string[] | undefined {
   return [];
 }
 
-function evaluateParsed(parsed: Segment[], complete: boolean, uncertainCwd: boolean[], c: Candidate, sensitivePaths: string[]): Decision | undefined {
-  let allSafe = complete && parsed.length > 0 && parsed.length === 1, ask = false;
+function evaluateParsed(parsed: Segment[], complete: boolean, uncertainCwd: boolean[], c: Candidate, protectedPaths: string[], sensitivePaths: string[]): Decision | undefined {
+  let allSafe = complete && parsed.length > 0 && parsed.length === 1, askTarget: string | undefined, sensitiveRead = false;
+  let safeRmdirProven = false;
   for (let index = 0; index < parsed.length; index++) {
     const { words, redirections } = parsed[index];
     const usable = (path: string) => shellPathUsable(path, uncertainCwd[index]);
     if (redirections.some((r) => r.operator !== "<")) allSafe = false;
     for (const redirection of redirections) {
       if (!usable(redirection.path)) { allSafe = false; continue; }
-      if (redirection.operator === "<") { if (isSensitivePath(redirection.path, c.cwd, true, sensitivePaths)) ask = true; continue; }
+      if (redirection.operator === "<") { if (isSensitivePath(redirection.path, c.cwd, true, sensitivePaths)) sensitiveRead = true; continue; }
       if (isSensitivePath(redirection.path, c.cwd, true, sensitivePaths) || isDevice(redirection.path, c.cwd, true) || isRootOrHome(redirection.path, c.cwd, true)) return decision("Deny", "builtin.dangerous-path", "Shell writes to credential, device, root or home targets are denied.");
     }
     if (!words.length) continue;
     if (/^mkfs(?:\.|$)/.test(words[0])) return decision("Deny", "builtin.catastrophic-shell", "Disk formatting is denied.");
     if (gitDestructive(words)) return decision("Deny", "builtin.protected-branch", "Destructive Git operations targeting main or master are denied.");
+    if (knownDestructive(words)) askTarget ??= words.slice(0, 3).join(" ");
     const paths = mutatingPaths(words);
+    if (paths !== undefined && words[0] === "rm" && words.slice(1).some((word) => /^-[^-]*r/.test(word) || word === "--recursive")) askTarget ??= paths.at(-1)?.slice(0, 200) ?? "rm target";
     if (paths === undefined) { allSafe = false; continue; }
     if (paths.filter(usable).some((path) => isSensitivePath(path, c.cwd, true, sensitivePaths) || isDevice(path, c.cwd, true))) return decision("Deny", "builtin.dangerous-path", "Mutation of an identified credential or device path is denied.");
     if (["rm", "rmdir", "unlink", "shred", "truncate", "dd"].includes(words[0]) && paths.filter(usable).some((path) => isRootOrHome(path, c.cwd, true))) return decision("Deny", "builtin.catastrophic-shell", "Destructive mutation of the filesystem root or home directory is denied.");
+    if (["rm", "rmdir", "unlink", "shred", "truncate"].includes(words[0]) && complete && !(words[0] === "rm" && words.slice(1).some((word) => /^-[^-]*r/.test(word) || word === "--recursive"))) {
+      for (const path of paths.filter(usable)) {
+        const target = shellCanonical(path, c.cwd);
+        const facts = inspectLocalTarget(target);
+        const project = canonical(c.project, c.cwd);
+        const safeRmdir = words[0] === "rmdir" && words.length === 2 && target !== project && within(project, target)
+          && !protectedPaths.some((p) => within(canonical(p, c.cwd), target)) && !isSensitivePath(path, c.cwd, true, sensitivePaths)
+          && facts.exists && facts.emptyDirectory === true && !facts.repositoryRoot;
+        if (!safeRmdir && facts.exists && !facts.recoverable) askTarget ??= path.slice(0, 200);
+        if (safeRmdir && complete && parsed.length === 1 && redirections.length === 0 && paths.length === 1) safeRmdirProven = true;
+      }
+    }
     const safe = safeRead(words);
     const reads = safe ? readPaths(words) : undefined;
-    if (!safe || reads === undefined) allSafe = false;
-    if (reads?.filter(usable).some((path) => isSensitivePath(path, c.cwd, true, sensitivePaths))) ask = true;
+    const narrowRmdir = words[0] === "rmdir" && words.length === 2 && safeRmdirProven;
+    if ((!safe && !narrowRmdir) || (safe && reads === undefined)) allSafe = false;
+    if (reads?.filter(usable).some((path) => isSensitivePath(path, c.cwd, true, sensitivePaths))) sensitiveRead = true;
   }
-  if (ask) return decision("Ask", "builtin.sensitive-path", "Reading an identified credential path requires review.");
+  if (sensitiveRead) return decision("Ask", "builtin.sensitive-path", "Reading an identified credential path requires review.");
+  if (askTarget) return decision("Ask", "builtin.destructive-target", `Destructive operation targets ${JSON.stringify(askTarget)}; data loss is not proven recoverable and requires approval.`);
   return allSafe ? decision("Allow", "builtin.safe-read", "Narrow read-only shell form recognized.") : undefined;
 }
 
 /** Built-in decisions cover only narrow facts that are safe to prove locally. */
 export function deterministicDecision(c: Candidate, protectedPaths: string[], sensitivePaths: string[] = []): Decision | undefined {
-  if (c.tool === "mcp" || c.tool === "web-access") return undefined;
+  if (c.tool === "mcp" || c.tool === "web-access") {
+    if (!validOperationArgs(c.args)) return undefined;
+    if (operationRiskDecision(c)) return decision("Ask", "builtin.outbound-data-risk", "Outbound content matches a known credential or sensitive data-loss pattern; approval is required.");
+    return recognizedReadOnlyOperation(c) ? decision("Allow", "builtin.approved-read", "Recognized non-mutating integration read or discovery operation.") : undefined;
+  }
   if (c.tool !== "bash") {
     const path = String(c.args.path ?? "");
     if (c.tool === "read" && isSensitivePath(path, c.cwd, false, sensitivePaths)) return decision("Ask", "builtin.sensitive-path", "Reading an identified credential path requires review.");
+    if (c.tool === "read") return decision("Allow", "builtin.local-read", "Non-sensitive local file read.");
     if ((c.tool === "write" || c.tool === "edit") && (isSensitivePath(path, c.cwd, false, sensitivePaths) || isDevice(path, c.cwd))) return decision("Deny", "builtin.dangerous-path", "Writing an identified credential or device path is denied.");
     if (c.tool === "write" || c.tool === "edit") {
       const target = canonical(path, c.cwd), project = canonical(c.project, c.cwd);
@@ -197,6 +226,6 @@ export function deterministicDecision(c: Candidate, protectedPaths: string[], se
     return undefined;
   }
   const analysis = analyzeShell(String(c.args.command ?? ""));
-  const result = evaluateParsed(analysis.segments, analysis.complete, analysis.uncertainCwd, c, sensitivePaths);
+  const result = evaluateParsed(analysis.segments, analysis.complete, analysis.uncertainCwd, c, protectedPaths, sensitivePaths);
   return result?.action === "Allow" && !analysis.complete ? undefined : result;
 }

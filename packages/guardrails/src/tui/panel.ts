@@ -50,9 +50,10 @@ export function historyDetail(e: HistoryEntry): string[] {
     `Jev probabilities: Allow ${probability(e.jev.probabilities.Allow)} · Ask ${probability(e.jev.probabilities.Ask)} · Deny ${probability(e.jev.probabilities.Deny)}`,
     `Jev thresholds: Allow ≥ ${probability(e.jev.thresholds.allow)} · Deny ≥ ${probability(e.jev.thresholds.deny)} · restriction > ${probability(e.jev.thresholds.restrictive)}`,
     `Jev restriction probabilities: ${e.jev.restrictions.map(([policyId, value]) => `${policyId} ${probability(value)}`).join(", ") || "none"}`,
+    ...(e.jev.risks ? [`Jev semantic risks: ${e.jev.risks.map(([risk, value]) => `${risk} ${probability(value)}`).join(", ")}`] : []),
     `Jev reason categories: ${e.jev.reasons.join(", ") || "none"}`,
   ] : [];
-  return [e.summary, "", `Decision: ${e.action} · ${e.origin}`, `State: ${e.state}`, `Target: ${e.target}`, `Operation: ${e.operation}`, `Reason: ${e.reason}`,
+  return [e.summary, "", `Decision: ${e.action} · ${e.origin}`, `State: ${e.state}`, `Target: ${e.target}`, `Operation: ${e.operation}`, `Reason: ${e.reason}`, ...(e.failure ? [`Assessment failure: ${e.failure}`] : []),
     ...jev, `Human choice: ${e.choice ?? "none (automatic decision)"}`, `Execution: ${e.execution} (Pi observation only)`,
     `Actor: ${actorLabel(e)}`, `Project: ${e.project}`, `Session: ${e.sessionId}`, `Cwd: ${e.cwd}`,
     `Child session: ${e.actor.kind === "subagent" ? e.actor.childSessionId ?? "not reported" : "not applicable"}`,

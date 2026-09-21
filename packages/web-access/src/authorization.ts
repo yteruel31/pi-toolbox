@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { authorizeOperation, type Operation, type OperationBus } from "@yteruel31/pi-operation-hooks";
+import { AuthorizationDenied, authorizeOperation, type Operation, type OperationBus, type OperationTicket } from "@yteruel31/pi-operation-hooks";
 
-export interface AuthorizationScope { bus?: OperationBus; context: unknown; rootToolCallId: string; toolName: string }
+export interface AuthorizationScope { bus?: OperationBus; context: unknown; rootToolCallId: string; toolName: string; ticket?: OperationTicket }
 const scopes = new AsyncLocalStorage<AuthorizationScope>();
 export const authorizationScope = () => scopes.getStore();
 export function inAuthorizationScope<T>(scope: AuthorizationScope, action: () => T): T { return scopes.run(scope, action); }
@@ -16,8 +16,26 @@ export async function authorized<T>(name: string, args: Record<string, unknown>,
   const operation: Operation = { package: "web-access", name, args: name === "fetch_content" ? { sideEffects: ["local-read", "cache-write", "optional-git-clone", "optional-media-process", "optional-browser"], ...args } : args, urls, toolName: scope?.toolName, rootToolCallId: scope?.rootToolCallId };
   const receipt = await authorizeOperation(scope?.bus, operation, scope?.context, signal);
   let failed = true;
-  try { signal?.throwIfAborted(); const value = await action(); failed = isError(value); return value; }
-  finally { receipt.result(failed); }
+  try {
+    signal?.throwIfAborted();
+    const value = await (scope ? scopes.run({ ...scope, ticket: receipt }, action) : action());
+    const executionFailed = isError(value);
+    if (!scope?.bus) { failed = executionFailed; return value; }
+    const inspected = await receipt.inspectDelivery(value, signal);
+    failed = executionFailed;
+    return inspected;
+  } catch (error) {
+    if (error instanceof AuthorizationDenied || !scope?.bus) throw error;
+    throw new Error("Web access operation failed.");
+  } finally { receipt.result(failed); }
+}
+
+/** Inspect bytes received under the active operation ticket without requesting a second outbound permission. */
+export async function inspectIncoming<T>(value: T, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  const ticket = scopes.getStore()?.ticket;
+  if (!ticket) throw new AuthorizationDenied("Operation result was withheld because no authorization ticket was active.");
+  return ticket.inspectDelivery(value, signal);
 }
 
 export const providerUrls: Record<string, string> = {

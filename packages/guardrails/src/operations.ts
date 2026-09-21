@@ -118,6 +118,79 @@ export function operationOutputPaths(c: Candidate): string[] {
   return paths;
 }
 
+const localMcpDiscovery = new Set(["status", "tools-search", "tools-list", "tools-discover"]);
+const publicWebReads = new Set(["fetch_content", "fetch_content.request", "reddit_fetch_content"]);
+const outboundWebReads = new Set(["web_search", "source_check", "reddit_search"]);
+const sensitiveValue = /(?:bearer\s+|api[_-]?key|access[_-]?token|secret|password|passwd|private[_-]?key|session|cookie|authorization|-----begin [a-z ]*private key-----|gh[pousr]_[a-z0-9_]{8,}|github_pat_[a-z0-9_]{8,}|sk-[a-z0-9_-]{16,})/i;
+const sensitiveKey = /(?:token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private)/i;
+const highEntropy = /[A-Za-z0-9+/=_-]{32,}/;
+
+function sensitiveText(value: string, key = ""): boolean {
+  let decoded = value;
+  try { decoded = decodeURIComponent(value); } catch { return true; }
+  const assignment = /(?:^|[?&/])(?:token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private)[^=&/]*=/i;
+  return sensitiveKey.test(key) || sensitiveValue.test(value) || sensitiveValue.test(decoded) || assignment.test(value) || assignment.test(decoded) || highEntropy.test(value) || highEntropy.test(decoded);
+}
+
+function publicHttp(url: URL): boolean {
+  if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.hash) return false;
+  const host = hostname(url);
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") || host === "0.0.0.0" || host === "::" || host === "[::]" || host === "[::1]") return false;
+  const ipv4 = host.split(".").map(Number);
+  if (ipv4.length === 4 && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
+    if (ipv4[0] === 10 || ipv4[0] === 127 || ipv4[0] === 0 || (ipv4[0] === 169 && ipv4[1] === 254) || (ipv4[0] === 172 && ipv4[1] >= 16 && ipv4[1] <= 31) || (ipv4[0] === 192 && ipv4[1] === 168)) return false;
+  }
+  if (/^\[(?:f[cd]|fe[89ab]|::ffff:)/i.test(host)) return false;
+  return true;
+}
+function outboundSafe(value: unknown, key = "", depth = 0): boolean {
+  if (depth > 12) return false;
+  if (typeof value === "string") {
+    let decoded = value;
+    try { decoded = decodeURIComponent(value); } catch { return false; }
+    return !sensitiveText(value, key);
+  }
+  if (value === null || typeof value === "boolean" || typeof value === "number") return true;
+  if (!plainObject(value) && !Array.isArray(value)) return false;
+  return Object.entries(value).every(([child, item]) => outboundSafe(item, child, depth + 1));
+}
+/** Producer-specific, narrow facts only. An MCP server call is never trusted by its name or annotations. */
+export function recognizedReadOnlyOperation(c: Candidate): boolean {
+  if (!isOperationTool(c.tool) || !validOperationArgs(c.args) || operationOutputPaths(c).length) return false;
+  const args = c.args;
+  if (c.tool === "mcp") return localMcpDiscovery.has(args.operation) && !args.server && !args.toolName && outboundSafe(args.arguments) && !args.urls?.length;
+  if (args.operation === "get_search_content") return true;
+  if (args.operation === "web_access_diagnostic.inspect" || args.operation === "reddit_profile_diagnostic.inspect") return outboundSafe(args.arguments);
+  if (![...publicWebReads, ...outboundWebReads].includes(args.operation)) return false;
+  if (!outboundSafe(args.arguments) || !args.urls?.length) return false;
+  return args.urls.every((value) => {
+    const url = parsedUrl(value)!;
+    return publicHttp(url) && !sensitiveText(`${url.pathname}${url.search}`) && outboundSafe(args.arguments);
+  });
+}
+
+/** Known outbound credential/data-loss risk. This floor applies before built-in or explicit Allows. */
+export function operationRiskDecision(c: Candidate): "Ask" | undefined {
+  if (!isOperationTool(c.tool) || !validOperationArgs(c.args)) return undefined;
+  if (c.tool === "mcp") {
+    if (!["tools-call", "resources-read"].includes(c.args.operation)) return undefined;
+    if (!outboundSafe(c.args.arguments)) return "Ask";
+    for (const value of c.args.urls ?? []) {
+      const url = parsedUrl(value)!;
+      if (url.username || url.password || sensitiveText(`${url.pathname}${url.search}`)) return "Ask";
+    }
+    return undefined;
+  }
+  const outbound = [...publicWebReads, ...outboundWebReads].includes(c.args.operation) || c.args.urls?.some((value) => parsedUrl(value)?.protocol !== "file:");
+  if (!outbound) return undefined;
+  if (!outboundSafe(c.args.arguments)) return "Ask";
+  for (const value of c.args.urls ?? []) {
+    const url = parsedUrl(value)!;
+    if (url.username || url.password || sensitiveText(`${url.pathname}${url.search}`)) return "Ask";
+  }
+  return undefined;
+}
+
 /** URL conditions apply to the same URL; a batch Allow must cover every URL. */
 export function operationMatches(p: Policy, c: Candidate): boolean {
   const q = p.conditions;

@@ -43,7 +43,7 @@ test("path matching uses native normalization, component boundaries and real anc
     assert.equal(canonicalPath(new URL(`file://${root}/alias/../file`).href, root), join(root, "file"));
     const c = candidate({ cwd: root, tool: "read", args: { path: "alias/.env" } });
     assert.equal(evaluatePolicies(c, presets, []).decision?.action, "Ask");
-    assert.equal(evaluatePolicies(candidate({ tool: "read", args: { path: "/project/secretish/file" } }), [policy({ conditions: { pathPrefix: "/project/secret" } })], []).decision, undefined);
+    assert.equal(evaluatePolicies(candidate({ tool: "read", args: { path: "/project/secretish/file" } }), [policy({ conditions: { pathPrefix: "/project/secret" } })], []).decision?.action, "Allow");
   } finally { rmSync(root, { recursive: true }); }
 });
 test("path traversal preserves self-protection and explicit Deny precedence", () => {

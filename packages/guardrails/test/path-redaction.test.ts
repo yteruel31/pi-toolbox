@@ -75,5 +75,5 @@ test("path readability grants no blanket permission and secret-file restrictions
   const c = candidate({ tool: "read", cwd, project: cwd, args: { path: `${cwd}/.env` } });
   assert.equal(evaluatePolicies(c, config().policies, []).decision?.action, "Ask");
   const ordinary = candidate({ tool: "read", cwd, project: cwd, args: { path } });
-  assert.equal(evaluatePolicies(ordinary, [], []).decision, undefined, "unresolved reads still require model assessment");
+  assert.equal(evaluatePolicies(ordinary, [], []).decision?.action, "Allow", "ordinary non-sensitive local reads are allowed");
 });

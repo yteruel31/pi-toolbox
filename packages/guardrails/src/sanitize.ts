@@ -31,18 +31,22 @@ export function safeCommand(command: string): string {
     .replace(/--?(?:password|passwd|token|secret|api-key|header|data|data-raw|user)\s+(?:"[^"]*"|'[^']*'|[^\s]+)/gi, "[sensitive option omitted]")
     .replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, "[quoted literal omitted]"), 4000);
 }
-const sensitiveName = /token|secret|password|passwd|api.?key|credential|authorization|cookie|header|body|content|payload|query|prompt|subject|text|html|data|document|attachment/i;
+const queryName = /^(?:query|q|search|filter|term)$/i;
+const sensitiveName = /token|secret|password|passwd|api.?key|credential|authorization|cookie|header|body|content|payload|prompt|subject|text|html|data|document|attachment/i;
 /** A bounded JSON display copy, never a serialization of unchecked objects/getters. */
-export function redactedArguments(value: unknown): { value: unknown; incomplete: boolean } {
-  if (!boundedJson(value)) return { value: "[invalid or oversized arguments omitted]", incomplete: true };
+export type AssessmentGap = "invalid-input" | "budget-truncation" | "sensitive-value" | "sanitized-value" | "hidden-write-body" | "shell-redaction";
+export interface RedactedView { value: unknown; incomplete: boolean; gaps: AssessmentGap[] }
+export function redactedArguments(value: unknown): RedactedView {
+  if (!boundedJson(value)) return { value: "[invalid or oversized arguments omitted]", incomplete: true, gaps: ["invalid-input"] };
   let incomplete = false, nodes = 0, chars = 0;
-  const omit = () => { incomplete = true; return "[omitted]"; };
+  const gaps = new Set<AssessmentGap>();
+  const omit = (gap: AssessmentGap = "budget-truncation") => { incomplete = true; gaps.add(gap); return "[omitted]"; };
   const visit = (v: unknown, depth: number): unknown => {
     if (++nodes > 256 || depth > 6 || chars > 8000) return omit();
     if (typeof v === "string") {
       const safe = sanitize(v, 1000);
       chars += safe.length;
-      if (safe !== v) incomplete = true;
+      if (safe !== v) { incomplete = true; gaps.add("sanitized-value"); }
       return safe;
     }
     if (v === null || typeof v !== "object") return v;
@@ -51,18 +55,18 @@ export function redactedArguments(value: unknown): { value: unknown; incomplete:
     const entries = Object.entries(v);
     for (const [key, item] of entries.slice(0, 32)) {
       const safeKey = sanitize(key, 100);
-      if (key !== safeKey) incomplete = true;
+      if (key !== safeKey) { incomplete = true; gaps.add("sanitized-value"); }
       chars += safeKey.length;
-      result[safeKey] = sensitiveName.test(key) ? omit() : visit(item, depth + 1);
+      result[safeKey] = sensitiveName.test(key) && !queryName.test(key) ? omit("sensitive-value") : visit(item, depth + 1);
     }
     if (entries.length > 32) result["[remaining arguments omitted]"] = omit();
     return result;
   };
   const result = visit(value, 0);
-  return { value: result, incomplete };
+  return { value: result, incomplete, gaps: [...gaps] };
 }
-export function operationView(c: Candidate): { value: unknown; incomplete: boolean } {
-  if (!validOperationArgs(c.args)) return { value: "[invalid operation arguments omitted]", incomplete: true };
+export function operationView(c: Candidate): RedactedView {
+  if (!validOperationArgs(c.args)) return { value: "[invalid operation arguments omitted]", incomplete: true, gaps: ["invalid-input"] };
   return redactedArguments(c.args);
 }
 export function candidateView(c: Candidate, target: string, operation: string) {
@@ -71,14 +75,20 @@ export function candidateView(c: Candidate, target: string, operation: string) {
   const safeTarget = operationArgs ? sanitize(target, 4096) : sanitizePath(target);
   const path = String(c.args.path ?? "");
   const safePath = sanitizePath(path);
-  const incomplete = operationArgs?.incomplete || cwd !== c.cwd || safeTarget !== target || (!operationArgs && c.tool !== "bash" && path !== safePath);
+  const gaps = new Set<AssessmentGap>(operationArgs?.gaps ?? []);
+  if (cwd !== c.cwd || safeTarget !== target || (!operationArgs && c.tool !== "bash" && path !== safePath)) gaps.add("sanitized-value");
+  if (!operationArgs && (c.tool === "write" || c.tool === "edit")) gaps.add("hidden-write-body");
+  const command = c.tool === "bash" ? String(c.args.command ?? "") : "";
+  const safeShell = c.tool === "bash" ? safeCommand(command) : "";
+  if (c.tool === "bash" && safeShell !== command) gaps.add("shell-redaction");
+  const incomplete = gaps.size > 0;
   return {
     tool: c.tool, cwd, actor: c.actor.kind === "main" ? { kind: "main" } : {
       kind: "subagent", runId: sanitize(c.actor.runId, 100), profile: c.actor.profile ? sanitize(c.actor.profile, 100) : undefined,
       childSessionId: c.actor.childSessionId ? sanitize(c.actor.childSessionId, 100) : undefined,
     },
-    assessmentIncomplete: Boolean(incomplete),
-    args: operationArgs ? operationArgs.value : c.tool === "bash" ? { command: safeCommand(String(c.args.command ?? "")) } : {
+    assessmentIncomplete: Boolean(incomplete), assessmentGaps: [...gaps],
+    args: operationArgs ? operationArgs.value : c.tool === "bash" ? { command: safeShell } : {
       path: safePath,
       ...(c.tool === "read" ? { offset: Number(c.args.offset) || undefined, limit: Number(c.args.limit) || undefined } : { body: "[omitted]" }),
     },

@@ -71,6 +71,16 @@ test("conventional destructive forms deny for both actors and judge modes before
   }
 });
 
+test("known destructive forms Ask across segments while later Deny wins", () => {
+  for (const command of ["rm -rf dir; echo done", "git reset --hard", "git clean -fdx", "git restore .", "git stash clear", "git worktree remove ../other", "docker volume rm data", "dropdb example"]) {
+    for (const judgeEnabled of [true, false]) {
+      assert.equal(evaluate(command, judgeEnabled)?.action, "Ask", command);
+      assert.equal(evaluate(command, judgeEnabled)?.policyIds[0], "builtin.destructive-target", command);
+    }
+  }
+  assert.equal(evaluate("git reset --hard; rm -rf /")?.action, "Deny");
+});
+
 test("sed mutation extraction distinguishes scripts from identified targets", () => {
   for (const command of ["sed -i '/.env/d' README.md", "sed -i -e 's/true/false/' README.md", "sed --in-place=.bak --expression='s/a/b/' README.md"]) {
     assert.notEqual(evaluate(command)?.action, "Deny", command);
@@ -114,6 +124,8 @@ test("in-project writes require canonical non-sensitive non-protected targets", 
     const normalized = evaluatePolicies(candidate({ cwd: root, project: root, tool: "write", args: { path: "node_modules/../example/file" } }), [custom], []).decision;
     assert.equal(normalized?.action, "Allow");
     symlinkSync("loop", join(project, "loop"));
-    assert.throws(() => evaluatePolicies(candidate({ cwd: project, project, args: { command: "cat loop" } }), [], []));
+    const inspectionFailure = evaluatePolicies(candidate({ cwd: project, project, args: { command: "cat loop" } }), [], []);
+    assert.equal(inspectionFailure.decision?.action, "Deny");
+    assert.equal(inspectionFailure.decision?.policyIds[0], "builtin.inspection-failed");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

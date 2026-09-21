@@ -56,6 +56,31 @@ test("operation snapshots are immutable and registration is synchronous", async 
   assert.equal(assessed, false);
   assert.equal(operation.args.path, "safe");
 });
+test("delivery inspection runs before release, snapshots output and fails closed", async () => {
+  const events = bus(); const seen: unknown[] = []; let release!: () => void;
+  registerOperationProvider(events, () => ({ assess: async () => undefined, inspectDelivery: async (delivery) => { seen.push(delivery); await new Promise<void>((resolve) => { release = resolve; }); } }));
+  const ticket = await authorizeOperation(events, operation, {});
+  const source = { content: [{ type: "text", text: "safe" }], details: { source: "remote" } };
+  const pending = ticket.inspectDelivery(source);
+  await new Promise((resolve) => setImmediate(resolve));
+  source.content[0]!.text = "mutated after inspection began"; release();
+  const inspected = await pending;
+  assert.equal(inspected.content[0]!.text, "safe");
+  assert.deepEqual(seen[0], { content: [{ type: "text", text: "safe" }], details: { source: "remote" } });
+  const broken = bus(); registerOperationProvider(broken, () => ({ assess: async () => undefined, inspectDelivery: async () => { throw new Error("raw-secret"); } }));
+  const brokenTicket = await authorizeOperation(broken, operation, {});
+  await assert.rejects(brokenTicket.inspectDelivery("body"), (error: unknown) => error instanceof AuthorizationDenied && !error.message.includes("raw-secret"));
+});
+test("delivery timeout and cancellation interrupt noncooperative inspectors", async () => {
+  const events = bus(); registerOperationProvider(events, () => ({ assess: async () => undefined, inspectDelivery: async () => new Promise(() => {}) }));
+  const ticket = await authorizeOperation(events, operation, {}, undefined, { timeoutMs: 5 });
+  await assert.rejects(ticket.inspectDelivery("body"), /timed out/);
+  const controller = new AbortController();
+  const cancellable = await authorizeOperation(events, operation, {}, controller.signal);
+  const pending = cancellable.inspectDelivery("body"); controller.abort();
+  await assert.rejects(pending, /cancelled|timed out/);
+});
+
 test("observer failures do not change execution and sanitized denials remove terminal controls", async () => {
   const events = bus(); registerOperationProvider(events, () => ({ assess: async () => undefined, result: () => { throw Error("no"); } }));
   const ticket = await authorizeOperation(events, operation, {}); assert.doesNotThrow(() => ticket.result(true));

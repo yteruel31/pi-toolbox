@@ -5,9 +5,10 @@ import { judgeJev } from "../src/jev-client.js";
 import { candidate, config, policy } from "./helpers.js";
 
 const natural = (id: string, action: "Allow" | "Ask" | "Deny", description: string) => policy({ id, action, description, kind: "natural" });
-function reply(probabilities = { Allow: .95, Ask: .04, Deny: .01 }, restrictions: number[] = [], model = "jev-returned") {
+function reply(probabilities = { Allow: .95, Ask: .04, Deny: .01 }, restrictions: number[] = [], model = "jev-returned", risks: number[] = [0, 0, 0, 0, 0]) {
   const choice = Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0][0];
-  return { model, usage: { input_tokens: 1, output_tokens: 1 }, answers: { decision: { type: "choice", choice, confidence: Math.max(...Object.values(probabilities)), probabilities }, ...Object.fromEntries(restrictions.map((n, i) => [`restriction_${i}`, { type: "noul", noul: n }])) } };
+  const names = ["sensitive-transfer", "external-modification", "unrecoverable-loss", "guardrail-modification", "uncertainty"];
+  return { model, usage: { input_tokens: 1, output_tokens: 1 }, answers: { decision: { type: "choice", choice, confidence: Math.max(...Object.values(probabilities)), probabilities }, ...Object.fromEntries(names.map((name, i) => [`risk_${name}`, { type: "noul", noul: risks[i] ?? 0 }])), ...Object.fromEntries(restrictions.map((n, i) => [`restriction_${i}`, { type: "noul", noul: n }])) } };
 }
 function fake(value: unknown, inspect?: (body: any, init?: RequestInit) => void): Fetch {
   return async (_input, init) => { inspect?.(JSON.parse(String(init?.body)), init); return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } }); };
@@ -18,7 +19,7 @@ test("SDK request has one policy-specific question per natural restriction and s
   const rules = [natural("prod", "Deny", "Never modify production"), natural("secret", "Ask", "Review access to credentials")];
   let calls = 0;
   const result = await assess(reply(undefined, [0, 0]), rules, fake(reply(undefined, [0, 0]), (body, init) => {
-    calls++; assert.equal(body.model, "jev-latest"); assert.deepEqual(Object.keys(body.questions), ["decision", "restriction_0", "restriction_1"]);
+    calls++; assert.equal(body.model, "jev-latest"); assert.deepEqual(Object.keys(body.questions), ["decision", "risk_sensitive-transfer", "risk_external-modification", "risk_unrecoverable-loss", "risk_guardrail-modification", "risk_uncertainty", "restriction_0", "restriction_1"]);
     assert.match(JSON.stringify(body.questions.restriction_0), /Never modify production/); assert.doesNotMatch(JSON.stringify(body.questions.restriction_0), /Review access/);
     assert.match(JSON.stringify(body.questions.restriction_1), /Review access to credentials/); assert.equal(init?.redirect, "error");
   }));
@@ -33,7 +34,7 @@ test("threshold boundaries combine generic verdict and restrictive policies cons
   assert.equal((await assess(reply({ Allow: .7, Ask: .2, Deny: .1 }, [.8]), rules)).action, "Deny");
   let questions: string[] = [];
   assert.equal((await assess(reply({ Allow: .95, Ask: .04, Deny: .01 }, [0]), rules, fake(reply({ Allow: .95, Ask: .04, Deny: .01 }, [0]), (body) => { questions = Object.keys(body.questions); }))).action, "Allow");
-  assert.deepEqual(questions, ["decision", "restriction_0"], "natural Allow is authoritative state but never a Noul restriction");
+  assert.deepEqual(questions, ["decision", "risk_sensitive-transfer", "risk_external-modification", "risk_unrecoverable-loss", "risk_guardrail-modification", "risk_uncertainty", "restriction_0"], "natural Allow is authoritative state but never a Noul restriction");
 });
 
 test("malformed, oversized, retryable HTTP, cancellation and redacted candidates fail closed without retries", async () => {

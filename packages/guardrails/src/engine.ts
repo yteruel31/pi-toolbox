@@ -7,6 +7,9 @@ import { judgeJev, type JevFetch } from "./jev-client.js";
 import { HistoryStore, relevantHistory } from "./history.js";
 import { evaluatePolicies } from "./policies.js";
 import { candidateView, sanitize, sanitizePath } from "./sanitize.js";
+import type { DeliveryContent } from "@yteruel31/pi-operation-hooks";
+import { incomingEvidence, type IncomingAssessment } from "./incoming.js";
+import { judgeIncomingJev, judgeIncomingPi } from "./incoming-judge.js";
 
 function ruleOnlyAllow(): Decision {
   return { action: "Allow", origin: "rule-only-no-match", reason: "Judge model is off. No deterministic rule matched; rule-only mode allows unmatched calls.", policyIds: [], historyIds: [] };
@@ -50,11 +53,75 @@ export class GuardrailsEngine {
     if (!credential) return { action: snapshot.config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", reason: "Jev credentials are unavailable. Human approval required; headless calls are blocked.", policyIds: [], historyIds: [] };
     try {
       return await bounded(async deadlineSignal => {
-        const key = await credential(snapshot.config, deadlineSignal);
+        let key: string;
+        try { key = await credential(snapshot.config, deadlineSignal); }
+        catch (error) {
+          if (deadlineSignal.aborted) throw error;
+          return { action: snapshot.config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", failure: "credentials", reason: "Jev credentials are unavailable. Human approval required; headless calls are blocked.", policyIds: [], historyIds: [] } as Decision;
+        }
         return judgeJev({ config: snapshot.config, apiKey: key, candidate: c, policies: natural, history, target, operation, signal: deadlineSignal, fetchImpl: this.options.jevFetch, deadlineOwned: true });
       }, snapshot.config.timeoutMs, signal);
     } catch {
-      return { action: signal?.aborted || snapshot.config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", reason: signal?.aborted ? "Assessment cancelled. Tool not authorized." : "Jev credentials are unavailable. Human approval required; headless calls are blocked.", policyIds: [], historyIds: [] };
+      const cancelled = Boolean(signal?.aborted);
+      return { action: cancelled || snapshot.config.errorBehavior === "deny" ? "Deny" : "Ask", origin: "error", failure: cancelled ? "cancelled" : "timeout", reason: cancelled ? "Assessment cancelled. Tool not authorized." : "Jev assessment timed out. Human approval required; headless calls are blocked.", policyIds: [], historyIds: [] };
+    }
+  }
+  private async classifyIncoming(snapshot: ConfigSnapshot, delivery: DeliveryContent, signal: AbortSignal): Promise<{ assessment: IncomingAssessment; reason: string; failure?: Decision["failure"] }> {
+    if (signal.aborted) return { assessment: "incomplete", failure: "cancelled", reason: "Incoming delivery assessment was cancelled." };
+    if (snapshot.error) return { assessment: "incomplete", reason: "Incoming delivery configuration is unavailable." };
+    const evidence = incomingEvidence(delivery);
+    if (!snapshot.config.judgeEnabled) return { assessment: evidence.assessment, reason: evidence.assessment === "clean" ? "No deterministic active instruction pattern was found; content remains untrusted." : "Incoming content is suspicious or could not be inspected completely." };
+    if (evidence.assessment === "suspicious") return { assessment: "suspicious", reason: "Incoming content contains active instruction-like text." };
+    if (evidence.incomplete) return { assessment: "incomplete", reason: "Incoming content could not be inspected completely." };
+    try {
+      const judged = snapshot.config.backend === "pi"
+        ? await judgeIncomingPi(this.options.bridge, snapshot.config, evidence, signal)
+        : await bounded(async deadlineSignal => {
+            if (!this.options.jevCredential) throw new Error("credentials unavailable");
+            const key = await this.options.jevCredential(snapshot.config, deadlineSignal);
+            return judgeIncomingJev(snapshot.config, key, evidence, deadlineSignal, this.options.jevFetch);
+          }, snapshot.config.timeoutMs, signal);
+      return { assessment: judged.action, reason: judged.action === "clean" ? "The classifier found only benign content; it remains untrusted data." : "Incoming content may contain an active instruction or lacks complete evidence." };
+    } catch (error) {
+      const cancelled = signal.aborted;
+      const message = error instanceof Error ? error.message : "";
+      const failure: Decision["failure"] = cancelled ? "cancelled" : /timed out|timeout/i.test(message) ? "timeout" : /invalid|too large|JSON|choice|probabilit/i.test(message) ? "invalid-response" : /credential/i.test(message) ? "credentials" : "transport";
+      return { assessment: "incomplete", failure, reason: cancelled ? "Incoming delivery assessment was cancelled." : "Incoming classifier failed; human approval is required." };
+    }
+  }
+  async inspectIncoming(c: Candidate, delivery: DeliveryContent, approval?: Approval, signal?: AbortSignal): Promise<Block | undefined> {
+    const combined = AbortSignal.any([this.options.signal, ...(signal ? [signal] : [])]);
+    if (combined.aborted) return { block: true, reason: "Operation result withheld because delivery inspection was cancelled." };
+    let entry: HistoryEntry | undefined;
+    try {
+      const snapshot = await this.options.load();
+      if (bypasses(snapshot, c.tool)) return undefined;
+      entry = this.options.history.put({
+        id: randomUUID(), at: Date.now(), updatedAt: Date.now(), sessionId: sanitize(c.sessionId, 200), project: sanitizePath(c.project), cwd: sanitizePath(c.cwd),
+        actor: c.actor, callId: sanitize(`${c.callId}:incoming`, 200), leafId: c.leafId, tool: c.tool,
+        summary: `Incoming ${c.tool} result`, target: "untrusted operation result", operation: "incoming-delivery",
+        action: "Ask", origin: "policy", reason: "Incoming delivery assessment in progress; result body is not recorded.", policyIds: [], historyIds: [], state: "assessing", execution: "not-observed",
+      });
+      const assessed = await this.classifyIncoming(snapshot, delivery, combined);
+      if (combined.aborted) {
+        entry = { ...entry, action: "Deny", origin: "error", failure: "cancelled", reason: "Incoming delivery assessment was cancelled.", state: "denied", execution: "blocked", updatedAt: Date.now() };
+      } else if (assessed.assessment === "clean") {
+        entry = { ...entry, action: "Allow", origin: snapshot.config.judgeEnabled ? "model" : "rule-only-no-match", reason: assessed.reason, state: "allowed", execution: "not-observed", updatedAt: Date.now() };
+      } else {
+        entry = { ...entry, action: "Ask", origin: assessed.failure ? "error" : "policy", ...(assessed.failure ? { failure: assessed.failure } : {}), reason: assessed.reason, state: "review", updatedAt: Date.now() };
+        this.options.history.put(entry);
+        if (c.actor.kind === "main" && approval && !combined.aborted) {
+          const choice = await bounded((uiSignal) => approval(entry!, uiSignal), 300000, combined).catch(() => "deny" as const);
+          entry = { ...entry, choice, state: choice === "allow-once" && !combined.aborted ? "allowed" : "denied" };
+        } else entry = { ...entry, state: "denied", reason: `${entry.reason} No interactive approval available.` };
+        entry.execution = entry.state === "denied" ? "blocked" : "not-observed";
+        entry.updatedAt = Date.now();
+      }
+      entry = this.options.history.put(entry);
+      return entry.state === "denied" ? { block: true, reason: sanitize(`Guardrails: ${entry.reason}${entry.choice ? ` Human choice: ${entry.choice}.` : ""}`), ...(entry.choice === "deny-stop" ? { terminate: true } : {}) } : undefined;
+    } catch {
+      if (entry) { try { this.options.history.put({ ...entry, action: "Deny", origin: "error", reason: "Incoming assessment or history storage failed. Result withheld.", state: "denied", execution: "blocked", updatedAt: Date.now() }); } catch {} }
+      return { block: true, reason: "Operation result withheld because guardrails assessment or history storage failed." };
     }
   }
   private configError(snapshot: ConfigSnapshot): Decision {
