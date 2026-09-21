@@ -33,6 +33,33 @@ for (const judgeEnabled of [true, false]) for (const error of [undefined, "Inval
   });
 }
 
+test("conventional deterministic denials never invoke classifier or approval", async () => {
+  for (const judgeEnabled of [true, false]) {
+    const history = new HistoryStore(":memory:");
+    const completion = bridge();
+    let completions = 0, approvals = 0;
+    completion.complete = async () => { completions++; throw Error("must not judge"); };
+    const commands = ["rm -rf --no-preserve-root /", "git branch -f main HEAD", "git branch --force master HEAD"];
+    const policies = commands.flatMap((command, i) => [
+      policy({ id: `allow-conventional-${i}`, action: "Allow", conditions: { command } }),
+      policy({ id: `ask-conventional-${i}`, action: "Ask", conditions: { command } }),
+    ]);
+    const cfg = config({ policies, judgeEnabled });
+    const engine = new GuardrailsEngine({ history, bridge: completion, protectedPaths: ["/project/.pi"], signal: new AbortController().signal,
+      load: async () => ({ config: cfg, policies, revision: "test", projectStatus: "none" }) });
+    const approve = async () => { approvals++; return "allow-once" as const; };
+    try {
+      for (const command of commands) for (const actor of [{ kind: "main" }, { kind: "subagent", runId: "worker" }] as const) {
+        const c = candidate({ args: { command }, actor });
+        assert.equal((await engine.evaluate(c)).decision.action, "Deny", `${command} (${actor.kind})`);
+        assert.ok((await engine.assess(c, approve))?.block, `${command} (${actor.kind})`);
+      }
+      assert.equal(completions, 0);
+      assert.equal(approvals, 0);
+    } finally { history.close(); }
+  }
+});
+
 test("disabled guardrails bypass shell protection without history or prompts", async () => {
   const history = new HistoryStore(":memory:");
   const cfg = config({ enabled: false });

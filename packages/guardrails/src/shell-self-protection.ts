@@ -25,7 +25,7 @@ function mutation(words: string[], touches: Touches): Verdict {
   let parsed: ReturnType<typeof parseOperands>;
   switch (name) {
     case "rm": case "rmdir": case "unlink": case "shred":
-      parsed = parseOperands(args, /^(?:-[rfdiIvPRzun]+|--(?:recursive|force|dir|verbose|zero|remove))$/, new Set(["-n", "-s", "--iterations", "--size"]));
+      parsed = parseOperands(args, /^(?:-[rfdiIvPRzun]+|--(?:recursive|force|dir|verbose|zero|remove|no-preserve-root))$/, new Set(["-n", "-s", "--iterations", "--size"]));
       break;
     case "tee":
       parsed = parseOperands(args, /^(?:-[ai]+|--(?:append|ignore-interrupts))$/, new Set());
