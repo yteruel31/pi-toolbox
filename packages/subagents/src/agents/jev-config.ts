@@ -3,6 +3,7 @@ import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
+import { requestJevConnection, type JevFetch } from "./jev-client.js";
 
 export type JevCredentialSource = "environment" | "keyring" | "file";
 export interface StoredJevConfig {
@@ -96,15 +97,14 @@ export async function saveJevSetup(options: {
   }
 }
 
-export async function testJevConnection(apiKey: string, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<void> {
+export async function testJevConnection(apiKey: string, fetchImpl: JevFetch = fetch, signal?: AbortSignal): Promise<void> {
   if (!validJevKey(apiKey)) throw new Error("Enter or resolve a valid Jev API key first.");
-  const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
-    method: "POST",
-    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-    body: JSON.stringify({ state: { task: "Connection test" }, model: "jev-latest", questions: { route: { type: "choice", instructions: "Return the only option.", criteria: { ok: "Connection test option" } } } }),
-    signal,
-  });
-  if (!response.ok) throw new Error(`Jev connection test failed with HTTP ${response.status}.`);
+  try {
+    await requestJevConnection({ apiKey, fetchImpl, signal });
+  } catch {
+    if (signal?.aborted) throw new Error("Jev connection test was cancelled.");
+    throw new Error("Jev connection test failed.");
+  }
 }
 
 async function storeKeyring(key: string): Promise<void> {

@@ -37,8 +37,9 @@ describe("Jev setup storage", () => {
 
   it("runs an explicit bounded connection request", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      expect(init?.headers).toMatchObject({ authorization: "Bearer key" });
-      return new Response(JSON.stringify({ answers: { route: { choice: "ok" } } }), { status: 200 });
+      expect(init?.headers).toMatchObject({ Authorization: "Bearer key" });
+      expect(init?.redirect).toBe("error");
+      return new Response(JSON.stringify({ model: "jev-latest", answers: { route: { type: "choice", choice: "ok", confidence: 0.01, probabilities: { ok: 1 } } }, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
     });
     await testJevConnection("key", fetcher);
     expect(fetcher).toHaveBeenCalledTimes(1);

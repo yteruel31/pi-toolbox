@@ -34,7 +34,7 @@ describe("Jev route selection", () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       const choice = Object.keys(body.questions.route.criteria)[1];
-      return new Response(JSON.stringify({ answers: { route: { type: "choice", choice } } }), { status: 200 });
+      return new Response(JSON.stringify({ model: "jev-latest", answers: { route: { type: "choice", choice, confidence: 0.8, probabilities: Object.fromEntries(Object.keys(body.questions.route.criteria).map((key: string) => [key, key === choice ? 0.8 : 0.2])) } }, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
     });
     const result = await routeWithJev({ task: "hard task", role: "reviewer", route: route({ harness: "claude", model: undefined, thinking: undefined, provenance: { harness: "explicit", model: "parent", thinking: "parent" } }), piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "Balanced", supportsEffort: true, supportedEffortLevels: ["low", "high"] }], apiKey: "key" }, fetcher);
     expect(result.route.harness).toBe("claude");
@@ -53,12 +53,28 @@ describe("Jev route selection", () => {
   });
 
   it("falls back on a malformed or unavailable choice without retrying", async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({ answers: { route: { type: "choice", choice: "missing" } } }), { status: 200 }));
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ model: "jev-latest", answers: { route: { type: "choice", choice: "missing", confidence: 1, probabilities: { missing: 1 } } }, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 }));
     const original = route();
     const result = await routeWithJev({ task: "task", route: original, piModels: [piModel("one"), piModel("two")], claudeModels: [], apiKey: "key" }, fetcher);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(result.route).toEqual(original);
-    expect(result.fallback).toContain("unavailable");
+    expect(result.fallback).toContain("invalid response");
+  });
+
+  it("accepts low confidence when the probability shape is valid", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const keys = Object.keys(JSON.parse(String(init?.body)).questions.route.criteria);
+      return new Response(JSON.stringify({ answers: { route: { type: "choice", choice: keys[0], confidence: 0.01, probabilities: Object.fromEntries(keys.map((key) => [key, 1 / keys.length])) } } }));
+    });
+    const result = await routeWithJev({ task: "task", route: route(), piModels: [piModel("one"), piModel("two")], claudeModels: [], apiKey: "key" }, fetcher);
+    expect(result.used).toBe(true);
+  });
+
+  it("does not retry rate limits and redacts transport details", async () => {
+    const fetcher = vi.fn(async () => new Response("secret task and key", { status: 429 }));
+    const result = await routeWithJev({ task: "secret task", route: route(), piModels: [piModel("one"), piModel("two")], claudeModels: [], apiKey: "secret-key" }, fetcher);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.fallback).not.toContain("secret");
   });
 
   it("propagates caller cancellation", async () => {
