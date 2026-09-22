@@ -31,7 +31,7 @@ async function fixture(options: { config?: Config; brokenHistory?: boolean } = {
   const agentDir = join(root, "agent"); await mkdir(agentDir);
   await writeFile(join(agentDir, "guardrails.json"), JSON.stringify(options.config ?? config({ judgeEnabled: false, policies: [policy({ tools: ["mcp", "web-access"], scope: "main", action: "Ask" })] })));
   const bus = createEventBus(); const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-  const pi = { events: bus, on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {} } as unknown as ExtensionAPI;
+  const pi = { events: bus, on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, registerTool() {} } as unknown as ExtensionAPI;
   createGuardrailsExtension({ agentDir, bridge: bridge(), ...(options.brokenHistory ? { history: () => { throw Error("raw-storage-error"); } } : {}) })(pi);
   let asks = 0, active = 0, maxActive = 0;
   const context = (id = "parent", hasUI = true): ExtensionContext => ({
