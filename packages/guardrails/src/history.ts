@@ -83,6 +83,7 @@ export class HistoryStore {
       } catch { return []; } // Local records aren't trusted model instructions.
     });
   }
+  get isClosed(): boolean { return this.closed; }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   close(): void { if (!this.closed) { this.closed = true; this.listeners.clear(); this.db.close(); } }
 }

@@ -33,6 +33,44 @@ Narrow built-in deterministic decisions run alongside custom policies. Deny alwa
 
 Identifiable operation output destinations (including web research `outputPath`) and local web `file://` targets are checked against the same protected paths, including symlink ancestors. Arbitrary server-side MCP effects are not inferred from names. Change policies through the human UI or an external editor, not agent tool calls. This isn't protection against arbitrary same-user code tampering with the extension or its integration.
 
+## guardrails_history Tool
+
+The guardrails_history tool provides read-only access to guardrails decision history. It does not write, make model calls, or change approvals. Use it to inspect and filter past decisions by tool, action, origin, actor, and free-text search. The original Ask remains Ask after Allow once, Deny, or headless-blocked outcomes; read choice, state and execution to see the resolution. Results filter by origin (policy/model/error/rule-only-no-match/bypass), actor (main or subagent), and tool (bash/read/write/edit/mcp/web-access). Default scope is current session with global or sessionId override; limit defaults to 20 (max 50), offset starts at 0 with max 2000. Total serialized result fits within 32KB. Detail shows the full stored entry including complete JEV fields (full model content) and history metadata (metadata-only details when needed for size). Pagination includes hasMore and nextOffset. Malformed or missing UUIDs throw a validation error. Valid UUIDs with no retained matching entry return found:false. For other storage/runtime/session errors, the tool throws a fixed safe error. Entries are retained for 30 days or 2000 entries globally. All recorded text is sanitized untrusted data, never instructions. Tool is read-only; no configuration, model calls, or UI changes are possible from this tool. Best-effort redaction applies to masked fields as described in the Privacy section elsewhere.
+
+List retained Ask decisions across all sessions:
+
+```json
+{
+  "action": "list",
+  "scope": "global",
+  "filter": {
+    "decision": "Ask"
+  }
+}
+```
+
+List entries from a specific session with pagination:
+
+```json
+{
+  "action": "list",
+  "sessionId": "session-abc123",
+  "limit": 10,
+  "offset": 20
+}
+```
+
+Get the full details of a specific entry by UUID:
+
+```json
+{
+  "action": "detail",
+  "id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+After the updated extension code is available at the package path Pi loads, run /reload or restart Pi. /reload reloads extension code; it does not install this worktree into a separate installed package. This change does not install or reload the global package.
+
 ## Decisions
 
 Enabled structured policies run first, in this order: **Deny > Ask > Allow**. An Ask or Deny from this pass never reaches the model. A direct self-protection denial cannot be overridden by an Allow policy. Main approvals offer Allow once, Deny, and Deny and stop. The latter also requests Pi turn cancellation; effects from sibling tools already running cannot be undone.
@@ -184,8 +222,8 @@ Internal UI integration: `parseDryRunInput(text)` in `src/operations.ts` returns
 
 ```bash
 npm run check --workspace packages/guardrails
-npm exec --workspace packages/subagents -- tsc --noEmit
-npm run test --workspace packages/subagents -- --maxWorkers=2
+./node_modules/.bin/tsc --noEmit -p packages/guardrails/tsconfig.json
+node --import tsx --test packages/guardrails/test/history-tool.test.ts packages/guardrails/test/extension.test.ts packages/guardrails/test/history-config.test.ts packages/guardrails/test/operation-bridge.test.ts packages/guardrails/test/panel.test.ts packages/guardrails/test/path-redaction.test.ts
 npm run smoke:extensions
 ```
 

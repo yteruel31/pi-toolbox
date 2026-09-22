@@ -7,21 +7,31 @@ import { createEventBus, type ExtensionAPI, type ExtensionContext } from "@earen
 import { createGuardrailsExtension } from "../src/index.js";
 import { CHILD_CHANNEL, type ChildRequest } from "../src/child-bridge.js";
 import { HistoryStore } from "../src/history.js";
-import { bridge, config } from "./helpers.js";
+import { bridge, config, entry } from "./helpers.js";
 import { requestPiChildAssessment } from "../../subagents/src/harnesses/pi-assessment.js";
 
-async function fixture() {
+async function fixture(disabled = false) {
   const root = await mkdtemp(join(tmpdir(), "guardrails-extension-"));
   const agentDir = join(root, "agent"); await mkdir(agentDir);
-  await writeFile(join(agentDir, "guardrails.json"), JSON.stringify(config()));
+  await writeFile(join(agentDir, "guardrails.json"), JSON.stringify(config({enabled: !disabled})));
   const bus = createEventBus();
   const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
   const commands: string[] = [];
   const commandHandlers = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
+  const tools: string[] = [];
+  const toolDefinitions = new Map<string, any>();
   let opened = 0;
-  const pi = { events: bus, on: (name: string, handler: any) => handlers.set(name, handler), registerCommand: (name: string, options: any) => { commands.push(name); commandHandlers.set(name, options.handler); } } as unknown as ExtensionAPI;
-  createGuardrailsExtension({ agentDir, bridge: bridge(), history: (path) => { opened++; return new HistoryStore(path); } })(pi);
+  let history: HistoryStore | undefined;
+  let modelCalls = 0;
+  const pi = {
+    events: bus,
+    on: (name: string, handler: any) => handlers.set(name, handler),
+    registerCommand: (name: string, options: any) => { commands.push(name); commandHandlers.set(name, options.handler); },
+    registerTool: (tool: any) => { tools.push(tool.name); toolDefinitions.set(tool.name, tool); },
+  } as unknown as ExtensionAPI;
+  createGuardrailsExtension({ agentDir, bridge: disabled ? { resolve: () => ({ model: { provider: "fake", id: "judge" } as any, route: "fake/judge" }), complete: async () => { modelCalls++; throw new Error("model should not be called"); } } : bridge(), history: (path) => { opened++; history = new HistoryStore(path); return history; } })(pi);
   assert.equal(opened, 0, "factory must not allocate history");
+  assert(tools.includes("guardrails_history"), "guardrails_history tool must be registered during factory");
   let asks = 0;
   const ctx = (id: string, hasUI = false): ExtensionContext => ({
     cwd: root, mode: hasUI ? "tui" : "print", hasUI, scopedModels: [], signal: undefined,
@@ -30,8 +40,83 @@ async function fixture() {
     abort: async () => {},
   }) as unknown as ExtensionContext;
   const emit = (name: string, c: ExtensionContext, event: any = {}) => handlers.get(name)?.(event, c);
-  return { root, agentDir, bus, ctx, emit, asks: () => asks, commands, commandHandlers, cleanup: async () => { await emit("session_shutdown", ctx("last")); await rm(root, { recursive: true }); } };
+  return { root, agentDir, bus, ctx, emit, asks: () => asks, commands, commandHandlers, toolDefinitions, history: () => history, modelCalls: () => modelCalls, cleanup: async () => { await emit("session_shutdown", ctx("last")); await rm(root, { recursive: true }); } };
 }
+test("real extension lifecycle: guardrails_history tool executes with session lifecycle isolation", async () => {
+  const { randomUUID } = await import("node:crypto");
+  const f = await fixture(true);
+  try {
+    const tool = f.toolDefinitions.get("guardrails_history");
+    assert.ok(tool, "guardrails_history tool registered");
+
+    const execute = (args: any, ctx: ExtensionContext) => tool.execute("history-read", args, undefined, undefined, ctx);
+
+    const ctx1 = f.ctx("session-1", false);
+    await assert.rejects(execute({action: "list"}, ctx1), {message: /unavailable|missing/i}, "list rejects before session_start");
+
+    await f.emit("session_start", ctx1);
+
+    const seedEntry = f.history()!.put({
+      id: randomUUID(),
+      at: Date.now(),
+      updatedAt: Date.now(),
+      sessionId: "session-1",
+      project: f.root,
+      cwd: f.root,
+      actor: { kind: "main" },
+      callId: randomUUID(),
+      tool: "bash",
+      summary: "seed entry for testing",
+      target: "/project",
+      operation: "test",
+      action: "Ask",
+      choice: "allow-once",
+      origin: "policy",
+      reason: "test reason",
+      policyIds: ["test-policy"],
+      historyIds: [],
+      state: "allowed",
+      execution: "not-observed",
+    });
+
+    const configPath = join(f.agentDir, "guardrails.json");
+    const configBefore = await (await import("node:fs/promises")).readFile(configPath, "utf8");
+    const historyBefore = f.history()!.list();
+
+    const listResult = await execute({action: "list", filter: {decision: "Ask"}}, ctx1);
+    assert.ok(listResult.content && listResult.content[0].type === "text", "list result has text content");
+    const listData = JSON.parse(listResult.content[0].text);
+    assert.equal(listData.entries.length, 1, "filtered list returns seeded Ask entry");
+    assert.equal(listData.entries[0].id, seedEntry.id, "entry id matches");
+    assert.equal(f.asks(), 0, "no model calls");
+    assert.equal(f.modelCalls(), 0, "disabled bridge never called");
+
+    await f.emit("session_shutdown", ctx1);
+
+    const configAfter = await (await import("node:fs/promises")).readFile(configPath, "utf8");
+    assert.equal(configBefore, configAfter, "config unchanged after shutdown");
+
+    await assert.rejects(execute({action: "list"}, ctx1), {message: /unavailable|missing|session mismatch/i}, "list rejects after session_shutdown");
+
+    const ctx2 = f.ctx("session-2", false);
+    await assert.rejects(execute({action: "list"}, ctx2), {message: /unavailable|missing|session mismatch/i}, "ctx2 rejects before its session_start");
+
+    await f.emit("session_start", ctx2);
+
+    const listCtx2 = await execute({action: "list", scope: "global"}, ctx2);
+    const listCtx2Data = JSON.parse(listCtx2.content[0].text);
+    assert.equal(listCtx2Data.entries.length, 1, "ctx2 global list includes seeded entry");
+    assert.equal(listCtx2Data.entries[0].id, seedEntry.id, "ctx2 sees seeded entry id");
+
+    const toolsCount = f.toolDefinitions.size;
+    assert.equal(toolsCount, 1, "exactly one tool (guardrails_history) registered");
+
+    await f.emit("session_shutdown", ctx2);
+
+    await assert.rejects(execute({action: "list"}, ctx2), {message: /unavailable|missing|session mismatch/i}, "ctx2 rejects after its own shutdown");
+  } finally { await f.cleanup(); }
+});
+
 test("parent extension and real subagents protocol compose, workers never open UI and attribution survives result updates", async () => {
   const f = await fixture();
   try {

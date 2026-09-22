@@ -16,6 +16,7 @@ import { isTool, type Candidate } from "./types.js";
 import { sanitize } from "./sanitize.js";
 import { CHILD_CHANNEL, provideChildGate } from "./child-bridge.js";
 import { GUARDRAILS_OVERLAY, GuardrailsPanel, initialPanelState, panelRows, type PanelAction } from "./tui/panel.js";
+import { createHistoryTool } from "./history-tool.js";
 
 interface Dependencies {
   agentDir?: string;
@@ -31,6 +32,9 @@ export function createGuardrailsExtension(deps: Dependencies = {}) {
       store: ConfigStore; history?: HistoryStore; engine?: GuardrailsEngine; bridge: CompletionBridge; unsubscribe?: () => void;
     } | undefined;
     let unsubscribeOperations: (() => void) | undefined;
+
+    pi.registerTool(createHistoryTool(() => runtime ? { history: runtime.history, sessionId: runtime.sessionId } : undefined));
+
     const listenOperations = () => {
       unsubscribeOperations ??= registerOperationProvider(pi.events, (request) => provideOperationGate(request, runtime, approval));
     };
