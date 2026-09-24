@@ -51,23 +51,34 @@ export class JevRoutingConflictError extends Error {
   override readonly name = "JevRoutingConflictError";
 }
 
+/**
+ * Purpose descriptions for models whose catalogue entry reports no description.
+ * Pi reports a display name and numbers only, so without these the service sees
+ * what a model costs but nothing about what it is for. Entries only describe
+ * models a harness already offers: this table never adds a candidate, and any
+ * model missing from it falls back to whatever its harness reports.
+ */
 const CURATED: Record<string, string> = {
   "gpt-6-astra": "Best for the hardest end-to-end coding, application, research, and judgment work.",
+  "gpt-6-sol": "Built for complex coding and agentic workflows, including ambiguous everyday tasks, code changes, and research.",
+  "gpt-6-luna": "Most efficient for focused, high-volume summarization, extraction, and focused coding with known success criteria.",
   "gpt-5.6-sol": "Strong for complex or ambiguous coding, research, computer-use, and security work.",
   "gpt-5.6-terra": "Balanced model for everyday coding work.",
   "gpt-5.6-luna": "Fast model for repeatable extraction, classification, and transformations.",
   "claude-fable-5-1": "Demanding, slower long-horizon agentic model with always-on thinking.",
+  "claude-opus-5-5": "Long-running agentic coding and knowledge work at moderate latency, with always-on thinking.",
   "claude-opus-5": "Complex agentic coding and enterprise model with moderate latency.",
   "claude-sonnet-5": "Fast model balancing speed and intelligence.",
   "claude-haiku-4-5": "Fastest Claude option; effort controls are not supported.",
 };
 
-/** Internal metadata only. Sources verified 2026-09-21. */
+/** Internal metadata only. Sources verified 2026-09-24. */
 export const JEV_METADATA_SOURCES = [
   "https://learn.chatgpt.com/docs/models",
   "https://platform.claude.com/docs/en/models/overview",
   "https://platform.claude.com/docs/en/build-with-claude/effort",
   "https://platform.claude.com/docs/en/models/fable-5-1/overview",
+  "https://platform.claude.com/docs/en/models/opus-5-5/overview",
   "https://platform.claude.com/docs/en/models/opus-5/overview",
   "https://platform.claude.com/docs/en/models/sonnet-5/overview",
   "https://platform.claude.com/docs/en/models/haiku-4-5/overview",
@@ -127,15 +138,21 @@ export function buildJevCandidates(
       if (inferHarness(`${model.provider}/${model.id}`) === "claude") continue;
       const levels = getSupportedThinkingLevels(model);
       for (const thinking of levels.length ? levels : [undefined]) {
-        candidates.push(candidate("pi", `${model.provider}/${model.id}`, thinking, model.name, piMetadata(model)));
+        candidates.push(candidate("pi", `${model.provider}/${model.id}`, thinking, model.name, piMetadata(model), { purposeId: model.id }));
       }
     }
   }
   if (!fixedHarness || fixedHarness === "claude") {
     for (const model of claudeModels) {
       const levels = claudeThinkingLevels(model);
+      // The SDK catalogue describes its own models; curated purpose text only
+      // fills in for a row that arrives with no description of its own.
+      const describes = model.description.trim().length > 0;
       for (const thinking of levels) {
-        candidates.push(candidate("claude", model.value, thinking, model.description || model.displayName, claudeMetadata(model), model.resolvedModel));
+        candidates.push(candidate("claude", model.value, thinking, describes ? model.description : model.displayName, claudeMetadata(model), {
+          purposeId: model.resolvedModel ?? model.value,
+          harnessDescribed: describes,
+        }));
       }
     }
   }
@@ -292,19 +309,38 @@ function layeredWithoutAgent(input: RouteResolutionInput, field: "thinking"):
   return undefined;
 }
 
-function candidate(harness: HarnessKind, model: string, thinking: ThinkingLevel | undefined, discovered: string, facts = "", resolvedModel?: string): JevCandidate {
-  const lookupModel = resolvedModel ?? model;
-  const id = lookupModel.includes("/") ? lookupModel.slice(lookupModel.lastIndexOf("/") + 1) : lookupModel;
-  const description = CURATED[id] ?? discovered;
+/**
+ * Describe one candidate: what the harness discovered, the purpose text a bare
+ * catalogue name can't carry, then the runtime facts.
+ */
+function candidate(
+  harness: HarnessKind,
+  model: string,
+  thinking: ThinkingLevel | undefined,
+  discovered: string,
+  facts = "",
+  options: { purposeId?: string; harnessDescribed?: boolean } = {},
+): JevCandidate {
+  const discoveredText = bounded(discovered, 300) || model;
+  const purpose = options.harnessDescribed ? undefined : CURATED[purposeKey(options.purposeId ?? model)];
+  const description = purpose ? `${discoveredText} ${purpose}` : discoveredText;
   const effort = thinking === undefined ? " SDK default thinking/effort." : ` Thinking/effort ${thinking}.`;
   return { key: encodeKey(harness, model, thinking), harness, model, thinking, description: `${description}${facts}${effort}` };
 }
 
+/** Exact catalogue id, minus its provider path and the SDK's `[1m]` long-context alias suffix. */
+function purposeKey(id: string): string {
+  const unqualified = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+  return unqualified.endsWith("[1m]") ? unqualified.slice(0, -"[1m]".length) : unqualified;
+}
+
 function piMetadata(model: Model<any>): string {
-  return ` Provider ${model.provider}; context ${model.contextWindow}; input cost ${model.cost.input}; output cost ${model.cost.output}; reasoning ${String(model.reasoning)}.`;
+  const accepts = model.input?.length ? ` accepts ${model.input.join(" and ")};` : "";
+  return ` Provider ${model.provider}; context ${model.contextWindow}; max output ${model.maxTokens};${accepts} input cost ${model.cost.input}; output cost ${model.cost.output}; reasoning ${String(model.reasoning)}.`;
 }
 function claudeMetadata(model: ClaudeSupportedModel): string {
-  return ` SDK model ${model.resolvedModel ?? model.value}; effort support ${model.supportsEffort === true ? "known" : "not advertised"}.`;
+  const adaptive = model.supportsAdaptiveThinking === true ? "; adaptive thinking advertised" : "";
+  return ` SDK model ${model.resolvedModel ?? model.value}; effort support ${model.supportsEffort === true ? "known" : "not advertised"}${adaptive}.`;
 }
 
 function claudeThinkingLevels(model: ClaudeSupportedModel): Array<ThinkingLevel | undefined> {

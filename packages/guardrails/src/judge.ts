@@ -1,5 +1,5 @@
 import type { AssistantMessage, Context, Model, ModelsApiStreamOptions, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, normalizeContext } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { z } from "zod";
 import type { Config, Policy } from "./config.js";
@@ -39,7 +39,9 @@ export function piBridge(getContext: () => ExtensionContext): CompletionBridge {
       const signal = AbortSignal.any([controller.signal, ...(options.signal ? [options.signal] : [])]);
       // streamSimple maps independent thinking across native APIs. Registry.complete uses
       // raw API options, so a generic `reasoning` field there would be silently ignored.
-      const stream = provider.streamSimple(auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model, context, {
+      // Providers only read transcript messages, so the judge instructions must be folded
+      // into a leading system message here or they would never reach the model.
+      const stream = provider.streamSimple(auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model, normalizeContext(context), {
         ...options, apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal,
       } as SimpleStreamOptions);
       let chars = 0;

@@ -62,9 +62,9 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.84.2",
-    "@earendil-works/pi-coding-agent": "0.84.2",
-    "@earendil-works/pi-tui": "0.84.2",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-tui": "0.87.1",
     "@tailwindcss/cli": "4.3.3",
     "@types/node": "^22.19.1",
     "esbuild": "0.28.1",
