@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { judge, piBridge } from "../src/judge.js";
+import { JUDGE_INSTRUCTIONS, judge, piBridge } from "../src/judge.js";
 import { candidate, config, response } from "./helpers.js";
 
 function registryFixture(delta: string) {
@@ -33,4 +33,18 @@ test("stream output has an independent character bound and aborts before accepti
   const decision = await judge(piBridge(() => f.ctx), config(), candidate(), [], [], "/project", "git status");
   assert.equal(decision.origin, "error"); assert.equal(decision.action, "Ask");
   assert.equal(f.supplied().options.signal.aborted, true);
+});
+test("judge instructions reach the provider as a normalized leading system message", async () => {
+  const f = registryFixture("small response");
+  const decision = await judge(piBridge(() => f.ctx), config(), candidate(), [], [], "/project", "git status");
+  assert.equal(decision.action, "Allow");
+  const context = f.supplied().context;
+  // Providers read the transcript only. An unnormalized Context would silently drop
+  // `systemPrompt`, leaving the judge with no instructions and no type error.
+  assert.equal(context.systemPrompt, undefined);
+  assert.equal(context.messages.length, 2);
+  assert.equal(context.messages[0].role, "system");
+  assert.equal(context.messages[0].content, JUDGE_INSTRUCTIONS);
+  assert.equal(context.messages[1].role, "user");
+  assert.match(context.messages[1].content, /"candidate"/);
 });

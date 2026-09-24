@@ -130,6 +130,65 @@ describe("Jev route selection", () => {
     expect(candidates.some((candidate) => candidate.model === "claude-fable-5-1" && candidate.thinking === "off")).toBe(false);
     expect(candidates.filter((candidate) => candidate.model === "sonnet").map((candidate) => candidate.thinking)).toEqual(["low"]);
   });
+  it("adds verified purpose text to catalogue metadata and falls back for unknown models", () => {
+    // Pi reports only a display name, so the purpose has to come from the table.
+    const [sol] = buildJevCandidates(
+      [{ ...piModel("gpt-6-sol"), name: "GPT-6 Sol", contextWindow: 272000, maxTokens: 128000, input: ["text", "image"], cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 } } as Model<any>],
+      [],
+    );
+    expect(sol!.description).toBe(
+      "GPT-6 Sol Built for complex coding and agentic workflows, including ambiguous everyday tasks, code changes, and research."
+      + " Provider openai-codex; context 272000; max output 128000; accepts text and image; input cost 2; output cost 10; reasoning true. Thinking/effort off.",
+    );
+    const [luna] = buildJevCandidates([{ ...piModel("gpt-6-luna"), name: "GPT-6 Luna" } as Model<any>], []);
+    expect(luna!.description).toContain("Most efficient for focused, high-volume summarization, extraction, and focused coding");
+    // A gateway path prefix still resolves to the same catalogue id.
+    const [gateway] = buildJevCandidates([{ ...piModel("openai/gpt-6-luna"), name: "GPT-6 Luna" } as Model<any>], []);
+    expect(gateway!.description).toContain("Most efficient for focused, high-volume summarization");
+
+    // A model no table entry covers keeps only what its harness reported.
+    const [unknown] = buildJevCandidates([{ ...piModel("gpt-7-nova"), name: "GPT-7 Nova" } as Model<any>], []);
+    expect(unknown!.description).toBe(
+      "GPT-7 Nova Provider openai-codex; context 1; max output 1; accepts text; input cost 0; output cost 0; reasoning true. Thinking/effort off.",
+    );
+  });
+
+  it("prefers the Claude SDK's own description and resolves alias variants for the rest", () => {
+    // A Claude row the SDK already describes keeps the SDK's own wording.
+    const [described] = buildJevCandidates([], [{
+      value: "sonnet",
+      resolvedModel: "claude-sonnet-5",
+      displayName: "Sonnet",
+      description: "Sonnet 5 \u00b7 Efficient for routine tasks",
+      supportsEffort: true,
+      supportedEffortLevels: ["high"],
+      supportsAdaptiveThinking: true,
+    }], "claude");
+    expect(described!.description).toBe(
+      "Sonnet 5 \u00b7 Efficient for routine tasks SDK model claude-sonnet-5; effort support known; adaptive thinking advertised. Thinking/effort high.",
+    );
+    expect(described!.description).not.toContain("Fast model balancing speed and intelligence");
+
+    // Without an SDK description, the resolved id carries the purpose - including
+    // the exact `[1m]` long-context alias.
+    const [opus] = buildJevCandidates([], [{
+      value: "opus",
+      resolvedModel: "claude-opus-5-5[1m]",
+      displayName: "Opus",
+      description: " ",
+      supportsEffort: true,
+      supportedEffortLevels: ["medium"],
+    }], "claude");
+    expect(opus!.description).toBe(
+      "Opus Long-running agentic coding and knowledge work at moderate latency, with always-on thinking."
+      + " SDK model claude-opus-5-5[1m]; effort support known. Thinking/effort medium.",
+    );
+
+    // An unpublished future model still falls back to runtime metadata only.
+    const [future] = buildJevCandidates([], [{ value: "claude-opus-9", displayName: "Opus 9", description: "", supportsEffort: false }], "claude");
+    expect(future!.description).toBe("Opus 9 SDK model claude-opus-9; effort support not advertised. SDK default thinking/effort.");
+  });
+
   it("uses runtime thinking metadata and Claude SDK effort metadata", () => {
     const candidates = buildJevCandidates(
       [piModel("always", { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: null })],

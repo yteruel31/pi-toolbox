@@ -4,7 +4,7 @@ Mistake prevention for the main agent and in-process Pi workers. Not an OS sandb
 
 The package adds `/guardrails`, with Setup, Policies and History in a centered overlay at 90% terminal width. Protection starts **disabled**. Enable or disable it with the Protection On/Off row in Setup, then use Save or Ctrl+s. When disabled, guardrails skips model assessment, approval dialogs and decision history for native tools, workers and package operations. MCP/web-access keep their own existing safeguards and confirmations. An explicit valid disabled configuration also bypasses the gates when history storage is unavailable; malformed configuration is not treated as disabled. Loading this package alone doesn't activate protection or change Pi's installed runtime. The package isn't published to npm yet.
 
-Requires Node.js 22.19+ with `node:sqlite` and Pi 0.85.1+. The default Pi backend uses existing Pi model authentication. The optional Jev backend uses the official `@typesafe-ai/sdk`, fixed model `jev-latest`, and an independent API key; it never falls back silently to Pi. The UI requires native TUI mode. Main approval dialogs also work with a supporting Pi RPC client. Print/JSON and workers never implicitly approve an Ask.
+Requires Node.js 22.19+ with `node:sqlite` and Pi 0.86.0+ (tested against 0.87.1); the judge needs the `normalizeContext` export Pi added in 0.86.0. The default Pi backend uses existing Pi model authentication. The optional Jev backend uses the official `@typesafe-ai/sdk`, fixed model `jev-latest`, and an independent API key; it never falls back silently to Pi. The UI requires native TUI mode. Main approval dialogs also work with a supporting Pi RPC client. Print/JSON and workers never implicitly approve an Ask.
 
 ## Coverage
 

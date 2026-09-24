@@ -62,7 +62,7 @@ Starting a new Pi session resets a custom Herdr tab label to its numeric tab num
 
 ## Development
 
-Requires Node.js 22.19 or newer and targets Pi 0.84.2.
+Requires Node.js 22.19 or newer and targets Pi 0.87.1.
 
 ```bash
 npm install --ignore-scripts

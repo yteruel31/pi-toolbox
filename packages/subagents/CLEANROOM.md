@@ -17,8 +17,8 @@ No previous implementation or test file was copied into this package.
 Implementation decisions were derived from:
 
 1. `SPEC.md`, a behavior-only specification written before implementation;
-2. official Pi 0.84.1 documentation and MIT-licensed bundled examples;
-3. public declarations/documentation shipped with `@anthropic-ai/claude-agent-sdk` 0.3.234;
+2. official Pi 0.84.1 and 0.87.1 documentation and MIT-licensed bundled examples;
+3. public declarations/documentation shipped with `@anthropic-ai/claude-agent-sdk` 0.3.234 and 0.3.281;
 4. public TypeBox, Pi AI, and Pi TUI APIs needed to implement those documented contracts;
 5. user-provided screenshots and behavior requirements used as product-level input for independently authored TUI work;
 6. the current clean-room `origin/main` implementation plus installed public Pi `AgentSession`/TUI and Claude Agent SDK 0.3.234 declarations used for active-input and editor contracts.
