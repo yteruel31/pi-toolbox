@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createJevBackgroundHarness } from "../src/agents/jev-background.js";
+import { routeWithJev } from "../src/agents/jev.js";
 import type { HarnessActiveControl, SubagentHarness } from "../src/core/harness.js";
 import { RunManager } from "../src/core/run-manager.js";
 
@@ -109,6 +110,30 @@ describe("Jev background harness", () => {
     expect(transcript.join(" ")).toContain("backend=pi (explicit)");
     expect(transcript.join(" ")).toContain("model=openai/model (jev)");
     expect(transcript.join(" ")).toContain("thinking=high (saved-user)");
+  });
+
+  it("settles real route conflicts as failed, not pending, without starting either backend", async () => {
+    const started: string[] = [];
+    const resolveApiKey = vi.fn();
+    const harness = createJevBackgroundHarness({
+      task: "SECRET task", route, resolutionInput, piModels: [],
+      loadClaudeModels: async () => { throw new Error("SECRET catalogue failure"); },
+      resolveApiKey, routeJev: routeWithJev,
+      harnesses: { pi: backend("pi", started), claude: backend("claude", started) },
+    });
+    const manager = new RunManager();
+    const run = manager.spawn({ prompt: "task", harness, routing: { state: "pending" } });
+    await manager.wait([run.id]);
+    const checked = manager.check(run.id);
+    expect(checked.status).toBe("failed");
+    expect(checked.routing?.state).toBe("failed");
+    const restored = new RunManager({ restore: manager.snapshotState() });
+    expect(restored.check(run.id).routing?.state).toBe("failed");
+    expect(checked.resultPreview).toContain("No candidates were advertised");
+    expect(JSON.stringify(checked)).not.toContain("SECRET");
+    expect(checked.activity.some((entry) => entry.text.startsWith("Routing failed"))).toBe(true);
+    expect(started).toEqual([]);
+    expect(resolveApiKey).not.toHaveBeenCalled();
   });
 
   it("uses categorical warnings without leaking catalogue or routing errors", async () => {

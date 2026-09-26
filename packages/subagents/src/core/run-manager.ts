@@ -1077,7 +1077,7 @@ export class RunManager {
   }
 
   private normalizeRouting(value: RunRoutingDiagnostic | undefined): RunRoutingDiagnostic | undefined {
-    if (!value || !["pending", "resolved", "fallback"].includes(value.state)) return undefined;
+    if (!value || !["pending", "resolved", "fallback", "failed"].includes(value.state)) return undefined;
     const provenance = value.provenance && Object.fromEntries(
       Object.entries(value.provenance)
         .filter(([key]) => ["harness", "model", "thinking"].includes(key))

@@ -75,11 +75,63 @@ describe("Jev route selection", () => {
     expect(seen[0]).toEqual(expect.arrayContaining([["pi", "low"], ["pi", "max"], ["claude", "max"]]));
   });
 
+  it.each(["gpt-6-astra", "gpt-5.6-sol"])("routes the unit-implementer allowlist on available %s without overrides", async (id) => {
+    const profile = agent({ thinking: "low" }, ["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"]);
+    const original = route({ model: `openai-codex/${id}`, thinking: "low" });
+    const fetcher = vi.fn();
+    const resolveApiKey = vi.fn();
+    const result = await routeWithJev({
+      task: "task", route: original,
+      resolutionInput: resolution({ agent: profile }), tools: profile.tools,
+      piModels: [piModel(id)], claudeModels: [], resolveApiKey,
+    }, fetcher);
+    expect(result.route).toMatchObject({ harness: "pi", model: `openai-codex/${id}`, thinking: "low" });
+    expect(result.fallback).toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(resolveApiKey).not.toHaveBeenCalled();
+    expect(profile.tools).toContain("contact_supervisor");
+  });
+
   it("rejects tool and effort incompatibilities instead of unsafe fallback", async () => {
     const claude = [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: true, supportedEffortLevels: ["low" as const] }];
     await expect(routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { harness: "claude", model: "sonnet" } }), tools: ["bash"], piModels: [piModel("one")], claudeModels: claude, apiKey: "key" })).rejects.toBeInstanceOf(JevRoutingConflictError);
     await expect(routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { harness: "pi", model: "openai-codex/one" } }), tools: ["Read"], piModels: [piModel("one")], claudeModels: claude, apiKey: "key" })).rejects.toBeInstanceOf(JevRoutingConflictError);
     await expect(routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { harness: "claude", model: "sonnet", thinking: "max" } }), piModels: [], claudeModels: claude, apiKey: "key" })).rejects.toBeInstanceOf(JevRoutingConflictError);
+  });
+
+  it.each([
+    { name: "catalogue", models: [], explicit: { harness: "pi" as const }, tools: undefined, message: "No candidates were advertised" },
+    { name: "tool dialect", models: [piModel("one")], explicit: { harness: "pi" as const }, tools: ["Read", "SECRET_TOOL"], message: "another backend's native tool names" },
+    { name: "missing model", models: [piModel("one")], explicit: { harness: "pi" as const, model: "private/SECRET_MODEL" }, tools: undefined, message: "no unique match" },
+    { name: "ambiguous model", models: [piModel("one"), { ...piModel("one"), provider: "another" }], explicit: { model: "one" }, tools: undefined, message: "no unique match" },
+    { name: "effort", models: [{ ...piModel("one"), reasoning: false }], explicit: { model: "openai-codex/one", thinking: "high" as const }, tools: undefined, message: "thinking/effort is not advertised" },
+  ])("explains $name conflicts without leaking inputs or changing constraints", async ({ models, explicit, tools, message }) => {
+    const fetcher = vi.fn();
+    const resolveApiKey = vi.fn();
+    const input = { task: "SECRET_TASK", role: "SECRET_ROLE", route: route(),
+      resolutionInput: resolution({ explicit, agent: agent({ thinking: "low" }) }),
+      tools, piModels: models, claudeModels: [], resolveApiKey };
+    const before = structuredClone(input.resolutionInput);
+    let failure: unknown;
+    try { await routeWithJev(input, fetcher); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(JevRoutingConflictError);
+    expect((failure as Error).message).toContain(message);
+    expect((failure as Error).message).not.toContain("SECRET");
+    expect((failure as Error).message.length).toBeLessThan(600);
+    expect(input.resolutionInput).toEqual(before);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(resolveApiKey).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit model, harness and effort with extension tools in the allowlist", async () => {
+    const explicit = { harness: "pi" as const, model: "openai-codex/one", thinking: "high" as const };
+    const result = await routeWithJev({ task: "task", route: route(),
+      resolutionInput: resolution({ explicit, agent: agent({ thinking: "low" }) }),
+      tools: ["read", "powershell", "contact_supervisor", "subagent_spawn"],
+      piModels: [piModel("one"), piModel("two")], claudeModels: [],
+    }, vi.fn());
+    expect(result.route).toMatchObject({ ...explicit, provenance: { harness: "explicit", model: "explicit", thinking: "explicit" } });
+    expect(result.fallback).toBeUndefined();
   });
 
   it("keeps a valid original route on service failure", async () => {
