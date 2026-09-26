@@ -112,7 +112,7 @@ export interface RunMessagingState {
 
 /** Immutable public view of a tracked run. */
 export interface RunRoutingDiagnostic {
-  state: "pending" | "resolved" | "fallback";
+  state: "pending" | "resolved" | "fallback" | "failed";
   provenance?: Partial<Record<"harness" | "model" | "thinking", string>>;
   fallback?: string;
 }

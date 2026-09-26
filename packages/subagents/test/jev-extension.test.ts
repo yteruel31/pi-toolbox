@@ -35,7 +35,7 @@ async function fixture(options: { config?: { enabled: boolean }; scoped?: any[];
   const emit = async (name: string, event: unknown = {}) => { for (const fn of handlers.get(name) ?? []) await fn(event, ctx); };
   const spawn = (params: any, signal?: AbortSignal) => tools.get("subagent_spawn")!.execute("call", params, signal, undefined, ctx);
   await emit("session_start", { reason: "startup" });
-  return { ctx, emit, spawn, piHarness, claudeHarness, readJevConfig, setStored(value: any) { stored = value; } };
+  return { ctx, emit, spawn, tools, piHarness, claudeHarness, readJevConfig, setStored(value: any) { stored = value; } };
 }
 
 async function tick() { await new Promise<void>((resolve) => setImmediate(resolve)); }
@@ -83,6 +83,38 @@ describe("Jev extension wiring", () => {
     await f.spawn({ prompt: "route", agent: "fixed" }); await tick();
     expect(captured.piModels.map((item: any) => `${item.provider}/${item.id}`)).toEqual(["openai/a"]);
     expect(captured.resolutionInput.agent.defaults.model).toBe("openai/a");
+  });
+
+  it.each([false, true])("starts unit-implementer through the real router (saved route: %s)", async (saved) => {
+    const astra = { ...model("openai-codex", "gpt-6-astra"), reasoning: true };
+    const sol = { ...model("openai-codex", "gpt-5.6-sol"), reasoning: true };
+    const profileTools = ["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"];
+    const resolveJevKey = vi.fn();
+    const f = await fixture({ config: { enabled: true }, available: [astra, sol],
+      scoped: [{ model: astra, thinkingLevel: "off" }], dependencies: {
+        resolveJevKey,
+        createDiscovery: async () => ({ discover: async () => ({ agents: [{
+          name: "unit-implementer", description: "Work", systemPrompt: "Profile prompt",
+          defaults: { thinking: "low" }, tools: profileTools, source: { scope: "package", path: "/fixture/agent.md" },
+        }], warnings: [] }) }) as any,
+        createRoutingStore: () => ({ read: async (scope: string) => ({ routing: saved && scope === "user"
+          ? { agents: { "unit-implementer": { harness: "pi", model: "openai-codex/gpt-5.6-sol", thinking: "off" } } }
+          : undefined }) }) as any,
+      } });
+    f.ctx.model = astra;
+    const spawned = await f.spawn({ prompt: "task", agent: "unit-implementer" });
+    await tick();
+    expect(f.piHarness.requests).toHaveLength(1);
+    expect(f.piHarness.requests[0]).toMatchObject({
+      model: saved ? "openai-codex/gpt-5.6-sol" : "openai-codex/gpt-6-astra",
+      thinkingLevel: saved ? "off" : "low", tools: profileTools, systemPrompt: "Profile prompt",
+    });
+    expect(resolveJevKey).not.toHaveBeenCalled();
+    expect(f.claudeHarness.requests).toHaveLength(0);
+    const id = (spawned.details as any).snapshot.id;
+    const checked = await f.tools.get("subagent_check")!.execute("check", { id }, undefined, undefined, f.ctx);
+    expect(JSON.stringify(checked.details)).toContain('"state":"resolved"');
+    await f.emit("session_shutdown", { reason: "quit" });
   });
 
   it("returns before deferred routing resolves and cancellation prevents a late backend start", async () => {

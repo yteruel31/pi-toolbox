@@ -169,7 +169,7 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
   }
   const inferred = constraints.model ? inferHarness(constraints.model, input.claudeModels) : undefined;
   if (constraints.harness && inferred && constraints.harness !== inferred) {
-    throw new JevRoutingConflictError("The fixed harness and model are incompatible.");
+    throw new JevRoutingConflictError("The fixed harness and model are incompatible. Check the profile, saved routing, or explicit spawn overrides; neither constraint was changed.");
   }
   if (inferred && constraints.harness === undefined) {
     constraints.harness = inferred;
@@ -181,8 +181,11 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
     delete constraints.provenance.model;
   }
   let candidates = buildJevCandidates(input.piModels, input.claudeModels, constraints.harness ?? fixedHarness);
+  const catalogCount = candidates.length;
   if (input.tools) candidates = candidates.filter((item) => toolsCompatible(item.harness, input.tools!));
+  const toolCount = candidates.length;
   if (constraints.model) candidates = candidates.filter((item) => modelMatches(item, constraints.model!, input.piModels, input.claudeModels));
+  const modelCount = candidates.length;
   candidates = candidates.filter((item) => {
     const thinking = effectiveThinking(constraints, input.resolutionInput, item.harness);
     return thinking === undefined || thinkingMatches(item, thinking);
@@ -191,7 +194,16 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
     if (!input.resolutionInput && constraints.model && constraints.thinking !== undefined) {
       return { route: input.route, used: false };
     }
-    throw new JevRoutingConflictError("No compatible available route was found for the fixed routing constraints.");
+    // Categorical diagnostics only: never echo task, credentials, model IDs,
+    // tool names, catalogue descriptions, or raw discovery/provider errors.
+    const reason = catalogCount === 0
+      ? "No candidates were advertised for the constrained backend. Check its available model catalogue and the automatic model scope. Catalogue availability is not a quota check."
+      : toolCount === 0
+        ? "The tool allowlist uses another backend's native tool names. Check the profile tools and harness mapping."
+        : modelCount === 0
+          ? "The fixed model has no unique match in the available catalogue. Check the profile/saved/spawn model and use a provider-qualified Pi ID or a discovered Claude alias."
+          : "The requested thinking/effort is not advertised by the matching models. Check explicit, saved, and profile effort against runtime model capabilities.";
+    throw new JevRoutingConflictError(`No compatible available route was found for the fixed routing constraints. ${reason} No constraint was changed.`);
   }
 
   if (constraints.model && effectiveThinking(constraints, input.resolutionInput, candidates[0]!.harness) !== undefined) {
@@ -393,10 +405,14 @@ function thinkingMatches(candidate: JevCandidate, thinking: ThinkingLevel): bool
 }
 
 function toolsCompatible(harness: HarnessKind, tools: readonly string[]): boolean {
-  const known = harness === "claude"
+  // An allowlist restricts tools; it does not require every entry to exist.
+  // Pi intersects it with active child tools (parent extensions are disabled).
+  // Unknown extension names must not eliminate otherwise available models.
+  // Retain the cross-backend native-name guard without rewriting the allowlist.
+  const otherBackend = harness === "pi"
     ? new Set(["Read", "Grep", "Glob", "Edit", "Write", "Bash", "WebFetch", "WebSearch"])
-    : new Set(["read", "grep", "find", "ls", "bash", "edit", "write"]);
-  return tools.every((tool) => known.has(tool));
+    : new Set(["read", "grep", "find", "ls", "bash", "powershell", "edit", "write"]);
+  return tools.every((tool) => !otherBackend.has(tool));
 }
 
 function applyCandidate(route: ResolvedRoute, selected: JevCandidate, constraints: JevConstraints): ResolvedRoute {

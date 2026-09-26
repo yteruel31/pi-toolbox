@@ -60,7 +60,16 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
           signal: request.signal,
         }), request.signal);
       } catch (error) {
-        if (error instanceof JevRoutingConflictError) throw error;
+        if (error instanceof JevRoutingConflictError) {
+          request.reportRouting?.({
+            harness: input.route.harness,
+            model: input.route.model,
+            thinkingLevel: input.route.thinking,
+          }, { state: "failed", provenance: input.route.provenance });
+          request.reportProgress("Routing failed: incompatible available routes; see the run diagnostic.");
+          request.reportTranscript({ kind: "status", text: "Routing failed: incompatible available routes; see the run diagnostic." });
+          throw error;
+        }
         if (isAbort(error, request.signal)) throw abortError();
         result = { route: input.route, used: false, fallback: "Jev routing is unavailable; the configured route was used." };
       }
