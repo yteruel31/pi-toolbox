@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 import { truncateText } from "../shared/truncate.js";
 import { parseAgentMarkdown } from "./frontmatter.js";
+import { isRouteMode } from "./route-resolver.js";
 import { isNotFound, nodeFileSystem, type AgentFileSystem } from "./fs-seam.js";
 import {
   AGENT_NAME_PATTERN,
@@ -560,7 +561,7 @@ function validateAgent(
   const diagnostics: string[] = [];
   const harness = scalarValue(frontmatter.harness)?.trim();
   if (harness) {
-    if (!HARNESSES.has(harness)) return { ok: false, reason: "invalid harness default" };
+    if (!HARNESSES.has(harness) && !isRouteMode(harness)) return { ok: false, reason: "invalid harness default" };
     defaults.harness = harness as AgentDefinition["defaults"]["harness"];
   }
   const model = scalarValue(frontmatter.model)?.trim();
@@ -570,12 +571,12 @@ function validateAgent(
   }
   const thinking = scalarValue(frontmatter.thinking)?.trim();
   if (thinking) {
-    if (!THINKING_LEVELS.has(thinking)) return { ok: false, reason: "invalid thinking default" };
+    if (!THINKING_LEVELS.has(thinking) && !isRouteMode(thinking)) return { ok: false, reason: "invalid thinking default" };
     defaults.thinking = thinking as AgentDefinition["defaults"]["thinking"];
   }
   if (Object.prototype.hasOwnProperty.call(frontmatter, "effort")) {
     const effort = scalarValue(frontmatter.effort)?.trim();
-    if (effort && CLAUDE_EFFORT_LEVELS.has(effort)) {
+    if (effort && (CLAUDE_EFFORT_LEVELS.has(effort) || isRouteMode(effort))) {
       defaults.effort = effort as AgentDefinition["defaults"]["effort"];
     } else {
       diagnostics.push("ignored invalid Claude effort default");

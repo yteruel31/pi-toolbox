@@ -35,7 +35,7 @@ describe("Jev route selection", () => {
   it("preserves compatible profile and resolved model inherit without resolving credentials", async () => {
     const fetcher = vi.fn();
     const resolveApiKey = vi.fn(async () => "key");
-    const inherited = route({ harness: "claude", model: undefined, provenance: { harness: "agent-default", model: "agent-default", thinking: "parent" } });
+    const inherited = route({ harness: "claude", model: undefined, thinking: undefined, provenance: { harness: "agent-default", model: "agent-default", thinking: "parent" } });
     const raw = await routeWithJev({ task: "task", route: inherited, resolutionInput: resolution({ agent: agent({ harness: "claude", model: "inherit" }) }), tools: ["Read"], piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], resolveApiKey }, fetcher);
     const resolved = await routeWithJev({ task: "task", route: inherited, tools: ["Read"], piModels: [piModel("one")], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: false }], resolveApiKey }, fetcher);
     expect(raw.route).toEqual(inherited);
@@ -73,6 +73,27 @@ describe("Jev route selection", () => {
     expect(pi.route).toMatchObject({ harness: "pi", provenance: { thinking: "jev" } });
     expect(claude.route).toMatchObject({ harness: "claude", thinking: "max", provenance: { thinking: "agent-default" } });
     expect(seen[0]).toEqual(expect.arrayContaining([["pi", "low"], ["pi", "max"], ["claude", "max"]]));
+  });
+
+  it("keeps resolved-route inherited thinking backend-dependent without raw input", async () => {
+    const inherited = route({ model: "openai-codex/one", thinking: "high", provenance: { harness: "parent", model: "parent", thinking: "saved-user" }, modes: { thinking: "inherit" } });
+    const seen: Array<[string, string | null]> = [];
+    const choose = (harness: "pi" | "claude") => vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const keys = Object.keys(JSON.parse(String(init?.body)).questions.route.criteria);
+      const decoded = keys.map((key) => JSON.parse(Buffer.from(key, "base64url").toString()) as [string, string, string | null]);
+      seen.push(...decoded.map(([candidateHarness, , thinking]) => [candidateHarness, thinking] as [string, string | null]));
+      const choice = keys[decoded.findIndex(([candidateHarness]) => candidateHarness === harness)]!;
+      return new Response(JSON.stringify({ answers: { route: { type: "choice", choice, confidence: 1, probabilities: Object.fromEntries(keys.map((key) => [key, key === choice ? 1 : 0])) } } }));
+    });
+    const common = { task: "task", route: inherited, piModels: [piModel("one", { low: "low", high: "high" }), piModel("two", { low: "low", high: "high" })], claudeModels: [{ value: "sonnet", displayName: "Sonnet", description: "", supportsEffort: true, supportedEffortLevels: ["low" as const, "high" as const] }], apiKey: "key" };
+    const claude = await routeWithJev(common, choose("claude"));
+    expect(claude.used).toBe(true);
+    expect(claude.route).toMatchObject({ harness: "claude", model: "sonnet", thinking: undefined, provenance: { thinking: "saved-user" } });
+    expect(seen).toEqual(expect.arrayContaining([["pi", "high"], ["claude", null]]));
+    expect(seen.some(([harness, thinking]) => harness === "claude" && thinking !== null)).toBe(false);
+    expect(seen.some(([harness, thinking]) => harness === "pi" && thinking !== "high")).toBe(false);
+    const pi = await routeWithJev(common, choose("pi"));
+    expect(pi.route).toMatchObject({ harness: "pi", thinking: "high", provenance: { thinking: "saved-user" } });
   });
 
   it.each(["gpt-6-astra", "gpt-5.6-sol"])("routes the unit-implementer allowlist on available %s without overrides", async (id) => {

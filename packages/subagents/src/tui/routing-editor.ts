@@ -1,6 +1,7 @@
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 
-import type { RoutingEntry } from "../agents/types.js";
+import { isRouteMode } from "../agents/route-resolver.js";
+import type { RouteMode, RoutingEntry } from "../agents/types.js";
 import { sanitizeTerminalText } from "../shared/truncate.js";
 import type { HarnessKind, ThinkingLevel } from "../shared/types.js";
 import type { KeyHint } from "./keys.js";
@@ -8,9 +9,11 @@ import type { RoutingEditSession } from "./routing-view.js";
 
 export const ROUTING_EDITOR_FIELDS = ["harness", "model", "thinking"] as const;
 export type RoutingEditorField = (typeof ROUTING_EDITOR_FIELDS)[number];
-export type HarnessChoice = "inherit" | HarnessKind;
+/** `unset` omits the field so the next routing layer applies; modes are saved verbatim. */
+export type HarnessChoice = "unset" | RouteMode | HarnessKind;
 export type ThinkingChoice =
-  | "inherit"
+  | "unset"
+  | RouteMode
   | "off"
   | "minimal"
   | "low"
@@ -37,12 +40,24 @@ export interface RoutingModelCatalog {
 }
 
 const EMPTY_MODEL_CATALOG: RoutingModelCatalog = { pi: [], claude: [] };
-const INHERIT_MODEL_CHOICE: RoutingModelChoice = {
+const UNSET_MODEL_CHOICE: RoutingModelChoice = {
   value: "",
-  label: "inherit",
-  description: "Use the model from the next matching route or agent default.",
+  label: "unset",
+  description: "Not set here: use the next layer (agent default, then parent or SDK default).",
 };
-const HARNESS_CHOICES: readonly HarnessChoice[] = ["inherit", "pi", "claude"];
+const MODE_MODEL_CHOICES: readonly RoutingModelChoice[] = [
+  {
+    value: "inherit",
+    label: "inherit",
+    description: "Parent session model on Pi; Claude SDK default model on Claude.",
+  },
+  {
+    value: "auto",
+    label: "auto",
+    description: "Jev chooses the model; resolves as inherit when Jev is off or unavailable.",
+  },
+];
+const HARNESS_CHOICES: readonly HarnessChoice[] = ["unset", "inherit", "auto", "pi", "claude"];
 export const ROUTING_EDITOR_KEY_HINTS: readonly KeyHint[] = [
   { key: "↑↓", description: "field" },
   { key: "←→", description: "change" },
@@ -51,7 +66,9 @@ export const ROUTING_EDITOR_KEY_HINTS: readonly KeyHint[] = [
 ];
 
 const THINKING_CHOICES: readonly ThinkingChoice[] = [
+  "unset",
   "inherit",
+  "auto",
   "off",
   "minimal",
   "low",
@@ -65,7 +82,7 @@ export interface RoutingEditorState {
   session: RoutingEditSession;
   selectedField: RoutingEditorField;
   harness: HarnessChoice;
-  /** Harness whose catalogue applies while harness itself is inherited. */
+  /** Harness whose catalogue applies while harness itself is unset or `auto`. */
   effectiveHarness: HarnessKind;
   model: string;
   modelByHarness: Record<HarnessKind, string>;
@@ -87,9 +104,11 @@ export function createRoutingEditorState(
   session: RoutingEditSession,
   modelCatalog: RoutingModelCatalog = EMPTY_MODEL_CATALOG,
 ): RoutingEditorState {
+  const current = session.current.harness;
+  const harness: HarnessChoice = current ?? "unset";
   const effectiveHarness =
-    session.effectiveHarness ?? session.current.harness ?? "pi";
-  const activeHarness = session.current.harness ?? effectiveHarness;
+    session.effectiveHarness ?? (current === "pi" || current === "claude" ? current : "pi");
+  const activeHarness = modelHarnessFor(harness, effectiveHarness);
   const model =
     typeof session.current.model === "string" && session.current.model.trim()
       ? session.current.model.trim()
@@ -97,7 +116,7 @@ export function createRoutingEditorState(
   return {
     session,
     selectedField: "harness",
-    harness: session.current.harness ?? "inherit",
+    harness,
     effectiveHarness,
     model,
     modelByHarness: {
@@ -105,7 +124,7 @@ export function createRoutingEditorState(
       claude: activeHarness === "claude" ? model : "",
     },
     modelCatalog,
-    thinking: session.current.thinking ?? "inherit",
+    thinking: session.current.thinking ?? "unset",
     thinkingFromModel: false,
   };
 }
@@ -144,29 +163,50 @@ export function reduceRoutingEditorInput(
 
 export function routingEntryFromEditor(state: RoutingEditorState): RoutingEntry {
   return {
-    ...(state.harness === "pi" || state.harness === "claude"
-      ? { harness: state.harness }
-      : {}),
+    ...(state.harness !== "unset" ? { harness: state.harness } : {}),
     ...(state.model ? { model: state.model } : {}),
-    ...(state.thinking !== "inherit" ? { thinking: state.thinking } : {}),
+    ...(state.thinking !== "unset" ? { thinking: state.thinking } : {}),
   };
 }
 
 /** Catalogue used by the current explicit harness, or the resolved harness. */
 export function modelHarnessForEditor(state: RoutingEditorState): HarnessKind {
-  return state.harness === "inherit" ? state.effectiveHarness : state.harness;
+  return modelHarnessFor(state.harness, state.effectiveHarness);
+}
+
+/** Short explanation of a harness or thinking choice for the editor panel. */
+export function routingChoiceDescription(
+  field: "harness" | "thinking",
+  value: HarnessChoice | ThinkingChoice,
+): string | undefined {
+  if (value === "unset") return "Not set here: the next layer applies (agent default, then parent or SDK default).";
+  if (value === "auto") return "Jev chooses this field; resolves as inherit when Jev is off or unavailable.";
+  if (value !== "inherit") return undefined;
+  return field === "harness"
+    ? "Parent backend (Pi)."
+    : "Parent thinking on Pi; Claude SDK default effort on Claude.";
+}
+
+function modelHarnessFor(harness: HarnessChoice, effectiveHarness: HarnessKind): HarnessKind {
+  if (harness === "pi" || harness === "claude") return harness;
+  // Harness `inherit` is the parent backend; `auto` and unset use the resolved fallback.
+  return harness === "inherit" ? "pi" : effectiveHarness;
 }
 
 /** Available choices plus any no-longer-listed saved value. */
 export function routingModelChoices(
   state: RoutingEditorState,
 ): readonly RoutingModelChoice[] {
-  const available = state.modelCatalog[modelHarnessForEditor(state)];
+  // Exact reserved values are modes, never catalogue literals.
+  const available = state.modelCatalog[modelHarnessForEditor(state)]
+    .filter((choice) => !isRouteMode(choice.value));
+  const prefix = [UNSET_MODEL_CHOICE, ...MODE_MODEL_CHOICES];
   if (
     state.model === "" ||
+    isRouteMode(state.model) ||
     available.some((choice) => choice.value === state.model)
   ) {
-    return [INHERIT_MODEL_CHOICE, ...available];
+    return [...prefix, ...available];
   }
   const aliasMatches = available.filter((choice) =>
     choice.aliases?.includes(state.model),
@@ -174,7 +214,7 @@ export function routingModelChoices(
   if (aliasMatches.length === 1) {
     const matched = aliasMatches[0]!;
     return [
-      INHERIT_MODEL_CHOICE,
+      ...prefix,
       {
         ...matched,
         value: state.model,
@@ -188,7 +228,7 @@ export function routingModelChoices(
     ];
   }
   return [
-    INHERIT_MODEL_CHOICE,
+    ...prefix,
     {
       value: state.model,
       label: `${routingModelDisplayValue(state.model)} (saved)`,
@@ -212,7 +252,7 @@ export function selectedRoutingModelChoice(
 ): RoutingModelChoice {
   return (
     routingModelChoices(state).find((choice) => choice.value === state.model) ??
-    INHERIT_MODEL_CHOICE
+    UNSET_MODEL_CHOICE
   );
 }
 
@@ -225,15 +265,18 @@ function moveField(state: RoutingEditorState, delta: number): RoutingEditorState
 function cycleHarness(state: RoutingEditorState, delta: number): RoutingEditorState {
   const current = HARNESS_CHOICES.indexOf(state.harness);
   const harness =
-    HARNESS_CHOICES[modulo(current + delta, HARNESS_CHOICES.length)] ?? "inherit";
+    HARNESS_CHOICES[modulo(current + delta, HARNESS_CHOICES.length)] ?? "unset";
   const previousModelHarness = modelHarnessForEditor(state);
-  const nextModelHarness = harness === "inherit" ? state.effectiveHarness : harness;
+  const nextModelHarness = modelHarnessFor(harness, state.effectiveHarness);
   const modelByHarness = {
     ...state.modelByHarness,
     [previousModelHarness]: state.model,
   };
   let model = modelByHarness[nextModelHarness];
-  if (
+  // Model modes are backend-independent and survive harness changes.
+  if (isRouteMode(state.model)) {
+    model = state.model;
+  } else if (
     !model &&
     state.model &&
     catalogueChoiceForValue(
@@ -267,7 +310,7 @@ function cycleModel(state: RoutingEditorState, delta: number): RoutingEditorStat
     choices.findIndex((choice) => choice.value === state.model),
   );
   const choice = choices[modulo(current + delta, choices.length)] ??
-    INHERIT_MODEL_CHOICE;
+    UNSET_MODEL_CHOICE;
   const harness = modelHarnessForEditor(state);
   return {
     ...state,
@@ -281,7 +324,7 @@ function catalogueChoiceForValue(
   choices: readonly RoutingModelChoice[],
   value: string,
 ): RoutingModelChoice | undefined {
-  if (!value) return undefined;
+  if (!value || isRouteMode(value)) return undefined;
   const exact = choices.find((choice) => choice.value === value);
   if (exact) return exact;
   const aliases = choices.filter((choice) => choice.aliases?.includes(value));
@@ -296,7 +339,7 @@ function thinkingAfterModelChoice(
     return { thinking: choice.thinking, thinkingFromModel: true };
   }
   if (state.thinkingFromModel) {
-    return { thinking: "inherit", thinkingFromModel: false };
+    return { thinking: "unset", thinkingFromModel: false };
   }
   return {
     thinking: state.thinking,
@@ -308,7 +351,7 @@ function cycleThinking(state: RoutingEditorState, delta: number): RoutingEditorS
   const current = THINKING_CHOICES.indexOf(state.thinking);
   return {
     ...state,
-    thinking: THINKING_CHOICES[modulo(current + delta, THINKING_CHOICES.length)] ?? "inherit",
+    thinking: THINKING_CHOICES[modulo(current + delta, THINKING_CHOICES.length)] ?? "unset",
     thinkingFromModel: false,
   };
 }

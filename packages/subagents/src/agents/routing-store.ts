@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { truncateText } from "../shared/truncate.js";
 import { isAlreadyExists, isNotFound, nodeFileSystem, type AgentFileSystem } from "./fs-seam.js";
+import { isRouteMode } from "./route-resolver.js";
 import {
   AGENT_NAME_PATTERN,
   MAX_AGENT_NAME_CHARS,
@@ -266,7 +267,7 @@ function parseRouting(value: unknown): RoutingParseResult {
       return { ok: false, reason: `Routing agent name is invalid: ${bounded(name)}` };
     }
     if (!isRecord(rawEntry)) return { ok: false, reason: `Routing entry for ${name} must be an object` };
-    if (rawEntry.harness !== undefined && !HARNESSES.has(rawEntry.harness as string)) {
+    if (rawEntry.harness !== undefined && !HARNESSES.has(rawEntry.harness as string) && !isRouteMode(rawEntry.harness)) {
       return { ok: false, reason: `Routing entry for ${name} has an invalid harness` };
     }
     if (rawEntry.model !== undefined) {
@@ -278,7 +279,7 @@ function parseRouting(value: unknown): RoutingParseResult {
         return { ok: false, reason: `Routing entry for ${name} has an invalid model` };
       }
     }
-    if (rawEntry.thinking !== undefined && !THINKING_LEVELS.has(rawEntry.thinking as string)) {
+    if (rawEntry.thinking !== undefined && !THINKING_LEVELS.has(rawEntry.thinking as string) && !isRouteMode(rawEntry.thinking)) {
       return { ok: false, reason: `Routing entry for ${name} has an invalid thinking level` };
     }
     agents[name] = { ...rawEntry } as RoutingEntry;

@@ -11,12 +11,13 @@ import type {
 import type { KeyHint } from "./keys.js";
 import {
   modelHarnessForEditor,
+  routingChoiceDescription,
   routingModelDisplayValue,
   selectedRoutingModelChoice,
   type RoutingEditorField,
   type RoutingEditorState,
 } from "./routing-editor.js";
-import type { RoutingAgentRow, RoutingViewState } from "./routing-view.js";
+import { routeFieldLabel, type RoutingAgentRow, type RoutingViewState } from "./routing-view.js";
 import { formatRunModel } from "../shared/run-display.js";
 import { formatRunIdentity } from "../shared/run-identity.js";
 import type { RunsViewState } from "./runs-view.js";
@@ -351,7 +352,7 @@ function renderRoutingEditor(
       theme.fg("accent", `${scope} MAPPING`),
       width,
     ),
-    padAnsi(theme.fg("dim", "Set only the overrides this agent needs. Inherited values follow the parent session."), width),
+    padAnsi(theme.fg("dim", "Set only the overrides this agent needs. Unset fields use the next layer."), width),
     sectionLabel(theme, "ROUTE OVERRIDES", width),
     ...editorField(
       theme,
@@ -359,7 +360,7 @@ function renderRoutingEditor(
       "01",
       "HARNESS",
       choiceValue(theme, state.harness),
-      "Execution environment: Pi child session or Claude Agent SDK",
+      routingChoiceDescription("harness", state.harness) ?? "Execution environment: Pi child session or Claude Agent SDK",
       state.selectedField,
       width,
     ),
@@ -379,7 +380,7 @@ function renderRoutingEditor(
       "03",
       "THINKING",
       choiceValue(theme, state.thinking),
-      "Reasoning effort override",
+      routingChoiceDescription("thinking", state.thinking) ?? "Reasoning effort override",
       state.selectedField,
       width,
     ),
@@ -413,8 +414,7 @@ function editorField(
 }
 
 function choiceValue(theme: Theme, value: string): string {
-  const label = value === "inherit" ? "INHERIT" : value.toUpperCase();
-  return `${theme.fg("dim", "‹")} ${theme.fg(value === "inherit" ? "muted" : "accent", label)} ${theme.fg("dim", "›")}`;
+  return `${theme.fg("dim", "‹")} ${theme.fg(value === "unset" ? "muted" : "accent", value.toUpperCase())} ${theme.fg("dim", "›")}`;
 }
 
 function modelChoiceValue(
@@ -429,7 +429,7 @@ function modelChoiceValue(
 function routePreview(theme: Theme, state: RoutingEditorState): string {
   const parts = [
     `harness=${state.harness}`,
-    `model=${state.model ? routingModelDisplayValue(state.model) : "inherit"}`,
+    `model=${state.model ? routingModelDisplayValue(state.model) : "unset"}`,
     `thinking=${state.thinking}`,
   ];
   return `  ${theme.fg("muted", parts.join("  ·  "))}`;
@@ -502,10 +502,10 @@ function routingRow(
   const name = theme.fg("text", row.name);
   const harness = theme.fg(row.route.harness === "claude" ? "accent" : "muted", row.route.harness.toUpperCase());
   const first = columns(`${marker} ${mapped} ${name}`, harness, width);
-  const routeModel = row.route.model
-    ? routingModelDisplayValue(row.route.model)
-    : "parent model";
-  const route = `${routeModel}  ·  ${row.route.thinking ?? "parent thinking"}`;
+  const fallback = row.route.harness === "claude" ? "SDK default" : "parent";
+  const model = routeFieldLabel(row.route, "model");
+  const thinking = routeFieldLabel(row.route, "thinking");
+  const route = `${model === "default" ? `${fallback} model` : model}  ·  ${thinking === "default" ? `${fallback} thinking` : thinking}`;
   const provenance = `H:${sourceLabel(row.route.provenance.harness)} M:${sourceLabel(row.route.provenance.model)} T:${sourceLabel(row.route.provenance.thinking)}`;
   const second = columns(
     `    ${theme.fg("muted", row.definitionScope)}${theme.fg("dim", "  ·  ")}${theme.fg("text", route)}`,

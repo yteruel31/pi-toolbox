@@ -102,9 +102,14 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
 }
 
 function formatResolvedRoute(route: JevRouteResult["route"]): string {
-  const thinking = route.thinking ?? "default";
-  const model = route.model ?? "default";
-  return `Routing resolved: backend=${route.harness} (${route.provenance.harness}); model=${model} (${route.provenance.model}); thinking=${thinking} (${route.provenance.thinking}).`;
+  const field = (name: "harness" | "model" | "thinking", value: string): string => {
+    const mode = route.modes?.[name];
+    const note = mode === "auto" && route.provenance[name] !== "jev"
+      ? ", auto resolved as inherit"
+      : mode === "inherit" ? ", inherit" : "";
+    return `${value} (${route.provenance[name]}${note})`;
+  };
+  return `Routing resolved: backend=${field("harness", route.harness)}; model=${field("model", route.model ?? "default")}; thinking=${field("thinking", route.thinking ?? "default")}.`;
 }
 
 function abortError(): DOMException { return new DOMException("Aborted", "AbortError"); }

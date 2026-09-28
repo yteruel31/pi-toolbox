@@ -399,7 +399,8 @@ describe("Claude profile defaults integration", () => {
     const catalogResult = await execute(fixture.runtime, "subagent_agents", {}, fixture.ctx);
     const catalog = catalogPayload(catalogResult);
     expect(catalog.agents[0]).not.toHaveProperty("model");
-    expect((catalogResult.content[0] as { text: string }).text).not.toContain('"model"');
+    expect(catalog.agents[0]?.modes).toEqual({ model: "inherit" });
+    expect((catalogResult.content[0] as { text: string }).text).not.toContain("fake/parent");
     const spawned = await execute(fixture.runtime, "subagent_spawn", {
       agent: "claude-defaults", prompt: "Use SDK model selection",
     }, fixture.ctx);
@@ -409,6 +410,66 @@ describe("Claude profile defaults integration", () => {
     } });
     expect(fixture.claudeHarness.requests[0]?.model).toBeUndefined();
     expect(fixture.ctx.model).toMatchObject({ provider: "fake", id: "parent" });
+  });
+});
+
+describe("reserved routing modes integration", () => {
+  it("resolves saved auto and inherit over profile literals on Claude without sending literals", async () => {
+    const fixture = await claudeDefaultsFixture({
+      frontmatter: ["harness: claude", "model: sonnet", "effort: high"],
+      userRouting: { model: "auto", thinking: "inherit" },
+    });
+    const catalog = catalogPayload(await execute(fixture.runtime, "subagent_agents", {}, fixture.ctx));
+    expect(catalog.agents[0]).toMatchObject({ harness: "claude", modes: { model: "auto", thinking: "inherit" } });
+    expect(catalog.agents[0]).not.toHaveProperty("model");
+    const spawned = await execute(fixture.runtime, "subagent_spawn", { agent: "claude-defaults", prompt: "Use SDK defaults" }, fixture.ctx);
+    expect(spawned.details).toMatchObject({ route: { harness: "claude", model: undefined, thinking: undefined, provenance: { model: "saved-user", thinking: "saved-user" } } });
+    const request = fixture.claudeHarness.requests[0]!;
+    expect(request).toMatchObject({ model: undefined, thinkingLevel: undefined });
+    const options = buildClaudeOptions(request, new AbortController());
+    expect(options).not.toHaveProperty("model");
+    expect(options).not.toHaveProperty("effort");
+  });
+
+  it("inherits the parent Pi model and thinking for explicit modes", async () => {
+    const fixture = await claudeDefaultsFixture({ frontmatter: ["harness: pi", "model: fake/other", "thinking: high"] });
+    await execute(fixture.runtime, "subagent_spawn", {
+      agent: "claude-defaults", prompt: "Inherit", harness: "auto", model: "inherit", reasoning_effort: "auto",
+    }, fixture.ctx);
+    expect(fixture.piHarness.requests[0]).toMatchObject({ model: "fake/parent", thinkingLevel: "medium" });
+    await execute(fixture.runtime, "subagent_spawn", {
+      agent: "claude-defaults", prompt: "Literal", model: "openrouter/auto",
+    }, fixture.ctx);
+    expect(fixture.piHarness.requests[1]).toMatchObject({ model: "openrouter/auto", thinkingLevel: "high" });
+    expect(fixture.claudeHarness.requests).toHaveLength(0);
+  });
+
+  it.each([true, false])("applies project harness inherit only when trusted (%s)", async (projectTrusted) => {
+    const fixture = await claudeDefaultsFixture({
+      frontmatter: ["harness: claude"],
+      projectRouting: { harness: "inherit", model: "auto" },
+      projectTrusted,
+    });
+    const catalog = catalogPayload(await execute(fixture.runtime, "subagent_agents", {}, fixture.ctx));
+    if (!projectTrusted) {
+      expect(catalog.agents[0]).toEqual(expect.objectContaining({ harness: "claude" }));
+      expect(catalog.agents[0]).not.toHaveProperty("modes");
+      expect(catalog.agents[0]).not.toHaveProperty("model");
+      return;
+    }
+    expect(catalog.agents[0]).toMatchObject({ harness: "pi", model: "fake/parent", modes: { harness: "inherit", model: "auto" } });
+    await execute(fixture.runtime, "subagent_spawn", { agent: "claude-defaults", prompt: "Route" }, fixture.ctx);
+    expect(fixture.piHarness.requests[0]).toMatchObject({ model: "fake/parent", thinkingLevel: "medium" });
+    expect(fixture.claudeHarness.requests).toHaveLength(0);
+  });
+
+  it("advertises reserved modes in the spawn schema", () => {
+    const runtime = fakePi();
+    registerExtension(runtime);
+    const properties = (runtime.tools.get("subagent_spawn")!.parameters as TObject).properties as Record<string, { enum?: string[]; anyOf?: Array<{ const?: string }> }>;
+    const values = (schema: { enum?: string[]; anyOf?: Array<{ const?: string }> }) => schema.enum ?? schema.anyOf?.map((item) => item.const);
+    expect(values(properties.harness!)).toEqual(["pi", "claude", "auto", "inherit"]);
+    expect(values(properties.reasoning_effort!)).toEqual(expect.arrayContaining(["auto", "inherit", "high"]));
   });
 });
 

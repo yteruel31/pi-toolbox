@@ -260,7 +260,25 @@ describe("routing entry and rendering contracts", () => {
         model: "agent-default",
         thinking: "parent",
       },
-    })).toBe("claude (agent) · inherit (agent) · inherit (parent)");
+    })).toBe("claude (agent) · default (agent) · default (parent)");
+    expect(formatRouteSummary({
+      harness: "claude",
+      model: undefined,
+      thinking: undefined,
+      provenance: {
+        harness: "agent-default",
+        model: "agent-default",
+        thinking: "saved-user",
+      },
+      modes: { model: "inherit", thinking: "auto" },
+    })).toBe("claude (agent) · inherit (agent) · auto (user)");
+    expect(formatRouteSummary({
+      harness: "pi",
+      model: "openai/gpt",
+      thinking: "high",
+      provenance: { harness: "jev", model: "jev", thinking: "jev" },
+      modes: { harness: "auto", model: "auto", thinking: "auto" },
+    })).toBe("pi (jev) · openai/gpt (jev) · high (jev)");
   });
 
   it("keeps thinking as the sole UI and saved-config effort field", () => {

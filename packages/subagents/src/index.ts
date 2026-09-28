@@ -164,12 +164,15 @@ export type {
 export {
   DefaultRouteResolver,
   FileRoutingStore,
+  ROUTE_MODES,
+  isRouteMode,
   routeResolver,
 } from "./agents/index.js";
 export type {
   FileRoutingStoreOptions,
   ResolvedRoute,
   RouteFieldProvenance,
+  RouteMode,
   RouteResolutionInput,
   RouteResolver,
 } from "./agents/index.js";
