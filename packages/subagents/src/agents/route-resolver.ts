@@ -16,6 +16,18 @@ export function isRouteMode(value: unknown): value is RouteMode {
 }
 
 /**
+ * Boundary normalization for a configured model value, matching profile
+ * frontmatter: surrounding whitespace is dropped before mode detection, while
+ * case and qualified ids such as `openrouter/auto` stay literal. Undefined for
+ * a non-string or blank value.
+ */
+export function normalizeRouteModel(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+/**
  * Outcome of walking one field's layers from highest to lowest precedence.
  * `default` means no layer set the field, so it falls to parent/backend defaults.
  */

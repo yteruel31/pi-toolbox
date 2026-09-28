@@ -7,6 +7,7 @@ export {
   inheritedModel,
   inheritedThinking,
   isRouteMode,
+  normalizeRouteModel,
   resolveHarnessChoice,
   resolveModelChoice,
   resolveThinkingChoice,

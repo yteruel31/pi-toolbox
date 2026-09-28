@@ -500,7 +500,9 @@ function routingRow(
   const marker = selected ? theme.fg("accent", "▸") : " ";
   const mapped = theme.fg(saved ? "accent" : "dim", saved ? "◆" : "·");
   const name = theme.fg("text", row.name);
-  const harness = theme.fg(row.route.harness === "claude" ? "accent" : "muted", row.route.harness.toUpperCase());
+  // An unresolved `auto`/`inherit` harness shows its mode, like model and thinking.
+  const harnessLabel = routeFieldLabel(row.route, "harness");
+  const harness = theme.fg(harnessLabel === "claude" ? "accent" : "muted", harnessLabel.toUpperCase());
   const first = columns(`${marker} ${mapped} ${name}`, harness, width);
   const fallback = row.route.harness === "claude" ? "SDK default" : "parent";
   const model = routeFieldLabel(row.route, "model");

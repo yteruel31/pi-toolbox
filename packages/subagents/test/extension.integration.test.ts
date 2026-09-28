@@ -538,21 +538,27 @@ describe("spawn profile selection", () => {
   it("preserves explicit routing overrides with a profile and a generic title", async () => {
     const { runtime, ctx, piHarness, claudeHarness, profile } = await routedFixture();
     const named = await execute(runtime, "subagent_spawn", {
-      agent: profile, name: "Explicit Pi review", prompt: "Review", harness: "pi",
-      model: "fake/override", reasoning_effort: "low",
+      agent: profile, name: "Explicit Claude review", prompt: "Review", harness: "claude",
+      model: "opus", reasoning_effort: "low",
     }, ctx);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(named.details).toMatchObject({ route: {
-      harness: "pi", model: "fake/override", thinking: "low",
+      harness: "claude", model: "opus", thinking: "low",
       provenance: { harness: "explicit", model: "explicit", thinking: "explicit" },
     } });
-    expect(piHarness.requests[0]).toMatchObject({ model: "fake/override", thinkingLevel: "low" });
+    expect(claudeHarness.requests[0]).toMatchObject({ model: "opus", thinkingLevel: "low", tools: ["Read", "Grep"] });
+    // The profile's Claude-native tools cannot run on Pi: reject before starting.
+    await expect(execute(runtime, "subagent_spawn", {
+      agent: profile, name: "Explicit Pi review", prompt: "Review", harness: "pi",
+      model: "fake/override", reasoning_effort: "low",
+    }, ctx)).rejects.toThrow("another backend's native tool names");
+    expect(piHarness.requests).toHaveLength(0);
     const generic = await execute(runtime, "subagent_spawn", {
       name: "Explicit Claude task", prompt: "Inspect", harness: "claude",
       model: "haiku", reasoning_effort: "medium",
     }, ctx);
     expect(generic.details).toMatchObject({ route: { harness: "claude", model: "haiku", thinking: "medium" } });
-    expect(claudeHarness.requests[0]).toMatchObject({ model: "haiku", thinkingLevel: "medium", systemPrompt: undefined });
+    expect(claudeHarness.requests[1]).toMatchObject({ model: "haiku", thinkingLevel: "medium", systemPrompt: undefined });
     await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
   });
 
@@ -875,20 +881,14 @@ describe("Pi extension composition", () => {
       "Custom review (reviewer)",
     );
 
-    await execute(runtime, "subagent_spawn", {
+    // Pi-native profile tools cannot run on Claude: reject before starting.
+    await expect(execute(runtime, "subagent_spawn", {
       prompt: "review with claude",
       agent: "reviewer",
       harness: "claude",
-    }, ctx);
+    }, ctx)).rejects.toThrow("another backend's native tool names");
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(claudeHarness.requests[0]).toMatchObject({
-      prompt: "review with claude",
-      systemPrompt:
-        "Be exact and cite files.\n\n<skill name=\"code-review\">Use the checklist.</skill>",
-      tools: ["read", "grep", "find", "ls"],
-      model: "fake/routed",
-      thinkingLevel: "high",
-    });
+    expect(claudeHarness.requests).toHaveLength(0);
   });
 
   it("restores valid legacy version-1 state without profile metadata", async () => {
