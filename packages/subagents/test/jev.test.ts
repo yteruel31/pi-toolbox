@@ -191,6 +191,69 @@ describe("Jev route selection", () => {
     await expect(routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { model: "other/sonnet" } }), piModels: [], claudeModels, apiKey: "key" }, vi.fn())).rejects.toBeInstanceOf(JevRoutingConflictError);
   });
 
+  describe("fixed Claude model missing from the discovered catalogue", () => {
+    // Real discovery shape: both aliases resolve to the long-context identity only.
+    const discovered = [
+      { value: "default", resolvedModel: "claude-opus-5-5[1m]", displayName: "Default", description: "", supportsEffort: true, supportedEffortLevels: ["low" as const, "high" as const] },
+      { value: "opus[1m]", resolvedModel: "claude-opus-5-5[1m]", displayName: "Opus", description: "", supportsEffort: true, supportedEffortLevels: ["low" as const, "high" as const] },
+      { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", description: "", supportsEffort: true, supportedEffortLevels: ["low" as const, "high" as const] },
+    ];
+    const claudeTools = ["Read", "Grep", "Bash", "contact_supervisor"];
+
+    it.each([
+      { name: "profile model and effort", input: { agent: agent({ model: "claude-opus-5-5", effort: "high" }, claudeTools) }, thinking: "high", provenance: { model: "agent-default", thinking: "agent-default" } },
+      { name: "explicit model without effort", input: { explicit: { model: "claude-opus-5-5" } }, thinking: undefined, provenance: { model: "explicit", thinking: "parent" } },
+      { name: "saved provider-qualified model", input: { userRouting: { harness: "claude" as const, model: "anthropic/claude-opus-5-5", thinking: "max" as const } }, thinking: "max", provenance: { harness: "saved-user", model: "saved-user", thinking: "saved-user" } },
+    ])("keeps the exact $name for SDK validation without calling Jev", async ({ input, thinking, provenance }) => {
+      const fetcher = vi.fn();
+      const resolveApiKey = vi.fn(async () => "key");
+      const resolutionInput = resolution(input);
+      const model = resolutionInput.explicit.model ?? resolutionInput.userRouting?.model ?? resolutionInput.agent?.defaults.model;
+      const result = await routeWithJev({
+        task: "SECRET_TASK", route: route(), resolutionInput, tools: claudeTools,
+        piModels: [piModel("one"), piModel("two")], claudeModels: discovered, resolveApiKey,
+      }, fetcher);
+      expect(result.route).toMatchObject({ harness: "claude", model, thinking, provenance });
+      expect(result.used).toBe(false);
+      expect(result.fallback).toContain("not in the discovered catalogue");
+      expect(result.fallback).not.toContain("opus");
+      expect(result.fallback!.length).toBeLessThanOrEqual(240);
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(resolveApiKey).not.toHaveBeenCalled();
+    });
+
+    it("keeps an exact long-context match on the catalogue path and never equates it with the base id", async () => {
+      const fetcher = vi.fn();
+      const exact = await routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { model: "claude-opus-5-5[1m]", thinking: "high" } }), piModels: [], claudeModels: discovered, apiKey: "key" }, fetcher);
+      expect(exact.route).toMatchObject({ harness: "claude", model: "claude-opus-5-5[1m]", thinking: "high" });
+      expect(exact.fallback).toBeUndefined();
+      const base = await routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit: { model: "claude-opus-5-5", thinking: "high" } }), piModels: [], claudeModels: discovered, apiKey: "key" }, fetcher);
+      expect(base.route.model).toBe("claude-opus-5-5");
+      expect(base.fallback).toContain("not in the discovered catalogue");
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: "Pi tool dialect", explicit: { model: "claude-opus-5-5" }, tools: ["read", "bash"], claudeModels: discovered, message: "another backend's native tool names" },
+      { name: "fixed Pi harness", explicit: { harness: "pi" as const, model: "claude-opus-5-5" }, tools: undefined, claudeModels: discovered, message: "fixed harness and model are incompatible" },
+      { name: "empty catalogue", explicit: { model: "claude-opus-5-5" }, tools: undefined, claudeModels: [], message: "No candidates were advertised" },
+      { name: "non-Claude alias", explicit: { harness: "claude" as const, model: "opus-next" }, tools: undefined, claudeModels: discovered, message: "no unique match" },
+      { name: "malformed Claude id", explicit: { model: "claude-opus 5-5" }, tools: undefined, claudeModels: discovered, message: "no unique match" },
+      { name: "cataloged model without the effort", explicit: { model: "claude-sonnet-5", thinking: "max" as const }, tools: undefined, claudeModels: discovered, message: "thinking/effort is not advertised" },
+    ])("still rejects a $name", async ({ explicit, tools, claudeModels, message }) => {
+      const fetcher = vi.fn();
+      const resolveApiKey = vi.fn();
+      let failure: unknown;
+      try {
+        await routeWithJev({ task: "task", route: route(), resolutionInput: resolution({ explicit }), tools, piModels: [piModel("one")], claudeModels, resolveApiKey }, fetcher);
+      } catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(JevRoutingConflictError);
+      expect((failure as Error).message).toContain(message);
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(resolveApiKey).not.toHaveBeenCalled();
+    });
+  });
+
   it("uses authoritative Claude effort metadata and conservative tool compatibility", () => {
     const candidates = buildJevCandidates([], [
       { value: "unknown", displayName: "Unknown", description: "Factual", supportsEffort: false },

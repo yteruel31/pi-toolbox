@@ -247,6 +247,12 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
     if (!input.resolutionInput && constraints.model && constraints.thinking !== undefined) {
       return { route: input.route, used: false };
     }
+    // Discovery lists aliases, not every id the SDK accepts. A well-formed fixed
+    // Claude id with compatible tools is kept verbatim for the SDK to validate;
+    // it is never mapped to a catalogue alias whose resolved identity differs.
+    if (catalogCount > 0 && toolCount > 0 && modelCount === 0 && constraints.harness === "claude" && isClaudeModelId(constraints.model)) {
+      return keepUncataloguedClaudeModel(input.route, constraints);
+    }
     // Categorical diagnostics only: never echo task, credentials, model IDs,
     // tool names, catalogue descriptions, or raw discovery/provider errors.
     const reason = catalogCount === 0
@@ -389,6 +395,24 @@ function safeFallback(input: JevRouteInput, constraints: JevConstraints, reason:
     }
   }
   return fallback(next, reason);
+}
+
+function keepUncataloguedClaudeModel(route: ResolvedRoute, constraints: JevConstraints): JevRouteResult {
+  const next = structuredClone(route);
+  next.harness = "claude";
+  next.provenance.harness = constraints.provenance.harness ?? next.provenance.harness;
+  next.model = constraints.model;
+  next.provenance.model = constraints.provenance.model ?? next.provenance.model;
+  // Effort support is unknown without catalogue metadata: pass the fixed value
+  // or the SDK default through instead of letting Jev pick one.
+  next.thinking = constraints.thinking;
+  next.provenance.thinking = constraints.provenance.thinking ?? next.provenance.thinking;
+  return fallback(next, "The fixed Claude model is not in the discovered catalogue; it was kept unchanged for the Claude SDK to validate.");
+}
+
+/** Full Claude ids only (optionally `anthropic/`-qualified); bare aliases must come from discovery. */
+function isClaudeModelId(model: string | undefined): model is string {
+  return model !== undefined && model.length <= 200 && /^(?:anthropic\/)?claude-[a-z0-9][a-z0-9.-]*(?:\[[a-z0-9]+\])?$/i.test(model);
 }
 
 /**
