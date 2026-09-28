@@ -9,6 +9,7 @@ import {
   resolveModelChoice,
   resolveThinkingChoice,
 } from "./route-resolver.js";
+import { TOOL_DIALECT_CONFLICT, toolsCompatible } from "./tool-dialect.js";
 import type { HarnessKind, ThinkingLevel } from "../shared/types.js";
 import type {
   ResolvedRoute,
@@ -237,12 +238,20 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
   const toolCount = candidates.length;
   if (constraints.model) candidates = candidates.filter((item) => modelMatches(item, constraints.model!, input.piModels, input.claudeModels));
   const modelCount = candidates.length;
+  const beforeThinking = candidates;
   candidates = candidates.flatMap((item) => {
     const thinking = thinkingConstraint(constraints, input.resolutionInput, item.harness);
     if (!thinking) return [item];
     if (thinking.value === undefined) return item.thinking === undefined ? [item] : [];
     return thinkingMatches(item, thinking.value) ? [{ ...item, thinking: thinking.value }] : [];
   });
+  // `inherit` means the exact parent model on Pi. When its advertised levels
+  // prove the fixed thinking unsupported, a free backend must not silently
+  // swap it for the Claude SDK default model; surface the conflict instead.
+  if (constraints.inheritModel && !constraints.harness &&
+    beforeThinking.some((item) => item.harness === "pi") && !candidates.some((item) => item.harness === "pi")) {
+    throw new JevRoutingConflictError("No compatible available route was found for the fixed routing constraints. The requested thinking/effort is not advertised by the inherited parent Pi model, so the backend was not switched to the Claude SDK default model. Check explicit, saved, and profile effort against runtime model capabilities. No constraint was changed.");
+  }
   if (candidates.length === 0) {
     if (!input.resolutionInput && constraints.model && constraints.thinking !== undefined) {
       return { route: input.route, used: false };
@@ -258,7 +267,7 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
     const reason = catalogCount === 0
       ? "No candidates were advertised for the constrained backend. Check its available model catalogue and the automatic model scope. Catalogue availability is not a quota check."
       : toolCount === 0
-        ? "The tool allowlist uses another backend's native tool names. Check the profile tools and harness mapping."
+        ? TOOL_DIALECT_CONFLICT
         : modelCount === 0
           ? "The fixed model has no unique match in the available catalogue. Check the profile/saved/spawn model and use a provider-qualified Pi ID or a discovered Claude alias."
           : "The requested thinking/effort is not advertised by the matching models. Check explicit, saved, and profile effort against runtime model capabilities.";
@@ -363,14 +372,20 @@ function inheritedModelCandidates(input: JevRouteInput, constraints: JevConstrai
 }
 
 function safeFallback(input: JevRouteInput, constraints: JevConstraints, reason: string): JevRouteResult {
-  const harness = constraints.harness ?? input.route.harness;
-  if (input.tools && !toolsCompatible(harness, input.tools)) {
+  // A harness `auto` falls back exactly like `inherit` (the ordinary route), as
+  // when Jev is disabled: a backend Jev merely inferred from a fixed model is
+  // not a constraint. The fixed model itself is kept unchanged.
+  const harnessConstraint = input.route.modes?.harness === "auto" && constraints.provenance.harness === "jev"
+    ? undefined
+    : constraints.harness;
+  const harness = harnessConstraint ?? input.route.harness;
+  if (!toolsCompatible(harness, input.tools)) {
     throw new JevRoutingConflictError("The fixed route is incompatible with the tool allowlist.");
   }
   // The ordinary route already resolves `auto` as `inherit`; never forward a mode literal.
   const next = structuredClone(input.route);
-  if (constraints.harness) {
-    next.harness = constraints.harness;
+  if (harnessConstraint) {
+    next.harness = harnessConstraint;
     next.provenance.harness = constraints.provenance.harness ?? next.provenance.harness;
   }
   if (input.resolutionInput && next.harness !== input.route.harness) {
@@ -382,7 +397,9 @@ function safeFallback(input: JevRouteInput, constraints: JevConstraints, reason:
   if (next.harness === "claude" && next.provenance.thinking === "parent" && constraints.thinking === undefined) {
     next.thinking = undefined;
   }
-  const thinking = constraints.thinking ?? next.thinking;
+  // Only an explicit literal is validated: inherited parent thinking is not a
+  // fixed constraint, and the backend adapts it exactly as with Jev disabled.
+  const thinking = literalThinking(constraints, input.resolutionInput, next.harness);
   if (thinking !== undefined) {
     const actualModel = constraints.model ?? next.model;
     const actualCandidates = actualModel === undefined ? [] : buildJevCandidates(input.piModels, input.claudeModels, next.harness)
@@ -395,6 +412,16 @@ function safeFallback(input: JevRouteInput, constraints: JevConstraints, reason:
     }
   }
   return fallback(next, reason);
+}
+
+/** Literal thinking fixed by a spawn, saved, or profile layer for `harness`; undefined for inherit/auto/parent. */
+function literalThinking(constraints: JevConstraints, input: RouteResolutionInput | undefined, harness: HarnessKind): ThinkingLevel | undefined {
+  if (input) {
+    const choice = resolveThinkingChoice(input, harness);
+    return choice.kind === "value" ? choice.value : undefined;
+  }
+  if (inheritedRouteThinking.has(constraints)) return undefined;
+  return constraints.thinking;
 }
 
 function keepUncataloguedClaudeModel(route: ResolvedRoute, constraints: JevConstraints): JevRouteResult {
@@ -496,17 +523,6 @@ function modelMatches(candidate: JevCandidate, model: string, piModels: readonly
 
 function thinkingMatches(candidate: JevCandidate, thinking: ThinkingLevel): boolean {
   return candidate.thinking === thinking || (candidate.harness === "claude" && thinking === "minimal" && candidate.thinking === "low");
-}
-
-function toolsCompatible(harness: HarnessKind, tools: readonly string[]): boolean {
-  // An allowlist restricts tools; it does not require every entry to exist.
-  // Pi intersects it with active child tools (parent extensions are disabled).
-  // Unknown extension names must not eliminate otherwise available models.
-  // Retain the cross-backend native-name guard without rewriting the allowlist.
-  const otherBackend = harness === "pi"
-    ? new Set(["Read", "Grep", "Glob", "Edit", "Write", "Bash", "WebFetch", "WebSearch"])
-    : new Set(["read", "grep", "find", "ls", "bash", "powershell", "edit", "write"]);
-  return tools.every((tool) => !otherBackend.has(tool));
 }
 
 function applyCandidate(route: ResolvedRoute, selected: JevCandidate, constraints: JevConstraints): ResolvedRoute {

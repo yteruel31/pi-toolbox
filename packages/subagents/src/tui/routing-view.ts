@@ -22,7 +22,7 @@ import type {
   RoutingEntry,
   RoutingScope,
 } from "../agents/types.js";
-import { isRouteMode } from "../agents/route-resolver.js";
+import { isRouteMode, normalizeRouteModel } from "../agents/route-resolver.js";
 import type { KeyHint, RoutingKeyAction } from "./keys.js";
 import { routingModelDisplayValue } from "./routing-editor.js";
 import { boundNotice, fitLine, fitViewport } from "./text.js";
@@ -153,9 +153,8 @@ export function normalizeRoutingEntry(entry: RoutingEntry): RoutingEntry {
   if (entry.harness === "pi" || entry.harness === "claude" || isRouteMode(entry.harness)) {
     normalized.harness = entry.harness;
   }
-  if (typeof entry.model === "string" && entry.model.trim().length > 0) {
-    normalized.model = entry.model.trim();
-  }
+  const model = normalizeRouteModel(entry.model);
+  if (model !== undefined) normalized.model = model;
   if (
     isRouteMode(entry.thinking) ||
     entry.thinking === "off" ||

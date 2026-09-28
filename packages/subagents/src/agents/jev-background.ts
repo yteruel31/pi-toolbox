@@ -3,6 +3,7 @@ import type { ClaudeSupportedModel } from "../harnesses/claude.js";
 import type { SubagentHarness } from "../core/harness.js";
 import type { RunRoutingDiagnostic } from "../shared/types.js";
 import { JevRoutingConflictError, deriveJevConstraints, type JevRouteInput, type JevRouteResult } from "./jev.js";
+import { TOOL_DIALECT_CONFLICT, toolsCompatible } from "./tool-dialect.js";
 import type { AgentDefinition, ResolvedRoute, RouteResolutionInput } from "./types.js";
 
 export interface JevBackgroundInput {
@@ -42,6 +43,16 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
           catalogFallback = "Claude model catalogue is unavailable; routing continued with Pi models.";
         }
       }
+      const failRouting = (error: JevRoutingConflictError): never => {
+        request.reportRouting?.({
+          harness: input.route.harness,
+          model: input.route.model,
+          thinkingLevel: input.route.thinking,
+        }, { state: "failed", provenance: input.route.provenance });
+        request.reportProgress("Routing failed: incompatible available routes; see the run diagnostic.");
+        request.reportTranscript({ kind: "status", text: "Routing failed: incompatible available routes; see the run diagnostic." });
+        throw error;
+      };
       let result: JevRouteResult;
       try {
         if (request.signal.aborted) throw abortError();
@@ -60,18 +71,14 @@ export function createJevBackgroundHarness(input: JevBackgroundInput): SubagentH
           signal: request.signal,
         }), request.signal);
       } catch (error) {
-        if (error instanceof JevRoutingConflictError) {
-          request.reportRouting?.({
-            harness: input.route.harness,
-            model: input.route.model,
-            thinkingLevel: input.route.thinking,
-          }, { state: "failed", provenance: input.route.provenance });
-          request.reportProgress("Routing failed: incompatible available routes; see the run diagnostic.");
-          request.reportTranscript({ kind: "status", text: "Routing failed: incompatible available routes; see the run diagnostic." });
-          throw error;
-        }
+        if (error instanceof JevRoutingConflictError) failRouting(error);
         if (isAbort(error, request.signal)) throw abortError();
         result = { route: input.route, used: false, fallback: "Jev routing is unavailable; the configured route was used." };
+      }
+      // Same deterministic tool-dialect guard as configured routing: never start
+      // a backend whose native tools the allowlist cannot name.
+      if (!toolsCompatible(result.route.harness, input.agent?.tools)) {
+        failRouting(new JevRoutingConflictError(`No compatible available route was found for the fixed routing constraints. ${TOOL_DIALECT_CONFLICT} No constraint was changed.`));
       }
       const diagnostic: RunRoutingDiagnostic = {
         state: result.fallback || catalogFallback ? "fallback" : "resolved",

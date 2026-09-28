@@ -172,9 +172,13 @@ describe("Jev route selection", () => {
     await expect(routeWithJev({ task: "task", route: original, resolutionInput: resolution({ explicit: { thinking: "high" } }), piModels: models, claudeModels: [], apiKey }, fetcher)).rejects.toBeInstanceOf(JevRoutingConflictError);
   });
 
-  it("validates generic inherited thinking against the exact current fallback model", async () => {
+  it("keeps generic inherited parent thinking unvalidated on the fallback model", async () => {
+    // Parent thinking is not a fixed constraint: the fallback is the ordinary
+    // route, which the backend adapts exactly as with Jev disabled.
     const original = route({ model: "openai-codex/parent", thinking: "high" });
-    await expect(routeWithJev({ task: "task", route: original, piModels: [piModel("parent", { off: null, minimal: null, low: "low", medium: null, high: null, xhigh: null, max: null }), piModel("other-a", { low: "low", high: "high" }), piModel("other-b", { low: "low", high: "high" })], claudeModels: [], apiKey: "key" }, vi.fn(async () => { throw new Error("offline"); }))).rejects.toBeInstanceOf(JevRoutingConflictError);
+    const result = await routeWithJev({ task: "task", route: original, piModels: [piModel("parent", { off: null, minimal: null, low: "low", medium: null, high: null, xhigh: null, max: null }), piModel("other-a", { low: "low", high: "high" }), piModel("other-b", { low: "low", high: "high" })], claudeModels: [], apiKey: "key" }, vi.fn(async () => { throw new Error("offline"); }));
+    expect(result.route).toEqual(original);
+    expect(result.fallback).toContain("failed");
   });
 
   it("throws on backend/model conflicts and never calls Jev", async () => {

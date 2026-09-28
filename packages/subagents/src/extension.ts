@@ -14,7 +14,8 @@ import { Type } from "typebox";
 
 import { FileAgentDiscovery } from "./agents/discovery.js";
 import { MAX_AGENT_SKILLS } from "./agents/limits.js";
-import { DefaultRouteResolver, ROUTE_MODES, inheritedModel, resolveModelChoice } from "./agents/route-resolver.js";
+import { DefaultRouteResolver, ROUTE_MODES, inheritedModel, normalizeRouteModel, resolveModelChoice } from "./agents/route-resolver.js";
+import { TOOL_DIALECT_CONFLICT, toolsCompatible } from "./agents/tool-dialect.js";
 import { defaultJevCredentialPath, jevStorageErrorMessage, readJevConfig, readJevSetupSnapshot, resolveJevKey, saveJevSetup, testJevConnection, type StoredJevConfig } from "./agents/jev-config.js";
 import { routeWithJev } from "./agents/jev.js";
 import { createJevBackgroundHarness } from "./agents/jev-background.js";
@@ -285,13 +286,18 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       const runtime = requireSession();
       const workingDir = await validateWorkingDirectory(params.working_dir, ctx);
       if (_signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      // Normalized like saved routing and profile frontmatter: ` auto ` is the mode.
+      const model = normalizeRouteModel(params.model);
+      if (params.model !== undefined && model === undefined) {
+        throw new Error("model must be a model id or a routing mode, not blank. No run was started.");
+      }
       const resolution = await resolveSpawn(
         ctx,
         params.agent,
         params.name,
         {
           harness: params.harness,
-          model: params.model,
+          model,
           thinking: params.reasoning_effort,
         },
         dependencies,
@@ -300,6 +306,11 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         ? runtime.claudeHarness
         : runtime.piHarness;
       const runJevConfig = jevConfig ? { ...jevConfig } : undefined;
+      // Jev validates tool dialects per candidate; configured routing (including
+      // `auto` resolved as `inherit`) must not start a backend with no usable tools.
+      if (!runJevConfig?.enabled && !toolsCompatible(resolution.route.harness, resolution.agent?.tools)) {
+        throw new Error(`The resolved ${resolution.route.harness} route is incompatible with the profile tools. ${TOOL_DIALECT_CONFLICT} No run was started.`);
+      }
       let piModels: Model<any>[] = [];
       if (runJevConfig?.enabled) {
         const availablePiModels = ctx.modelRegistry.getAvailable() as Model<any>[];
