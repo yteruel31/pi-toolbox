@@ -178,30 +178,32 @@ describe("DefaultRouteResolver", () => {
     })).toMatchObject({ harness: "pi", thinking: "low" });
   });
 
-  it("normalizes only an agent-default Claude model inherit without falling back", () => {
+  it("resolves model inherit per backend at every layer without sending the literal", () => {
     const claude = resolver.resolve({
       explicit: {}, agent: agent({ harness: "claude", model: "inherit" }),
       parent: { model: "parent-model", thinking: "high" },
     });
     expect(claude.model).toBeUndefined();
     expect(claude.provenance.model).toBe("agent-default");
+    expect(claude.modes).toEqual({ model: "inherit" });
 
     expect(resolver.resolve({
       explicit: { model: "inherit" }, agent: agent({ harness: "claude", model: "agent" }),
       parent: { model: "parent-model", thinking: "high" },
-    }).model).toBe("inherit");
+    })).toMatchObject({ model: undefined, provenance: { model: "explicit" } });
     expect(resolver.resolve({
       explicit: {}, projectRouting: { model: "inherit" },
       agent: agent({ harness: "claude", model: "agent" }),
       parent: { model: "parent-model", thinking: "high" },
-    }).model).toBe("inherit");
+    })).toMatchObject({ model: undefined, provenance: { model: "saved-project" } });
 
     const pi = resolver.resolve({
       explicit: {}, agent: agent({ harness: "pi", model: "inherit" }),
       parent: { model: "parent-model", thinking: "high" },
     });
-    expect(pi.model).toBe("inherit");
+    expect(pi.model).toBe("parent-model");
     expect(pi.provenance.model).toBe("agent-default");
+    expect(pi.modes).toEqual({ model: "inherit" });
     expect(resolver.resolve({
       explicit: {}, agent: agent({ harness: "pi" }),
       parent: { model: "parent-model", thinking: "high" },

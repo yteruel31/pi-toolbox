@@ -13,7 +13,7 @@ Call `subagent_agents({})` to discover available profiles, their descriptions, t
 
 `agent` loads the profile's system prompt, tools, skills, and saved routing. `name` only sets a display title. It doesn't select a profile. A `name` that exactly matches an existing profile without `agent` is rejected before any run starts. Fix the call by supplying `agent`; don't bypass the error by adding `harness` or `model`. For an intentionally generic run, omit `agent` and use a different, free-form title.
 
-Omit `harness`, `model`, and `reasoning_effort` unless an override is explicitly requested. Routing already chooses these values: explicit arguments take precedence over trusted project routing, user routing, profile defaults, then parent defaults. Generic runs default to Pi. A failed Claude run isn't silently retried on Pi.
+Omit `harness`, `model`, and `reasoning_effort` unless an override is explicitly requested. Routing already chooses these values: explicit arguments take precedence over trusted project routing, user routing, profile defaults, then parent defaults. Generic runs default to Pi. A failed Claude run isn't silently retried on Pi. Pass the exact value `auto` only when automatic routing is requested. It lets Jev choose that field and behaves like `inherit` when Jev is off. Pass `inherit` only to force parent Pi values, or Claude SDK defaults. Any other spelling, such as `openrouter/auto`, is a literal model id.
 
 ## Write an autonomous prompt
 

@@ -22,6 +22,7 @@ import type {
   RoutingEntry,
   RoutingScope,
 } from "../agents/types.js";
+import { isRouteMode } from "../agents/route-resolver.js";
 import type { KeyHint, RoutingKeyAction } from "./keys.js";
 import { routingModelDisplayValue } from "./routing-editor.js";
 import { boundNotice, fitLine, fitViewport } from "./text.js";
@@ -149,13 +150,14 @@ function scopeEntry(
 /** Normalize values returned by an adapter-owned field editor before saving. */
 export function normalizeRoutingEntry(entry: RoutingEntry): RoutingEntry {
   const normalized: RoutingEntry = {};
-  if (entry.harness === "pi" || entry.harness === "claude") {
+  if (entry.harness === "pi" || entry.harness === "claude" || isRouteMode(entry.harness)) {
     normalized.harness = entry.harness;
   }
   if (typeof entry.model === "string" && entry.model.trim().length > 0) {
     normalized.model = entry.model.trim();
   }
   if (
+    isRouteMode(entry.thinking) ||
     entry.thinking === "off" ||
     entry.thinking === "minimal" ||
     entry.thinking === "low" ||
@@ -385,12 +387,27 @@ const PROVENANCE_LABEL: Record<RouteFieldProvenance, string> = {
   parent: "parent",
 };
 
+/**
+ * Display value of one resolved field: a selected `auto`/`inherit` mode, the
+ * literal value, or `default` when no layer set it and the backend default applies.
+ */
+export function routeFieldLabel(
+  route: ResolvedRoute,
+  field: "harness" | "model" | "thinking",
+): string {
+  const mode = route.modes?.[field];
+  // Jev-chosen values are concrete; before routing an `auto` field is pending.
+  if (mode && route.provenance[field] !== "jev") return mode;
+  if (field === "harness") return route.harness;
+  const value = route[field];
+  if (value === undefined) return "default";
+  return field === "model" ? routingModelDisplayValue(value) : value;
+}
+
 export function formatRouteSummary(route: ResolvedRoute): string {
-  const parts = [
-    `${route.harness} (${PROVENANCE_LABEL[route.provenance.harness]})`,
-    `${route.model ? routingModelDisplayValue(route.model) : "inherit"} (${PROVENANCE_LABEL[route.provenance.model]})`,
-    `${route.thinking ?? "inherit"} (${PROVENANCE_LABEL[route.provenance.thinking]})`,
-  ];
+  const parts = (["harness", "model", "thinking"] as const).map((field) =>
+    `${routeFieldLabel(route, field)} (${PROVENANCE_LABEL[route.provenance[field]]})`,
+  );
   return parts.join(" · ");
 }
 

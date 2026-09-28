@@ -1,7 +1,18 @@
 export { FileAgentDiscovery } from "./discovery.js";
 export type { FileAgentDiscoveryOptions } from "./discovery.js";
 export { normalizePackageSettings } from "./package-settings.js";
-export { DefaultRouteResolver, routeResolver } from "./route-resolver.js";
+export {
+  DefaultRouteResolver,
+  ROUTE_MODES,
+  inheritedModel,
+  inheritedThinking,
+  isRouteMode,
+  resolveHarnessChoice,
+  resolveModelChoice,
+  resolveThinkingChoice,
+  routeResolver,
+} from "./route-resolver.js";
+export type { RouteFieldChoice } from "./route-resolver.js";
 export { FileRoutingStore } from "./routing-store.js";
 export type { FileRoutingStoreOptions } from "./routing-store.js";
 export { parseAgentMarkdown } from "./frontmatter.js";

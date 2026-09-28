@@ -72,20 +72,25 @@ describe("in-panel routing editor", () => {
       catalog,
     );
     state = reduceRoutingEditorInput(state, "\x1b[C").state;
-    expect(state.harness).toBe("inherit");
+    expect(state.harness).toBe("unset");
     expect(state.model).toBe("");
 
+    state = reduceRoutingEditorInput(state, "\x1b[C").state;
+    expect(state.harness).toBe("inherit");
+    state = reduceRoutingEditorInput(state, "\x1b[C").state;
+    expect(state.harness).toBe("auto");
     state = reduceRoutingEditorInput(state, "\x1b[C").state;
     expect(state.harness).toBe("pi");
     expect(state.model).toBe("");
     expect(routingModelChoices(state).map((choice) => choice.value)).toEqual([
       "",
+      "inherit",
+      "auto",
       "anthropic/claude-sonnet-5",
       "openai/gpt-5.6",
     ]);
 
-    state = reduceRoutingEditorInput(state, "\x1b[D").state;
-    state = reduceRoutingEditorInput(state, "\x1b[D").state;
+    state = reduceRoutingEditorInput(state, "\x1b[C").state;
     expect(state.harness).toBe("claude");
     expect(state.model).toBe("fable");
   });
@@ -96,8 +101,7 @@ describe("in-panel routing editor", () => {
       catalog,
     );
     state = reduceRoutingEditorInput(state, "\x1b[B").state;
-    state = reduceRoutingEditorInput(state, "\x1b[C").state;
-    state = reduceRoutingEditorInput(state, "\x1b[C").state;
+    for (let step = 0; step < 4; step++) state = reduceRoutingEditorInput(state, "\x1b[C").state;
     expect(state).toMatchObject({
       model: "openai/gpt-5.6",
       thinking: "xhigh",
@@ -121,8 +125,7 @@ describe("in-panel routing editor", () => {
       ...state,
       selectedField: "model",
     };
-    state = reduceRoutingEditorInput(state, "\x1b[C").state;
-    state = reduceRoutingEditorInput(state, "\x1b[C").state;
+    for (let step = 0; step < 4; step++) state = reduceRoutingEditorInput(state, "\x1b[C").state;
     expect(state.thinking).toBe("xhigh");
     state = {
       ...state,
@@ -132,8 +135,8 @@ describe("in-panel routing editor", () => {
     expect(state).toMatchObject({ thinking: "high", thinkingFromModel: false });
 
     state = { ...state, selectedField: "harness" };
-    state = reduceRoutingEditorInput(state, "\x1b[C").state;
-    state = reduceRoutingEditorInput(state, "\x1b[C").state;
+    for (let step = 0; step < 4; step++) state = reduceRoutingEditorInput(state, "\x1b[C").state;
+    expect(state).toMatchObject({ harness: "claude", model: "" });
     state = reduceRoutingEditorInput(state, "\x1b[D").state;
     expect(state).toMatchObject({
       harness: "pi",
@@ -148,10 +151,11 @@ describe("in-panel routing editor", () => {
       { ...session, current: {}, effectiveHarness: "pi" },
       catalog,
     );
+    expect(state.harness).toBe("unset");
     state = reduceRoutingEditorInput(state, "\x1b[C").state;
-    expect(state.harness).toBe("pi");
-    state = reduceRoutingEditorInput(state, "\x1b[D").state;
     expect(state.harness).toBe("inherit");
+    state = reduceRoutingEditorInput(state, "\x1b[D").state;
+    expect(state.harness).toBe("unset");
 
     state = reduceRoutingEditorInput(state, "\x1b[A").state;
     expect(state.selectedField).toBe("thinking");
@@ -167,6 +171,8 @@ describe("in-panel routing editor", () => {
     const choices = routingModelChoices(state);
     expect(choices.map((choice) => choice.value)).toEqual([
       "",
+      "inherit",
+      "auto",
       "retired-model",
       "default",
       "claude-fable-5-1[1m]",
@@ -178,17 +184,38 @@ describe("in-panel routing editor", () => {
     });
   });
 
-  it("does not confuse a saved model literally named inherit with the inherit option", () => {
-    const state = createRoutingEditorState(
-      { ...session, current: { harness: "claude", model: "inherit" } },
-      catalog,
-    );
+  it("shows exact reserved model values as modes and other spellings as literals", () => {
+    for (const mode of ["inherit", "auto"] as const) {
+      const state = createRoutingEditorState(
+        { ...session, current: { harness: "claude", model: mode } },
+        catalog,
+      );
+      const selected = selectedRoutingModelChoice(state);
+      expect(selected).toMatchObject({ value: mode, label: mode });
+      expect(selected.legacy).toBeUndefined();
+      expect(routingEntryFromEditor(state).model).toBe(mode);
+    }
+    for (const literal of ["Inherit", "AUTO", "openrouter/auto"]) {
+      const state = createRoutingEditorState(
+        { ...session, current: { harness: "claude", model: literal } },
+        catalog,
+      );
+      expect(selectedRoutingModelChoice(state)).toMatchObject({ value: literal, legacy: true });
+      expect(routingEntryFromEditor(state).model).toBe(literal);
+    }
+  });
 
-    expect(selectedRoutingModelChoice(state)).toMatchObject({
-      value: "inherit",
-      legacy: true,
-    });
-    expect(routingEntryFromEditor(state).model).toBe("inherit");
+  it("never offers a catalogue entry that collides with a reserved mode as a literal", () => {
+    const state = createRoutingEditorState(
+      { ...session, current: {}, effectiveHarness: "claude" },
+      { pi: [], claude: [{ value: "auto", label: "Catalogue auto" }, { value: "sonnet", label: "Sonnet" }] },
+    );
+    expect(routingModelChoices(state).map((choice) => [choice.value, choice.label])).toEqual([
+      ["", "unset"],
+      ["inherit", "inherit"],
+      ["auto", "auto"],
+      ["sonnet", "Sonnet"],
+    ]);
   });
 
   it("sanitizes legacy model IDs for display without rewriting the saved value", () => {
@@ -225,7 +252,7 @@ describe("in-panel routing editor", () => {
   it("returns the selected values in a save intent on enter", () => {
     const state = {
       ...createRoutingEditorState(session, catalog),
-      harness: "inherit" as const,
+      harness: "unset" as const,
       model: "fable",
       thinking: "max" as const,
     };

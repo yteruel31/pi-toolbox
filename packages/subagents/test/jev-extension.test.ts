@@ -85,6 +85,30 @@ describe("Jev extension wiring", () => {
     expect(captured.resolutionInput.agent.defaults.model).toBe("openai/a");
   });
 
+  it.each([
+    { name: "inherit keeps the parent model outside scope", explicit: { model: "inherit" }, expected: ["openai/a"] },
+    { name: "auto over a fixed profile model stays scoped", explicit: { model: "auto" }, expected: ["openai/b"] },
+  ])("passes Pi candidates for model modes: $name", async ({ explicit, expected }) => {
+    let captured: any;
+    const routeJev = vi.fn(async (input: any) => { captured = input; return { route: input.route, used: false }; });
+    const f = await fixture({ config: { enabled: true }, scoped: [{ model: model("openai", "b") }], dependencies: {
+      routeJev,
+      createDiscovery: async () => ({ discover: async () => ({ agents: [{ name: "fixed", description: "fixed", systemPrompt: "", defaults: { model: "openai/c" }, source: { scope: "user", path: "/tmp/fixed" } }], warnings: [] }) }) as any,
+      createRoutingStore: () => ({ read: async () => ({ routing: undefined }) }) as any,
+    } });
+    await f.spawn({ prompt: "route", agent: "fixed", ...explicit }); await tick();
+    expect(captured.piModels.map((item: any) => `${item.provider}/${item.id}`)).toEqual(expected);
+    expect(captured.route.model).toBe("openai/a");
+  });
+
+  it("starts the inherited route when the router is unavailable for auto fields", async () => {
+    const routeJev = vi.fn(async () => { throw new Error("offline"); });
+    const f = await fixture({ config: { enabled: true }, dependencies: { routeJev } });
+    await f.spawn({ prompt: "route", harness: "auto", model: "auto", reasoning_effort: "auto" }); await tick(); await tick();
+    expect(f.piHarness.requests[0]).toMatchObject({ model: "openai/a", thinkingLevel: "medium" });
+    expect(f.claudeHarness.requests).toHaveLength(0);
+  });
+
   it.each([false, true])("starts unit-implementer through the real router (saved route: %s)", async (saved) => {
     const astra = { ...model("openai-codex", "gpt-6-astra"), reasoning: true };
     const sol = { ...model("openai-codex", "gpt-5.6-sol"), reasoning: true };

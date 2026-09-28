@@ -14,7 +14,7 @@ import { Type } from "typebox";
 
 import { FileAgentDiscovery } from "./agents/discovery.js";
 import { MAX_AGENT_SKILLS } from "./agents/limits.js";
-import { DefaultRouteResolver } from "./agents/route-resolver.js";
+import { DefaultRouteResolver, ROUTE_MODES, inheritedModel, resolveModelChoice } from "./agents/route-resolver.js";
 import { defaultJevCredentialPath, jevStorageErrorMessage, readJevConfig, readJevSetupSnapshot, resolveJevKey, saveJevSetup, testJevConnection, type StoredJevConfig } from "./agents/jev-config.js";
 import { routeWithJev } from "./agents/jev.js";
 import { createJevBackgroundHarness } from "./agents/jev-background.js";
@@ -61,7 +61,7 @@ import {
   loadRoutingModelCatalog,
   type RoutingModelCatalogDependencies,
 } from "./tui/model-catalog.js";
-import { routingModelDisplayValue } from "./tui/routing-editor.js";
+import { routeFieldLabel } from "./tui/routing-view.js";
 import { JEV_SETUP_OVERLAY, JevSetupPanel, jevSetupRows } from "./tui/jev-setup.js";
 import type { RunCounts } from "./tui/status.js";
 import { openPiRoutingOverlay, openPiRunsOverlay } from "./tui/pi-views.js";
@@ -261,17 +261,17 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       "Use subagent_spawn for self-contained work that can continue in the background.",
       "After subagent_spawn, keep working; use subagent_wait only when the result blocks progress.",
       "For subagent_spawn, use agent when a named role is requested; discover exact profile names and routing with subagent_agents. name only sets a display title, not a profile.",
-      "For subagent_spawn, omit harness, model, and reasoning_effort unless explicitly requested; preserve the configured profile routing.",
+      "For subagent_spawn, omit harness, model, and reasoning_effort unless explicitly requested; preserve the configured profile routing. Pass auto only when automatic routing is requested and inherit only to force parent/SDK defaults.",
       "Children of subagent_spawn cannot spawn more agents or ask the user, so make the prompt complete and self-contained.",
     ],
     parameters: Type.Object({
       prompt: Type.String({ minLength: 1, maxLength: 100_000, description: "Self-contained task with context, scope, constraints, and expected output. Children cannot ask the user or delegate further." }),
       agent: Type.Optional(Type.String({ minLength: 1, maxLength: 100, description: "Exact profile name from subagent_agents. Loads its system prompt, tools, skills, and configured routing. Use this for a named role." })),
       name: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Optional display title only; never selects a profile or routing. An exact profile name without agent is rejected; use agent for profile selection." })),
-      harness: Type.Optional(StringEnum(["pi", "claude"] as const, { description: "Explicit execution backend override. Omit unless requested to preserve configured routing; generic runs default to Pi." })),
+      harness: Type.Optional(StringEnum(["pi", "claude", ...ROUTE_MODES] as const, { description: "Explicit execution backend override. Omit unless requested to preserve configured routing; generic runs default to Pi. auto lets Jev choose (inherit when Jev is off); inherit uses the parent backend (Pi)." })),
       working_dir: Type.Optional(Type.String({ minLength: 1, maxLength: 4_096, description: "Existing directory inside the trusted current project, relative to the parent cwd or absolute. Defaults to the parent cwd." })),
-      model: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Explicit model override: Pi provider/model-id or Claude model/alias. Omit unless requested to preserve configured routing." })),
-      reasoning_effort: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Explicit thinking/effort override. Omit unless requested to preserve configured routing and backend defaults." })),
+      model: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Explicit model override: Pi provider/model-id or Claude model/alias. Omit unless requested to preserve configured routing. Exact auto lets Jev choose (inherit when Jev is off); exact inherit uses the parent model on Pi or the SDK default on Claude. Qualified ids such as openrouter/auto are literal." })),
+      reasoning_effort: Type.Optional(StringEnum([...THINKING_LEVELS, ...ROUTE_MODES] as const, { description: "Explicit thinking/effort override. Omit unless requested to preserve configured routing and backend defaults. auto lets Jev choose (inherit when Jev is off); inherit uses parent thinking on Pi or the SDK default on Claude." })),
     }),
     renderCall(params, theme) {
       return new Text(
@@ -386,6 +386,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         harness: routes.get(agent.name)?.harness,
         model: routes.get(agent.name)?.model,
         thinking: routes.get(agent.name)?.thinking,
+        ...(routes.get(agent.name)?.modes ? { modes: routes.get(agent.name)!.modes } : {}),
       }));
       return textResult(
         boundedJson({ agents: rows, warnings: [...catalog.warnings, ...routingWarnings] }),
@@ -626,10 +627,10 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         const { catalog, routes, routingWarnings } = await discoverResolvedAgents(ctx, dependencies);
         const lines = catalog.agents.map((agent) => {
           const route = routes.get(agent.name);
-          const model = route?.model
-            ? routingModelDisplayValue(route.model)
-            : undefined;
-          return `${agent.name}: ${route?.harness ?? "pi"}${model ? ` / ${model}` : ""}${route?.thinking ? ` / ${route.thinking}` : ""}`;
+          if (!route) return `${agent.name}: pi`;
+          const model = routeFieldLabel(route, "model");
+          const thinking = routeFieldLabel(route, "thinking");
+          return `${agent.name}: ${routeFieldLabel(route, "harness")}${model !== "default" ? ` / ${model}` : ""}${thinking !== "default" ? ` / ${thinking}` : ""}`;
         });
         showHuman(ctx, ["Subagent routing", ...lines, ...catalog.warnings, ...routingWarnings].join("\n"));
         return;
@@ -866,11 +867,12 @@ function createOfficialRoutingStore(ctx: ExtensionContext): FileRoutingStore {
   });
 }
 
+/** Model that must stay eligible outside the automatic Pi scope, per central precedence. */
 function fixedPiModelConstraint(input: RouteResolutionInput): string | undefined {
-  for (const entry of [input.explicit, input.projectRouting, input.userRouting, input.savedRouting, input.agent?.defaults]) {
-    if (typeof entry?.model === "string" && entry.model !== "inherit") return entry.model;
-  }
-  return undefined;
+  const choice = resolveModelChoice(input);
+  if (choice.kind === "value") return choice.value;
+  // An inherited model keeps the exact parent identity; `auto` and unset stay scoped.
+  return choice.kind === "inherit" ? inheritedModel(input, "pi") : undefined;
 }
 
 function findUniquePiModel(models: readonly Model<any>[], value: string): Model<any> | undefined {

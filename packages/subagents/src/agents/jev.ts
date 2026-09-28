@@ -2,12 +2,18 @@ import { getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import type { ClaudeSupportedModel } from "../harnesses/claude.js";
 import { truncateText } from "../shared/truncate.js";
 import { requestJevChoice, type JevFetch } from "./jev-client.js";
+import {
+  inheritedModel,
+  inheritedThinking,
+  resolveHarnessChoice,
+  resolveModelChoice,
+  resolveThinkingChoice,
+} from "./route-resolver.js";
 import type { HarnessKind, ThinkingLevel } from "../shared/types.js";
 import type {
   ResolvedRoute,
   RouteFieldProvenance,
   RouteResolutionInput,
-  RoutingEntry,
 } from "./types.js";
 
 export const JEV_MAX_CHOICES = 255;
@@ -17,8 +23,11 @@ export interface JevConfig { enabled: boolean; credential?: string }
 export interface JevCandidate {
   key: string;
   harness: HarnessKind;
-  model: string;
+  /** Undefined only for an inherited Claude SDK default or unknown parent Pi model. */
+  model: string | undefined;
   thinking?: ThinkingLevel;
+  /** Thinking is the backend default because the inherited model's levels are unknown. */
+  thinkingDefault?: boolean;
   description: string;
 }
 
@@ -43,9 +52,22 @@ export interface JevRouteResult { route: ResolvedRoute; used: boolean; fallback?
 export interface JevConstraints {
   harness?: HarnessKind;
   model?: string;
+  /** The winning model layer is `inherit`: keep the backend-dependent parent/SDK default model. */
+  inheritModel?: boolean;
   thinking?: ThinkingLevel;
+  /** Thinking is fixed to the backend default (an inherited Claude SDK default effort). */
+  thinkingDefault?: boolean;
   provenance: Partial<Record<"harness" | "model" | "thinking", RouteFieldProvenance>>;
 }
+
+/** A fixed thinking value for one backend; `value: undefined` is the backend default. */
+interface ThinkingConstraint { value: ThinkingLevel | undefined; provenance: RouteFieldProvenance }
+
+/**
+ * Resolved-route `inherit` thinking without raw input: the value is only known
+ * for the backend the route was resolved for; other backends use their default.
+ */
+const inheritedRouteThinking = new WeakMap<JevConstraints, { harness: HarnessKind; value: ThinkingLevel }>();
 
 export class JevRoutingConflictError extends Error {
   override readonly name = "JevRoutingConflictError";
@@ -84,43 +106,69 @@ export const JEV_METADATA_SOURCES = [
   "https://platform.claude.com/docs/en/models/haiku-4-5/overview",
 ] as const;
 
-/** Extract constraints before parent defaults. Without raw input, all non-parent fields are fixed. */
+/**
+ * Extract constraints before parent defaults. `auto` and absent fields are free;
+ * literals are fixed; `inherit` keeps the backend-dependent inherited value.
+ * Without raw input, all non-parent fields except `auto` modes are fixed, and
+ * resolved `inherit` thinking stays fixed only on the backend it was resolved for.
+ */
 export function deriveJevConstraints(route: ResolvedRoute, input?: RouteResolutionInput): JevConstraints {
   if (!input) {
-    return {
-      harness: fixed(route.provenance.harness) ? route.harness : undefined,
-      model: fixed(route.provenance.model) && route.model !== undefined ? route.model : undefined,
-      thinking: fixed(route.provenance.thinking) && route.thinking !== undefined ? route.thinking : undefined,
+    const modes = route.modes ?? {};
+    const harnessFixed = fixed(route.provenance.harness) && modes.harness !== "auto";
+    const modelFixed = fixed(route.provenance.model) && modes.model !== "auto";
+    const inheritModel = modelFixed && (route.model === undefined || modes.model === "inherit");
+    const thinkingFixed = fixed(route.provenance.thinking) && modes.thinking !== "auto";
+    const thinkingDefault = thinkingFixed && route.thinking === undefined && modes.thinking === "inherit";
+    const thinkingInherited = thinkingFixed && route.thinking !== undefined && modes.thinking === "inherit";
+    const thinkingValue = thinkingFixed && route.thinking !== undefined && !thinkingInherited;
+    const constraints: JevConstraints = {
+      harness: harnessFixed ? route.harness : undefined,
+      model: modelFixed && !inheritModel ? route.model : undefined,
+      ...(inheritModel ? { inheritModel } : {}),
+      thinking: thinkingValue ? route.thinking : undefined,
+      ...(thinkingDefault ? { thinkingDefault } : {}),
       provenance: {
-        ...(fixed(route.provenance.harness) ? { harness: route.provenance.harness } : {}),
-        ...(fixed(route.provenance.model) ? { model: route.provenance.model } : {}),
-        ...(fixed(route.provenance.thinking) && route.thinking !== undefined ? { thinking: route.provenance.thinking } : {}),
+        ...(harnessFixed ? { harness: route.provenance.harness } : {}),
+        ...(modelFixed ? { model: route.provenance.model } : {}),
+        ...(thinkingValue || thinkingDefault || thinkingInherited ? { thinking: route.provenance.thinking } : {}),
       },
     };
+    if (thinkingInherited) inheritedRouteThinking.set(constraints, { harness: route.harness, value: route.thinking! });
+    return constraints;
   }
 
-  const harness = layered(input, "harness");
-  const model = layered(input, "model");
-  let effectiveHarness = harness?.value as HarnessKind | undefined;
-  let harnessProvenance = harness?.provenance;
-  if (!effectiveHarness && typeof model?.value === "string") {
-    effectiveHarness = inferHarness(model.value);
+  const harnessChoice = resolveHarnessChoice(input);
+  const modelChoice = resolveModelChoice(input);
+  // Harness `inherit` means the parent backend, which is always Pi.
+  let effectiveHarness: HarnessKind | undefined = harnessChoice.kind === "value"
+    ? harnessChoice.value
+    : harnessChoice.kind === "inherit" ? "pi" : undefined;
+  let harnessProvenance = effectiveHarness ? harnessChoice.provenance : undefined;
+  const model = modelChoice.kind === "value" ? modelChoice.value : undefined;
+  if (!effectiveHarness && model !== undefined) {
+    effectiveHarness = inferHarness(model);
     if (effectiveHarness) harnessProvenance = "jev";
   }
-  let thinking = layeredWithoutAgent(input, "thinking");
-  if (!thinking && effectiveHarness === "claude" && input.agent?.defaults.effort !== undefined) {
-    thinking = { value: input.agent.defaults.effort, provenance: "agent-default" };
+  // With an unknown backend only harness-independent literals are known here;
+  // profile effort and `inherit` are resolved per candidate backend.
+  let thinking: ThinkingConstraint | undefined;
+  if (effectiveHarness) {
+    thinking = inputThinking(input, effectiveHarness);
+  } else {
+    const choice = resolveThinkingChoice(input, "pi");
+    if (choice.kind === "value" && choice.provenance !== "agent-default") thinking = choice;
   }
-  if (!thinking && effectiveHarness && input.agent?.defaults.thinking !== undefined) {
-    thinking = { value: input.agent.defaults.thinking, provenance: "agent-default" };
-  }
+  const inheritModel = modelChoice.kind === "inherit";
   return {
     harness: effectiveHarness,
-    model: model?.value === "inherit" && model.provenance === "agent-default" ? undefined : model?.value,
-    thinking: thinking?.value as ThinkingLevel | undefined,
+    model,
+    ...(inheritModel ? { inheritModel } : {}),
+    thinking: thinking?.value,
+    ...(thinking && thinking.value === undefined ? { thinkingDefault: true } : {}),
     provenance: {
       ...(harnessProvenance ? { harness: harnessProvenance } : {}),
-      ...(model ? { model: model.provenance } : {}),
+      ...(model !== undefined || inheritModel ? { model: modelChoice.provenance } : {}),
       ...(thinking ? { thinking: thinking.provenance } : {}),
     },
   };
@@ -130,13 +178,15 @@ export function buildJevCandidates(
   piModels: readonly Model<any>[],
   claudeModels: readonly ClaudeSupportedModel[],
   fixedHarness?: HarnessKind,
+  /** Backends whose thinking is fixed to the backend default instead of enumerated levels. */
+  defaultThinking: ReadonlySet<HarnessKind> = new Set(),
 ): JevCandidate[] {
   const candidates: JevCandidate[] = [];
   if (!fixedHarness || fixedHarness === "pi") {
     for (const model of piModels) {
       // Claude catalog entries exposed through Pi belong to the Claude backend.
       if (inferHarness(`${model.provider}/${model.id}`) === "claude") continue;
-      const levels = getSupportedThinkingLevels(model);
+      const levels = defaultThinking.has("pi") ? [] : getSupportedThinkingLevels(model);
       for (const thinking of levels.length ? levels : [undefined]) {
         candidates.push(candidate("pi", `${model.provider}/${model.id}`, thinking, model.name, piMetadata(model), { purposeId: model.id }));
       }
@@ -144,7 +194,7 @@ export function buildJevCandidates(
   }
   if (!fixedHarness || fixedHarness === "claude") {
     for (const model of claudeModels) {
-      const levels = claudeThinkingLevels(model);
+      const levels = defaultThinking.has("claude") ? [undefined] : claudeThinkingLevels(model);
       // The SDK catalogue describes its own models; curated purpose text only
       // fills in for a row that arrives with no description of its own.
       const describes = model.description.trim().length > 0;
@@ -161,12 +211,6 @@ export function buildJevCandidates(
 
 export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = fetch): Promise<JevRouteResult> {
   const constraints = deriveJevConstraints(input.route, input.resolutionInput);
-  if (constraints.model === undefined && constraints.provenance.model === "agent-default") {
-    if (input.tools && !toolsCompatible(constraints.harness ?? input.route.harness, input.tools)) {
-      throw new JevRoutingConflictError("The fixed route is incompatible with the tool allowlist.");
-    }
-    return { route: input.route, used: false };
-  }
   const inferred = constraints.model ? inferHarness(constraints.model, input.claudeModels) : undefined;
   if (constraints.harness && inferred && constraints.harness !== inferred) {
     throw new JevRoutingConflictError("The fixed harness and model are incompatible. Check the profile, saved routing, or explicit spawn overrides; neither constraint was changed.");
@@ -175,21 +219,30 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
     constraints.harness = inferred;
     constraints.provenance.harness = "jev";
   }
-  applyProfileThinking(constraints, input.resolutionInput, constraints.harness);
+  if (constraints.harness) pinThinking(constraints, input.resolutionInput, constraints.harness);
   const fixedHarness = constraints.harness ?? inferred;
-  if (!input.resolutionInput && constraints.harness && constraints.provenance.harness && !constraints.model && routeFieldUnset(input.route.model)) {
+  if (!input.resolutionInput && constraints.harness && constraints.provenance.harness && !constraints.model && !constraints.inheritModel && routeFieldUnset(input.route.model)) {
     delete constraints.provenance.model;
   }
-  let candidates = buildJevCandidates(input.piModels, input.claudeModels, constraints.harness ?? fixedHarness);
+  const defaultThinking = new Set((["pi", "claude"] as const).filter((harness) => {
+    const thinking = thinkingConstraint(constraints, input.resolutionInput, harness);
+    return thinking !== undefined && thinking.value === undefined;
+  }));
+  // An inherited model keeps its identity; only free fields remain choices.
+  let candidates = constraints.inheritModel
+    ? inheritedModelCandidates(input, constraints, defaultThinking)
+    : buildJevCandidates(input.piModels, input.claudeModels, constraints.harness ?? fixedHarness, defaultThinking);
   const catalogCount = candidates.length;
   if (input.tools) candidates = candidates.filter((item) => toolsCompatible(item.harness, input.tools!));
   const toolCount = candidates.length;
   if (constraints.model) candidates = candidates.filter((item) => modelMatches(item, constraints.model!, input.piModels, input.claudeModels));
   const modelCount = candidates.length;
-  candidates = candidates.filter((item) => {
-    const thinking = effectiveThinking(constraints, input.resolutionInput, item.harness);
-    return thinking === undefined || thinkingMatches(item, thinking);
-  }).map((item) => ({ ...item, thinking: effectiveThinking(constraints, input.resolutionInput, item.harness) ?? item.thinking }));
+  candidates = candidates.flatMap((item) => {
+    const thinking = thinkingConstraint(constraints, input.resolutionInput, item.harness);
+    if (!thinking) return [item];
+    if (thinking.value === undefined) return item.thinking === undefined ? [item] : [];
+    return thinkingMatches(item, thinking.value) ? [{ ...item, thinking: thinking.value }] : [];
+  });
   if (candidates.length === 0) {
     if (!input.resolutionInput && constraints.model && constraints.thinking !== undefined) {
       return { route: input.route, used: false };
@@ -206,7 +259,7 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
     throw new JevRoutingConflictError(`No compatible available route was found for the fixed routing constraints. ${reason} No constraint was changed.`);
   }
 
-  if (constraints.model && effectiveThinking(constraints, input.resolutionInput, candidates[0]!.harness) !== undefined) {
+  if (constraints.model && thinkingConstraint(constraints, input.resolutionInput, candidates[0]!.harness) !== undefined) {
     const selectedConstraints = candidateConstraints(constraints, input.resolutionInput, candidates[0]!.harness);
     return { route: applyCandidate(input.route, candidates[0]!, selectedConstraints), used: false };
   }
@@ -239,37 +292,68 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
   }
 }
 
-function profileThinking(input: RouteResolutionInput | undefined, harness: HarnessKind):
-  { value: ThinkingLevel; provenance: RouteFieldProvenance } | undefined {
-  if (!input) return undefined;
-  const higherPriority = layeredWithoutAgent(input, "thinking");
-  if (higherPriority) return higherPriority as { value: ThinkingLevel; provenance: RouteFieldProvenance };
-  if (harness === "claude" && input.agent?.defaults.effort !== undefined) {
-    return { value: input.agent.defaults.effort, provenance: "agent-default" };
-  }
-  if (input.agent?.defaults.thinking !== undefined) {
-    return { value: input.agent.defaults.thinking, provenance: "agent-default" };
-  }
+/** Fixed thinking for one backend from resolution layers; undefined when free (`auto`/absent). */
+function inputThinking(input: RouteResolutionInput, harness: HarnessKind): ThinkingConstraint | undefined {
+  const choice = resolveThinkingChoice(input, harness);
+  if (choice.kind === "value") return { value: choice.value, provenance: choice.provenance };
+  if (choice.kind === "inherit") return { value: inheritedThinking(input, harness), provenance: choice.provenance };
   return undefined;
 }
 
-function applyProfileThinking(constraints: JevConstraints, input: RouteResolutionInput | undefined, harness: HarnessKind | undefined): void {
-  if (constraints.thinking !== undefined || !harness) return;
-  const thinking = profileThinking(input, harness);
-  if (thinking) {
-    constraints.thinking = thinking.value;
-    constraints.provenance.thinking = thinking.provenance;
-  }
+function thinkingConstraint(constraints: JevConstraints, input: RouteResolutionInput | undefined, harness: HarnessKind): ThinkingConstraint | undefined {
+  if (input) return inputThinking(input, harness);
+  const provenance = constraints.provenance.thinking ?? "explicit";
+  const inherited = inheritedRouteThinking.get(constraints);
+  if (inherited) return { value: harness === inherited.harness ? inherited.value : undefined, provenance };
+  if (constraints.thinking !== undefined) return { value: constraints.thinking, provenance };
+  return constraints.thinkingDefault ? { value: undefined, provenance } : undefined;
 }
 
-function effectiveThinking(constraints: JevConstraints, input: RouteResolutionInput | undefined, harness: HarnessKind): ThinkingLevel | undefined {
-  return constraints.thinking ?? profileThinking(input, harness)?.value;
+function pinThinking(constraints: JevConstraints, input: RouteResolutionInput | undefined, harness: HarnessKind): void {
+  const thinking = thinkingConstraint(constraints, input, harness);
+  if (!thinking) return;
+  constraints.thinking = thinking.value;
+  constraints.thinkingDefault = thinking.value === undefined ? true : undefined;
+  constraints.provenance.thinking = thinking.provenance;
 }
 
 function candidateConstraints(constraints: JevConstraints, input: RouteResolutionInput | undefined, harness: HarnessKind): JevConstraints {
   const next = { ...constraints, provenance: { ...constraints.provenance } };
-  applyProfileThinking(next, input, harness);
+  const inherited = inheritedRouteThinking.get(constraints);
+  if (inherited) inheritedRouteThinking.set(next, inherited);
+  pinThinking(next, input, harness);
   return next;
+}
+
+/**
+ * Candidates for an inherited model: the exact parent model on Pi (at its
+ * advertised thinking levels) and the SDK default model on Claude. The model
+ * identity is never replaced by a catalogue entry.
+ */
+function inheritedModelCandidates(input: JevRouteInput, constraints: JevConstraints, defaultThinking: ReadonlySet<HarnessKind>): JevCandidate[] {
+  const candidates: JevCandidate[] = [];
+  const harnesses: HarnessKind[] = constraints.harness ? [constraints.harness] : ["pi", "claude"];
+  for (const harness of harnesses) {
+    const thinking = thinkingConstraint(constraints, input.resolutionInput, harness);
+    // Without raw input, a resolved Pi route already carries the exact inherited parent model.
+    const model = input.resolutionInput
+      ? inheritedModel(input.resolutionInput, harness)
+      : harness === "pi" && input.route.harness === "pi" ? input.route.model : undefined;
+    const known = harness === "pi" && model !== undefined
+      ? input.piModels.find((item) => `${item.provider}/${item.id}` === model)
+      : undefined;
+    if (known) {
+      const levels = defaultThinking.has("pi") ? [] : getSupportedThinkingLevels(known);
+      for (const level of levels.length ? levels : [undefined]) {
+        candidates.push(candidate("pi", model, level, known.name, piMetadata(known), { purposeId: known.id }));
+      }
+      continue;
+    }
+    // Unknown capabilities: pass a fixed thinking value through, otherwise keep the backend default.
+    const described = harness === "pi" ? "Pi child session with the parent session model." : "Claude Code with the Claude Agent SDK default model.";
+    candidates.push({ ...candidate(harness, model, thinking?.value, described), ...(thinking ? {} : { thinkingDefault: true }) });
+  }
+  return dedupe(candidates);
 }
 
 function safeFallback(input: JevRouteInput, constraints: JevConstraints, reason: string): JevRouteResult {
@@ -277,10 +361,25 @@ function safeFallback(input: JevRouteInput, constraints: JevConstraints, reason:
   if (input.tools && !toolsCompatible(harness, input.tools)) {
     throw new JevRoutingConflictError("The fixed route is incompatible with the tool allowlist.");
   }
-  const thinking = constraints.thinking ?? input.route.thinking ?? profileThinking(input.resolutionInput, harness)?.value;
+  // The ordinary route already resolves `auto` as `inherit`; never forward a mode literal.
+  const next = structuredClone(input.route);
+  if (constraints.harness) {
+    next.harness = constraints.harness;
+    next.provenance.harness = constraints.provenance.harness ?? next.provenance.harness;
+  }
+  if (input.resolutionInput && next.harness !== input.route.harness) {
+    // A fixed model implied another backend: re-resolve backend-dependent thinking.
+    const thinking = thinkingConstraint(constraints, input.resolutionInput, next.harness);
+    next.thinking = thinking ? thinking.value : inheritedThinking(input.resolutionInput, next.harness);
+    next.provenance.thinking = thinking?.provenance ?? resolveThinkingChoice(input.resolutionInput, next.harness).provenance;
+  }
+  if (next.harness === "claude" && next.provenance.thinking === "parent" && constraints.thinking === undefined) {
+    next.thinking = undefined;
+  }
+  const thinking = constraints.thinking ?? next.thinking;
   if (thinking !== undefined) {
-    const actualModel = constraints.model ?? input.route.model;
-    const actualCandidates = actualModel === undefined ? [] : buildJevCandidates(input.piModels, input.claudeModels, harness)
+    const actualModel = constraints.model ?? next.model;
+    const actualCandidates = actualModel === undefined ? [] : buildJevCandidates(input.piModels, input.claudeModels, next.harness)
       .filter((item) => modelMatches(item, actualModel, input.piModels, input.claudeModels) ||
         (item.harness === "pi" && !actualModel.includes("/") &&
           input.piModels.filter((model) => model.id === actualModel).length === 1 &&
@@ -289,36 +388,7 @@ function safeFallback(input: JevRouteInput, constraints: JevConstraints, reason:
       throw new JevRoutingConflictError("The fixed route does not support the requested thinking or effort.");
     }
   }
-  const next = structuredClone(input.route);
-  if (constraints.harness) {
-    next.harness = constraints.harness;
-    next.provenance.harness = constraints.provenance.harness ?? next.provenance.harness;
-  }
-  if (next.harness === "claude" && next.provenance.thinking === "parent" && constraints.thinking === undefined) {
-    next.thinking = undefined;
-  }
   return fallback(next, reason);
-}
-
-function layered(input: RouteResolutionInput, field: "harness" | "model" | "thinking"):
-  { value: any; provenance: RouteFieldProvenance } | undefined {
-  const entries: Array<[RoutingEntry | undefined, RouteFieldProvenance]> = [
-    [input.explicit, "explicit"], [input.projectRouting, "saved-project"], [input.userRouting, "saved-user"],
-    [input.savedRouting, input.savedRoutingProvenance?.[field] ?? "saved-user"],
-    [input.agent?.defaults, "agent-default"],
-  ];
-  for (const [entry, provenance] of entries) if (entry?.[field] !== undefined) return { value: entry[field], provenance };
-  return undefined;
-}
-
-function layeredWithoutAgent(input: RouteResolutionInput, field: "thinking"):
-  { value: any; provenance: RouteFieldProvenance } | undefined {
-  const entries: Array<[RoutingEntry | undefined, RouteFieldProvenance]> = [
-    [input.explicit, "explicit"], [input.projectRouting, "saved-project"], [input.userRouting, "saved-user"],
-    [input.savedRouting, input.savedRoutingProvenance?.[field] ?? "saved-user"],
-  ];
-  for (const [entry, provenance] of entries) if (entry?.[field] !== undefined) return { value: entry[field], provenance };
-  return undefined;
 }
 
 /**
@@ -327,14 +397,14 @@ function layeredWithoutAgent(input: RouteResolutionInput, field: "thinking"):
  */
 function candidate(
   harness: HarnessKind,
-  model: string,
+  model: string | undefined,
   thinking: ThinkingLevel | undefined,
   discovered: string,
   facts = "",
   options: { purposeId?: string; harnessDescribed?: boolean } = {},
 ): JevCandidate {
-  const discoveredText = bounded(discovered, 300) || model;
-  const purpose = options.harnessDescribed ? undefined : CURATED[purposeKey(options.purposeId ?? model)];
+  const discoveredText = bounded(discovered, 300) || model || harness;
+  const purpose = options.harnessDescribed ? undefined : CURATED[purposeKey(options.purposeId ?? model ?? "")];
   const description = purpose ? `${discoveredText} ${purpose}` : discoveredText;
   const effort = thinking === undefined ? " SDK default thinking/effort." : ` Thinking/effort ${thinking}.`;
   return { key: encodeKey(harness, model, thinking), harness, model, thinking, description: `${description}${facts}${effort}` };
@@ -422,12 +492,12 @@ function applyCandidate(route: ResolvedRoute, selected: JevCandidate, constraint
   next.model = constraints.model ?? selected.model;
   next.provenance.model = constraints.provenance.model ?? "jev";
   next.thinking = constraints.thinking ?? selected.thinking;
-  next.provenance.thinking = constraints.provenance.thinking ?? "jev";
+  next.provenance.thinking = constraints.provenance.thinking ?? (selected.thinkingDefault ? "parent" : "jev");
   return next;
 }
 
-function encodeKey(harness: HarnessKind, model: string, thinking?: ThinkingLevel): string {
-  return Buffer.from(JSON.stringify([harness, model, thinking ?? null])).toString("base64url");
+function encodeKey(harness: HarnessKind, model: string | undefined, thinking?: ThinkingLevel): string {
+  return Buffer.from(JSON.stringify([harness, model ?? null, thinking ?? null])).toString("base64url");
 }
 function dedupe(candidates: JevCandidate[]): JevCandidate[] { return [...new Map(candidates.map((item) => [item.key, item])).values()] }
 function fallback(route: ResolvedRoute, reason: string): JevRouteResult { return { route, used: false, fallback: bounded(reason, 240) } }

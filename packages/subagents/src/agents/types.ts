@@ -21,6 +21,15 @@ export interface AgentSource {
 /** Claude effort levels accepted in agent defaults, independent of harness routing types. */
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
+/**
+ * Reserved per-field routing modes. Only these exact bare lowercase strings are
+ * modes; any other value (for example `Auto` or `openrouter/auto`) is a literal.
+ * - `auto`: delegate the field to Jev, overriding lower fixed layers. Resolves
+ *   as `inherit` whenever Jev is disabled, unavailable, or falls back.
+ * - `inherit`: use the parent value on Pi, or the SDK default (omitted) on Claude.
+ */
+export type RouteMode = "auto" | "inherit";
+
 /** Parsed agent definition (Markdown body + YAML frontmatter). */
 export interface AgentDefinition {
   name: string;
@@ -33,10 +42,10 @@ export interface AgentDefinition {
   skills?: string[];
   /** Optional frontmatter defaults, below saved routing in precedence. */
   defaults: {
-    harness?: HarnessKind;
+    harness?: HarnessKind | RouteMode;
     model?: string;
-    thinking?: ThinkingLevel;
-    effort?: ClaudeEffort;
+    thinking?: ThinkingLevel | RouteMode;
+    effort?: ClaudeEffort | RouteMode;
   };
   source: AgentSource;
 }
@@ -65,9 +74,10 @@ export interface AgentDiscovery {
 
 /** One saved routing mapping for a named agent. */
 export interface RoutingEntry {
-  harness?: HarnessKind;
+  harness?: HarnessKind | RouteMode;
+  /** Literal model id, or a reserved `auto`/`inherit` mode. */
   model?: string;
-  thinking?: ThinkingLevel;
+  thinking?: ThinkingLevel | RouteMode;
   /** Unknown fields survive read/edit/write cycles. */
   [key: string]: unknown;
 }
@@ -134,6 +144,12 @@ export interface ResolvedRoute {
     model: RouteFieldProvenance;
     thinking: RouteFieldProvenance;
   };
+  /**
+   * Fields whose winning layer selected a reserved mode. Values are already
+   * backend-resolved (never the literal mode); `auto` fields are still
+   * inherited here until Jev chooses them. Absent when no mode applies.
+   */
+  modes?: Partial<Record<"harness" | "model" | "thinking", RouteMode>>;
 }
 
 export type RouteFieldProvenance =
