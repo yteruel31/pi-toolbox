@@ -20,6 +20,7 @@ import { FileRoutingStore } from "../src/agents/routing-store.js";
 import type { RoutingEntry } from "../src/agents/types.js";
 import { createPiSubagentsExtension, type ExtensionDependencies } from "../src/extension.js";
 import { buildClaudeOptions } from "../src/harnesses/claude.js";
+import { SUBAGENTS_LIFECYCLE_CHANNEL, SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL, type SubagentsLifecycleEvent } from "../src/shared/lifecycle.js";
 import { loadRoutingModelCatalog } from "../src/tui/model-catalog.js";
 
 class ControlledHarness implements SubagentHarness {
@@ -71,6 +72,7 @@ function fakePi(): FakeRuntime {
   const entries: Array<{ customType: string; data: unknown }> = [];
   const messages: Array<{ message: unknown; options: unknown }> = [];
   const emitted: Array<{ channel: string; data: unknown }> = [];
+  const listeners = new Map<string, Set<(data: unknown) => void>>();
   const pi = {
     on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) {
       const list = handlers.get(event) ?? [];
@@ -92,8 +94,14 @@ function fakePi(): FakeRuntime {
     events: {
       emit(channel: string, data: unknown) {
         emitted.push({ channel, data });
+        for (const listener of listeners.get(channel) ?? []) listener(data);
       },
-      on: () => () => {},
+      on(channel: string, listener: (data: unknown) => void) {
+        const entries = listeners.get(channel) ?? new Set();
+        entries.add(listener);
+        listeners.set(channel, entries);
+        return () => entries.delete(listener);
+      },
     },
   } as unknown as ExtensionAPI;
   return { pi, handlers, tools, commands, entries, messages, emitted };
@@ -766,6 +774,57 @@ describe("Pi extension composition", () => {
     await emit(runtime, "session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
     expect(harness.requests[2]?.signal.aborted).toBe(true);
     await expect(execute(runtime, "subagent_list", {}, ctx)).rejects.toThrow("no active Pi session");
+  });
+
+  it("publishes correlated lifecycle events without UI, replays on request, and clears once", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-lifecycle-"));
+    temporary.push(cwd);
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, {
+      createPiHarness: () => harness,
+      createClaudeHarness: () => new ControlledHarness("claude"),
+    });
+    const ctx = fakeContext(cwd, runtime.entries);
+    const events = () => runtime.emitted.filter((event) => event.channel === SUBAGENTS_LIFECYCLE_CHANNEL)
+      .map((event) => event.data as SubagentsLifecycleEvent);
+    await emit(runtime, "session_start", {}, ctx);
+    expect(events()).toMatchObject([{ v: 1, kind: "snapshot", sessionId: "parent-session-test", runs: [] }]);
+    await execute(runtime, "subagent_spawn", { prompt: "PRIVATE PROMPT", name: "Check types" }, ctx);
+    expect(events().slice(1)).toMatchObject([
+      { kind: "upsert", run: { id: "run-1", toolCallId: "call-1", label: "Check types", status: "queued" } },
+      { kind: "upsert", run: { id: "run-1", toolCallId: "call-1", label: "Check types", status: "running" } },
+    ]);
+    harness.finish(0, "PRIVATE OUTPUT");
+    await Promise.resolve();
+    expect(events().at(-1)).toMatchObject({ kind: "upsert", run: { status: "completed" } });
+    runtime.pi.events.emit(SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL, { v: 1 });
+    expect(events().at(-1)).toMatchObject({ kind: "snapshot", runs: [{ status: "completed" }] });
+    const count = events().length;
+    runtime.pi.events.emit(SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL, { v: 2 });
+    expect(events()).toHaveLength(count);
+    await execute(runtime, "subagent_spawn", { prompt: "ANOTHER PRIVATE PROMPT" }, ctx);
+    expect(events().at(-1)).toMatchObject({ run: { id: "run-2", label: "Subagent" } });
+    await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+    expect(events().slice(-2)).toMatchObject([
+      { kind: "upsert", run: { id: "run-2", status: "cancelled" } }, { kind: "clear" },
+    ]);
+    const closedCount = events().length;
+    harness.finish(1, "late result");
+    await Promise.resolve();
+    await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+    runtime.pi.events.emit(SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL, { v: 1 });
+    expect(events()).toHaveLength(closedCount);
+    expect(JSON.stringify(events())).not.toMatch(/PRIVATE|late result/);
+    expect(events().map((event) => event.sequence)).toEqual(events().map((_, index) => index + 1));
+    const oldSource = events()[0]!.sourceId;
+    await emit(runtime, "session_start", {}, ctx);
+    expect(events().at(-1)).toMatchObject({ kind: "snapshot", sequence: 3, runs: [
+      { id: "run-1", label: "Check types", toolCallId: "call-1", status: "completed" },
+      { id: "run-2", label: "Subagent", status: "failed" },
+    ] });
+    expect(events().at(-1)!.sourceId).not.toBe(oldSource);
+    await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
   });
 
   it("broadcasts versioned run counts without a UI and clears them on shutdown", async () => {

@@ -3,6 +3,8 @@
 // Pi extension entry point
 export { SUBAGENTS_STATUS_CHANNEL, createPiSubagentsExtension, default } from "./extension.js";
 export type { SubagentsStatusEvent } from "./extension.js";
+export { SUBAGENTS_LIFECYCLE_CHANNEL, SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL } from "./shared/lifecycle.js";
+export type { SubagentLifecycleRun, SubagentsLifecycleEvent } from "./shared/lifecycle.js";
 
 // Core
 export { RunManager } from "./core/run-manager.js";
@@ -86,6 +88,7 @@ export type {
   RunInspection,
   RunListEntry,
   RunResult,
+  RunOrigin,
   RunSnapshot,
   RunStatus,
   RunTranscriptEntry,

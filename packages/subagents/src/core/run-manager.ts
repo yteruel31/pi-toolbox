@@ -42,6 +42,7 @@ import {
   type RunInspection,
   type RunListEntry,
   type RunResult,
+  type RunOrigin,
   type RunRoutingDiagnostic,
   type RunSnapshot,
   type RunStatus,
@@ -111,6 +112,8 @@ export interface RunManagerOptions {
 }
 
 export interface SpawnRunRequest {
+  /** Explicit host correlation, independent of the execution backend. */
+  origin?: RunOrigin;
   /** Required, non-empty task text. */
   prompt: string;
   /** Resolved harness instance for this run. */
@@ -141,6 +144,7 @@ export interface WaitOptions {
 }
 
 interface InternalRun {
+  origin?: RunOrigin;
   id: string;
   serial: number;
   title: string;
@@ -220,6 +224,7 @@ export class RunManager {
    * InvalidArgumentError on an empty prompt.
    */
   spawn(request: SpawnRunRequest): RunSnapshot {
+    if (this.shutdownDone) throw new InvalidArgumentError("Cannot spawn after parent session shutdown.");
     const prompt = typeof request.prompt === "string" ? request.prompt : "";
     if (prompt.trim() === "") {
       throw new InvalidArgumentError(
@@ -233,6 +238,7 @@ export class RunManager {
     const serial = this.nextSerial++;
     const run: InternalRun = {
       id: `${RUN_ID_PREFIX}${serial}`,
+      origin: this.normalizeOrigin(request.origin),
       serial,
       title:
         request.title !== undefined && request.title.trim() !== ""
@@ -280,6 +286,7 @@ export class RunManager {
     this.runs.set(run.id, run);
     this.creationOrder.push(run.id);
 
+    this.persist();
     this.startRun(run, request);
     this.persist();
     return this.toSnapshot(run);
@@ -888,6 +895,7 @@ export class RunManager {
         return {
           id: run.id,
           serial: run.serial,
+          origin: run.origin ? { ...run.origin } : undefined,
           title: run.title,
           agentProfile: run.agentProfile,
           harness: run.harness,
@@ -931,6 +939,7 @@ export class RunManager {
       const run: InternalRun = {
         id: record.id,
         serial: record.serial,
+        origin: this.normalizeOrigin(record.origin),
         title: record.title,
         agentProfile: restoredAgentProfile === "" ? undefined : restoredAgentProfile,
         harness: record.harness,
@@ -1073,6 +1082,15 @@ export class RunManager {
       durationMs: Math.max(0, run.settledAt - run.createdAt),
       settlementSeq: run.settlementSeq,
       routing: this.cloneRouting(run.routing),
+    };
+  }
+
+  private normalizeOrigin(value: RunOrigin | undefined): RunOrigin | undefined {
+    if (!value || typeof value.toolCallId !== "string" || !value.toolCallId ||
+        value.toolCallId.length > 1_024 || typeof value.label !== "string") return undefined;
+    return {
+      toolCallId: value.toolCallId,
+      label: toDisplayTitle(sanitizeTerminalText(value.label)) || "Subagent",
     };
   }
 

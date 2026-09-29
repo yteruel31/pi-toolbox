@@ -221,8 +221,16 @@ export interface CancelReport {
   entries: CancelEntry[];
 }
 
+/** Explicit spawn identity for host integrations; never inferred from a prompt. */
+export interface RunOrigin {
+  toolCallId: string;
+  label: string;
+}
+
 /** Serialized run record for session persistence (duplicate-delivery guard). */
 export interface PersistedRunRecord {
+  /** Optional for records written before host lifecycle integration. */
+  origin?: RunOrigin;
   id: string;
   serial: number;
   title: string;
