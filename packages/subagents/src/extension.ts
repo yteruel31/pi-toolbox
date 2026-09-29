@@ -229,14 +229,17 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       hooks: {
         persist: (state) => {
           if (!shuttingDown) pi.appendEntry(STATE_ENTRY, state);
-          lifecycle?.update(state);
           updateStatus();
         },
         onDeliverableResults: () => {
           updateStatus();
           scheduleDelivery();
         },
-        onChange: notifyRunListeners,
+        onChange: () => {
+          // Effective-model reports are live changes, not persistence mutations.
+          if (manager) lifecycle?.update(manager.snapshotState());
+          notifyRunListeners();
+        },
       },
     });
     lifecycle.update(manager.snapshotState());

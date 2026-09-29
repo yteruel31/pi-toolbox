@@ -776,6 +776,33 @@ describe("Pi extension composition", () => {
     await expect(execute(runtime, "subagent_list", {}, ctx)).rejects.toThrow("no active Pi session");
   });
 
+  it("publishes live model and thinking metadata for explicit profiles without duplicate upserts", async () => {
+    const { runtime, ctx, profile, claudeHarness } = await routedFixture();
+    await execute(runtime, "subagent_spawn", { agent: profile, name: "Check types", prompt: "PRIVATE PROMPT" }, ctx);
+    const events = () => runtime.emitted.filter((event) => event.channel === SUBAGENTS_LIFECYCLE_CHANNEL)
+      .map((event) => event.data as SubagentsLifecycleEvent);
+    expect(events().at(-1)).toMatchObject({ kind: "upsert", run: {
+      label: "Check types", agent: profile, model: "sonnet", thinking: "high", status: "running",
+    } });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const request = claudeHarness.requests[0]!;
+    const count = events().length;
+    const persistedCount = runtime.entries.length;
+    request.reportEffectiveModel("claude/effective");
+    expect(runtime.entries).toHaveLength(persistedCount);
+    expect(events()).toHaveLength(count + 1);
+    expect(events().at(-1)).toMatchObject({ kind: "upsert", run: { model: "claude/effective", status: "running" } });
+    request.reportEffectiveModel("claude/effective");
+    request.reportProgress("PRIVATE PROGRESS");
+    expect(events()).toHaveLength(count + 1);
+    request.reportRouting?.({ harness: "claude", model: "claude/requested", thinkingLevel: "low" }, { state: "resolved" });
+    expect(events().at(-1)).toMatchObject({ run: { model: "claude/effective", thinking: "low" } });
+    runtime.pi.events.emit(SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL, { v: 1 });
+    expect(events().at(-1)).toMatchObject({ kind: "snapshot", runs: [{ agent: profile, model: "claude/effective", thinking: "low" }] });
+    expect(JSON.stringify(events())).not.toContain("PRIVATE");
+    await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+  });
+
   it("publishes correlated lifecycle events without UI, replays on request, and clears once", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-lifecycle-"));
     temporary.push(cwd);
@@ -795,6 +822,9 @@ describe("Pi extension composition", () => {
       { kind: "upsert", run: { id: "run-1", toolCallId: "call-1", label: "Check types", status: "queued" } },
       { kind: "upsert", run: { id: "run-1", toolCallId: "call-1", label: "Check types", status: "running" } },
     ]);
+    const adHoc = events().at(-1)!;
+    if (adHoc.kind !== "upsert") throw new Error("Expected upsert");
+    expect(adHoc.run).not.toHaveProperty("agent");
     harness.finish(0, "PRIVATE OUTPUT");
     await Promise.resolve();
     expect(events().at(-1)).toMatchObject({ kind: "upsert", run: { status: "completed" } });
