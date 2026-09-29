@@ -146,7 +146,9 @@ function validateChoice(value: unknown, criteria: Record<string, string>): JevCh
     probabilities[key] = probability;
     total += probability;
   }
-  if (Math.abs(total - 1) > 0.001) throw new Error("invalid response");
+  // The service rounds each probability to two decimals, so the sum can drift
+  // by up to half a unit per choice (0.99 or 1.01 is routine with ~10 routes).
+  if (Math.abs(total - 1) > 0.005 * expected.length + 1e-9) throw new Error("invalid response");
   const highest = Math.max(...Object.values(probabilities));
   if (probabilities[answer.choice] !== highest) throw new Error("invalid response");
   return { choice: answer.choice, confidence: answer.confidence, probabilities };
