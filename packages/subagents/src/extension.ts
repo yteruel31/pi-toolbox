@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -38,6 +39,7 @@ import type {
 } from "./agents/types.js";
 import type { SubagentHarness } from "./core/harness.js";
 import { RunManager } from "./core/run-manager.js";
+import { LifecyclePublisher, SUBAGENTS_LIFECYCLE_CHANNEL, SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL } from "./shared/lifecycle.js";
 import {
   ClaudeHarness,
   listClaudeSupportedModels,
@@ -114,6 +116,10 @@ export default createPiSubagentsExtension();
 
 function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies): void {
   let manager: RunManager | undefined;
+  let lifecycle: LifecyclePublisher | undefined;
+  pi.events?.on(SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL, (request: unknown) => {
+    if (request && typeof request === "object" && "v" in request && request.v === 1) lifecycle?.snapshot();
+  });
   let sessionContext: ExtensionContext | undefined;
   let piHarness: SubagentHarness | undefined;
   let claudeHarness: SubagentHarness | undefined;
@@ -214,12 +220,16 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       agentDir: getAgentDir(),
     });
     claudeHarness = dependencies.createClaudeHarness?.({}) ?? new ClaudeHarness();
+    lifecycle = new LifecyclePublisher(parentSessionId, randomUUID(), (event) => {
+      pi.events?.emit(SUBAGENTS_LIFECYCLE_CHANNEL, event);
+    });
     manager = new RunManager({
       maxActiveRuns: 4,
       restore,
       hooks: {
         persist: (state) => {
           if (!shuttingDown) pi.appendEntry(STATE_ENTRY, state);
+          lifecycle?.update(state);
           updateStatus();
         },
         onDeliverableResults: () => {
@@ -229,6 +239,8 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         onChange: notifyRunListeners,
       },
     });
+    lifecycle.update(manager.snapshotState());
+    lifecycle.snapshot();
     updateStatus();
     if (manager.pendingDeliveryCount() > 0) scheduleDelivery();
   });
@@ -242,6 +254,8 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     shuttingDown = true;
     sessionContext = ctx;
     manager?.shutdown(`parent session ${event.reason}`);
+    lifecycle?.clear();
+    lifecycle = undefined;
     if (ctx.hasUI) ctx.ui.setStatus("subagents", undefined);
     emitStatus({ v: 1, counts: null });
     manager = undefined;
@@ -355,6 +369,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         )
         : routingHarness;
       const snapshot = runtime.manager.spawn({
+        origin: { toolCallId: _toolCallId, label: params.name ?? params.agent ?? "Subagent" },
         prompt: params.prompt,
         title: params.name,
         agentProfile: params.agent,
