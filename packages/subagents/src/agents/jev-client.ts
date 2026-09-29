@@ -16,6 +16,20 @@ export interface JevChoiceAnswer {
 
 export type JevFetch = Fetch;
 
+/** Closed vocabulary: never retain SDK messages or response content. */
+type JevFailureCode = "transport" | "http" | "sdk-response" | "response-size" | "answer-shape" | "probability-keys" | "unknown-choice" | "probability-value" | "probability-sum" | "choice-not-highest" | "timeout" | "cancelled";
+export class JevRequestError extends Error {
+  constructor(readonly code: JevFailureCode, readonly httpStatus?: number, message = "Jev request failed.") {
+    super(message);
+    this.name = "JevRequestError";
+  }
+}
+
+export function jevFailureDiagnostic(error: unknown): string {
+  if (!(error instanceof JevRequestError)) return "code=preparation; diagnostic=v1";
+  return `code=${error.code}${error.httpStatus === undefined ? "" : `; http=${error.httpStatus}`}; diagnostic=v1`;
+}
+
 export async function requestJevChoice(options: {
   apiKey: string;
   state: unknown;
@@ -49,9 +63,17 @@ async function request(options: {
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, JEV_TIMEOUT_MS);
   const transport = options.fetchImpl ?? fetch;
+  let transportFailure: JevRequestError | undefined;
+  let httpStatus: number | undefined;
   const fetchImpl: JevFetch = async (url, init) => {
-    const response = await transport(url, { ...init, redirect: "error" });
-    return boundedResponse(response, controller.signal);
+    try {
+      const response = await transport(url, { ...init, redirect: "error" });
+      httpStatus = response.status;
+      return await boundedResponse(response, controller.signal);
+    } catch (error) {
+      transportFailure = error instanceof JevRequestError ? error : new JevRequestError("transport");
+      throw transportFailure;
+    }
   };
   let stopAbortRace = () => {};
   try {
@@ -78,10 +100,11 @@ async function request(options: {
       abortRace.promise,
     ]);
     return validateChoice(result, options.criteria);
-  } catch {
-    if (options.signal?.aborted) throw new Error("Jev request was cancelled.");
-    if (timedOut) throw new Error("Jev request timed out after 5 seconds.");
-    throw new Error("Jev request failed.");
+  } catch (error) {
+    if (options.signal?.aborted) throw new JevRequestError("cancelled", httpStatus, "Jev request was cancelled.");
+    if (timedOut) throw new JevRequestError("timeout", httpStatus, "Jev request timed out after 5 seconds.");
+    const code = transportFailure?.code ?? (httpStatus !== undefined && httpStatus >= 400 ? "http" : error instanceof JevRequestError ? error.code : "sdk-response");
+    throw new JevRequestError(code, httpStatus);
   } finally {
     clearTimeout(timer);
     stopAbortRace();
@@ -102,7 +125,7 @@ async function boundedResponse(response: Response, signal: AbortSignal): Promise
   const declared = response.headers.get("content-length");
   if (declared !== null && (/^\d+$/.test(declared) ? Number(declared) : Infinity) > JEV_MAX_RESPONSE_BYTES) {
     await response.body?.cancel().catch(() => undefined);
-    throw new Error("response too large");
+    throw new JevRequestError("response-size");
   }
   if (!response.body) return response;
   const reader = response.body.getReader();
@@ -117,7 +140,7 @@ async function boundedResponse(response: Response, signal: AbortSignal): Promise
       signal.throwIfAborted();
       if (done) break;
       size += value.byteLength;
-      if (size > JEV_MAX_RESPONSE_BYTES) { await reader.cancel().catch(() => undefined); throw new Error("response too large"); }
+      if (size > JEV_MAX_RESPONSE_BYTES) { await reader.cancel().catch(() => undefined); throw new JevRequestError("response-size"); }
       chunks.push(value);
     }
   } finally {
@@ -131,26 +154,26 @@ async function boundedResponse(response: Response, signal: AbortSignal): Promise
 }
 
 function validateChoice(value: unknown, criteria: Record<string, string>): JevChoiceAnswer {
-  if (!isRecord(value) || !isRecord(value.answers) || !isRecord(value.answers.route)) throw new Error("invalid response");
+  if (!isRecord(value) || !isRecord(value.answers) || !isRecord(value.answers.route)) throw new JevRequestError("answer-shape");
   const answer = value.answers.route;
-  if (answer.type !== "choice" || typeof answer.choice !== "string" || !finiteFraction(answer.confidence) || !isRecord(answer.probabilities)) throw new Error("invalid response");
+  if (answer.type !== "choice" || typeof answer.choice !== "string" || !finiteFraction(answer.confidence) || !isRecord(answer.probabilities)) throw new JevRequestError("answer-shape");
   const expected = Object.keys(criteria).sort();
   const actual = Object.keys(answer.probabilities).sort();
-  if (expected.length !== actual.length || expected.some((key, index) => key !== actual[index])) throw new Error("invalid response");
-  if (!expected.includes(answer.choice)) throw new Error("invalid response");
+  if (expected.length !== actual.length || expected.some((key, index) => key !== actual[index])) throw new JevRequestError("probability-keys");
+  if (!expected.includes(answer.choice)) throw new JevRequestError("unknown-choice");
   const probabilities: Record<string, number> = {};
   let total = 0;
   for (const key of expected) {
     const probability = answer.probabilities[key];
-    if (!finiteFraction(probability)) throw new Error("invalid response");
+    if (!finiteFraction(probability)) throw new JevRequestError("probability-value");
     probabilities[key] = probability;
     total += probability;
   }
   // The service rounds each probability to two decimals, so the sum can drift
   // by up to half a unit per choice (0.99 or 1.01 is routine with ~10 routes).
-  if (Math.abs(total - 1) > 0.005 * expected.length + 1e-9) throw new Error("invalid response");
+  if (Math.abs(total - 1) > 0.005 * expected.length + 1e-9) throw new JevRequestError("probability-sum");
   const highest = Math.max(...Object.values(probabilities));
-  if (probabilities[answer.choice] !== highest) throw new Error("invalid response");
+  if (probabilities[answer.choice] !== highest) throw new JevRequestError("choice-not-highest");
   return { choice: answer.choice, confidence: answer.confidence, probabilities };
 }
 

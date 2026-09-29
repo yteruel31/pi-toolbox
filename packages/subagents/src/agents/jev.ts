@@ -1,7 +1,7 @@
 import { getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import type { ClaudeSupportedModel } from "../harnesses/claude.js";
 import { truncateText } from "../shared/truncate.js";
-import { requestJevChoice, type JevFetch } from "./jev-client.js";
+import { jevFailureDiagnostic, requestJevChoice, type JevFetch } from "./jev-client.js";
 import {
   inheritedModel,
   inheritedThinking,
@@ -303,7 +303,7 @@ export async function routeWithJev(input: JevRouteInput, fetchImpl: JevFetch = f
   } catch (error) {
     if (input.signal?.aborted) throw new Error("Jev routing was cancelled.");
     if (error instanceof JevRoutingConflictError) throw error;
-    return safeFallback(input, constraints, "Jev routing failed or returned an invalid response.");
+    return safeFallback(input, constraints, `Jev routing failed or returned an invalid response. ${jevFailureDiagnostic(error)}`);
   }
 }
 

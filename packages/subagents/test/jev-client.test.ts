@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JEV_BASE_URL, JEV_MAX_RESPONSE_BYTES, JEV_MODEL, JEV_TIMEOUT_MS, requestJevChoice, requestJevConnection, type JevFetch } from "../src/agents/jev-client.js";
+import { jevFailureDiagnostic, JEV_BASE_URL, JEV_MAX_RESPONSE_BYTES, JEV_MODEL, JEV_TIMEOUT_MS, requestJevChoice, requestJevConnection, type JevFetch } from "../src/agents/jev-client.js";
 
 const criteria = { low: "Low", high: "High" };
 const validAnswer = (choice = "high", confidence = 0.01, probabilities: Record<string, number> = { low: 0.2, high: 0.8 }) => ({
@@ -56,6 +56,29 @@ describe("Jev client transport boundaries", () => {
     const fetcher = vi.fn(async () => { throw new Error("transport-key-sentinel"); });
     const error = await call(fetcher).then(() => new Error("unexpected success"), (value: unknown) => value as Error);
     expect(fetcher).toHaveBeenCalledTimes(1); expect(error.message).toBe("Jev request failed."); expect(error.message).not.toContain("sentinel");
+  });
+
+  it.each([
+    ["probability-sum", validAnswer("high", 1, { low: 0.3, high: 0.8 })],
+    ["probability-keys", validAnswer("high", 1, { high: 1 })],
+    ["choice-not-highest", validAnswer("low")],
+    ["unknown-choice", validAnswer("private-choice")],
+  ])("reports safe validation diagnostics: %s", async (code, body) => {
+    const error = await call(async () => jsonResponse(body)).catch((error: unknown) => error);
+    expect(jevFailureDiagnostic(error)).toBe(`code=${code}; http=200; diagnostic=v1`);
+    expect(jevFailureDiagnostic(error)).not.toMatch(/private|explicit-key/);
+  });
+
+  it("distinguishes HTTP, transport, and malformed responses without raw content", async () => {
+    for (const status of [401, 403, 429, 500]) {
+      const error = await call(async () => new Response("private-sentinel", { status })).catch((error: unknown) => error);
+      expect(jevFailureDiagnostic(error)).toBe(`code=http; http=${status}; diagnostic=v1`);
+    }
+    const transport = await call(async () => { throw new Error("private-sentinel"); }).catch((error: unknown) => error);
+    expect(jevFailureDiagnostic(transport)).toBe("code=transport; diagnostic=v1");
+    const malformed = await call(async () => new Response("private-sentinel", { status: 200 })).catch((error: unknown) => error);
+    expect(jevFailureDiagnostic(malformed)).toBe("code=answer-shape; http=200; diagnostic=v1");
+    expect(jevFailureDiagnostic(new Error("private-sentinel"))).toBe("code=preparation; diagnostic=v1");
   });
 
   it("uses fixed explicit SDK configuration and ignores hostile environment overrides", async () => {
