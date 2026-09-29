@@ -15,6 +15,47 @@ function setup() {
 const statuses = (events: SubagentsLifecycleEvent[]) => events.flatMap((event) => event.kind === "upsert" ? [event.run.status] : []);
 
 describe("host lifecycle projection", () => {
+  it("projects explicit profiles and thinking without changing labels or filling absent fields", () => {
+    const { manager, publisher, events } = setup();
+    manager.spawn({ prompt: "private", harness: hanging, agentProfile: "reviewer", model: "fake/requested", thinkingLevel: "off",
+      origin: { toolCallId: "call-1", label: "Check types" } });
+    manager.spawn({ prompt: "private", harness: hanging, title: "Custom agent" });
+    publisher.snapshot();
+    const event = events.at(-1)!;
+    expect(event).toMatchObject({ v: 1, kind: "snapshot", runs: [
+      { label: "Check types", agent: "reviewer", model: "fake/requested", thinking: "off" },
+      { label: "Subagent run-2" },
+    ] });
+    if (event.kind !== "snapshot") throw new Error("Expected snapshot");
+    for (const field of ["agent", "model", "thinking"]) expect(event.runs[1]).not.toHaveProperty(field);
+    const restored = new RunManager({ restore: manager.snapshotState() });
+    publisher.update(restored.snapshotState());
+    publisher.snapshot();
+    expect(events.at(-1)).toMatchObject({ runs: [
+      { agent: "reviewer", model: "fake/requested", thinking: "off", status: "failed" },
+      { status: "failed" },
+    ] });
+    expect(JSON.stringify(events)).not.toContain("private");
+  });
+
+  it("sanitizes and bounds optional profile and model display fields, including persisted values", () => {
+    const { manager, publisher, events } = setup();
+    manager.spawn({ prompt: "private", harness: hanging });
+    const state = manager.snapshotState();
+    state.runs[0]!.agentProfile = `\u001b\u0007\n${"a".repeat(140)}`;
+    state.runs[0]!.requestedModel = `\u001b\u0007\t${"m".repeat(240)}`;
+    publisher.update(state);
+    const event = events.at(-1)!;
+    if (event.kind !== "upsert") throw new Error("Expected upsert");
+    expect(event.run.agent!.length).toBeLessThanOrEqual(100);
+    expect(event.run.model!.length).toBeLessThanOrEqual(200);
+    expect(event.run.agent).not.toMatch(/[\u0000-\u001f]/);
+    expect(event.run.model).not.toMatch(/[\u0000-\u001f]/);
+    const count = events.length;
+    publisher.update(state);
+    expect(events).toHaveLength(count);
+  });
+
   it("reports synchronous errors without a phantom running state or diagnostics", () => {
     const { manager, events } = setup();
     manager.spawn({ prompt: "secret", harness: { ...hanging, run: () => { throw new Error("secret error"); } } });

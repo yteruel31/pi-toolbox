@@ -1,4 +1,11 @@
-import type { HarnessKind, PersistedRunState, RunStatus } from "./types.js";
+import { sanitizeTerminalText, toDisplayTitle } from "./truncate.js";
+import type { HarnessKind, PersistedRunState, RunStatus, ThinkingLevel } from "./types.js";
+
+const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+function displayField(value: string | undefined, limit: number): string | undefined {
+  return typeof value === "string" ? toDisplayTitle(sanitizeTerminalText(value), limit) || undefined : undefined;
+}
 
 export const SUBAGENTS_LIFECYCLE_CHANNEL = "pi-toolbox:subagents:lifecycle";
 export const SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL = "pi-toolbox:subagents:lifecycle:request";
@@ -7,6 +14,10 @@ export const SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL = "pi-toolbox:subagents:lifecyc
 export interface SubagentLifecycleRun {
   id: string;
   label: string;
+  /** Explicit named-agent profile only; never inferred from the label. */
+  agent?: string;
+  model?: string;
+  thinking?: ThinkingLevel;
   toolCallId?: string;
   harness: HarnessKind;
   status: RunStatus;
@@ -43,9 +54,15 @@ export class LifecyclePublisher {
   update(state: PersistedRunState): void {
     if (this.closed) return;
     for (const record of state.runs) {
+      const agent = displayField(record.agentProfile, 100);
+      const model = displayField(record.effectiveModel ?? record.requestedModel, 200);
+      const thinking = record.thinkingLevel;
       const run: SubagentLifecycleRun = {
         id: record.id,
         label: record.origin?.label ?? `Subagent ${record.id}`,
+        ...(agent === undefined ? {} : { agent }),
+        ...(model === undefined ? {} : { model }),
+        ...(thinking !== undefined && THINKING_LEVELS.has(thinking) ? { thinking } : {}),
         ...(record.origin ? { toolCallId: record.origin.toolCallId } : {}),
         harness: record.harness,
         status: record.status,
