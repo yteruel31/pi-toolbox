@@ -91,6 +91,11 @@ describe("Jev client transport boundaries", () => {
     await expect(call(async () => jsonResponse(validAnswer("high", 0)))).resolves.toMatchObject({ choice: "high", confidence: 0 });
   });
 
+  it("accepts probability sums drifting from two-decimal rounding", async () => {
+    await expect(call(async () => jsonResponse(validAnswer("high", 0.7, { low: 0.2, high: 0.79 })))).resolves.toMatchObject({ choice: "high" });
+    await expect(call(async () => jsonResponse(validAnswer("high", 0.7, { low: 0.21, high: 0.8 })))).resolves.toMatchObject({ choice: "high" });
+  });
+
   it("applies the same validated boundary to synthetic connection tests", async () => {
     await expect(requestJevConnection({ apiKey: "key", fetchImpl: async () => jsonResponse(validAnswer("missing", 1, { missing: 1 })) })).rejects.toThrow("Jev request failed.");
     await expect(requestJevConnection({ apiKey: "key", fetchImpl: async () => jsonResponse({ model: JEV_MODEL, answers: { route: { type: "choice", choice: "ok", confidence: 0, probabilities: { ok: 1 } } }, usage: {} }) })).resolves.toBeUndefined();
