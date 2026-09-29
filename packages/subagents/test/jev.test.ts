@@ -378,6 +378,7 @@ describe("Jev route selection", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(result.route).toEqual(original);
     expect(result.fallback).toContain("invalid response");
+    expect(result.fallback).toContain("code=probability-keys; http=200; diagnostic=v1");
   });
 
   it("accepts low confidence when the probability shape is valid", async () => {
@@ -394,6 +395,7 @@ describe("Jev route selection", () => {
     const result = await routeWithJev({ task: "secret task", route: route(), piModels: [piModel("one"), piModel("two")], claudeModels: [], apiKey: "secret-key" }, fetcher);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(result.fallback).not.toContain("secret");
+    expect(result.fallback).toContain("code=http; http=429; diagnostic=v1");
   });
 
   it("propagates caller cancellation", async () => {
