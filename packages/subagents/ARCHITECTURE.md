@@ -37,9 +37,9 @@ The manager observes both branches of every harness promise. Harness failures th
 
 A normal result exits exactly once through `subagent_wait` or automatic delivery. `/btw` starts with `suppressed` consumption and is never model-delivered.
 
-The adapter writes `PersistedRunState` through `pi.appendEntry`, which does not enter LLM context. On restore, settled consumption remains intact. Previously active processes are not resumed; their records become explicit interrupted failures and are delivered once.
+The adapter writes `PersistedRunState` through `pi.appendEntry`, which does not enter LLM context. On restore, settled consumption remains intact. Previously active processes are not resumed; their records become explicit interrupted failures. Unconsumed restored results are added to context once without triggering a parent turn, so restarting after a manual stop cannot resume work ahead of the user's next prompt. Results from newly spawned runs retain automatic delivery.
 
-The manager signals when delivery is possible. The adapter drains only while Pi is idle, batches in settlement order, and injects one `followUp` custom message with `triggerTurn: true`. An explicit wait reservation removes its run from that queue.
+For live results, the manager signals when delivery is possible. The adapter drains only while Pi is idle, batches in settlement order, and injects one `followUp` custom message with `triggerTurn: true`. An explicit wait reservation removes its run from that queue.
 
 ## Harness contract
 

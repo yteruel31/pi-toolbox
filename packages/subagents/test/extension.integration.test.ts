@@ -717,6 +717,56 @@ describe("Pi extension composition", () => {
       .toBe("Spawn subagent unsafe[31m name (profile)");
   });
 
+  it.each(["queued", "running", "completed", "failed", "cancelled"])(
+    "restores an unconsumed %s result without restarting the parent",
+    async (status) => {
+      const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-restore-"));
+      temporary.push(cwd);
+      const runtime = fakePi();
+      const state = persistedState();
+      state.runs[0]!.status = status;
+      state.runs[0]!.consumption = "none";
+      runtime.entries.push({ customType: "pi-subagents-state-v1", data: state });
+      const harness = new ControlledHarness();
+      registerExtension(runtime, {
+        createPiHarness: () => harness,
+        createClaudeHarness: () => new ControlledHarness("claude"),
+      });
+      const ctx = fakeContext(cwd, runtime.entries);
+      await emit(runtime, "session_start", { reason: "startup" }, ctx);
+      await Promise.resolve();
+
+      expect(harness.requests).toHaveLength(0);
+      expect(runtime.messages).toHaveLength(1);
+      expect(runtime.messages[0]).toMatchObject({
+        message: { customType: "pi-subagents-results", details: { ids: ["run-7"] } },
+        options: { deliverAs: "followUp", triggerTurn: false },
+      });
+      if (status === "queued" || status === "running") {
+        expect(runtime.messages[0]!.message).toMatchObject({
+          content: expect.stringContaining("interrupted"),
+        });
+      }
+      await emit(runtime, "agent_settled", {}, ctx);
+      expect(runtime.messages).toHaveLength(1);
+      const waited = await execute(runtime, "subagent_wait", { ids: ["run-7"] }, ctx);
+      expect(waited.content[0]).toMatchObject({ text: expect.stringContaining("run-7") });
+
+      // A second restart must not re-deliver the restored result.
+      await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+      await emit(runtime, "session_start", { reason: "startup" }, ctx);
+      expect(runtime.messages).toHaveLength(1);
+
+      // Fresh background work still wakes the parent when it finishes.
+      await execute(runtime, "subagent_spawn", { prompt: "new task" }, ctx);
+      harness.finish(0, "fresh result");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(runtime.messages).toHaveLength(2);
+      expect(runtime.messages[1]?.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+      await emit(runtime, "session_shutdown", { reason: "quit" }, ctx);
+    },
+  );
+
   it("registers six strict tools and composes wait, delivery, persistence, and shutdown", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-extension-"));
     temporary.push(cwd);

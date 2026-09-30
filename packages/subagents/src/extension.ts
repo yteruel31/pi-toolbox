@@ -160,10 +160,8 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     current.ui.setStatus("subagents", statusText(runs));
   };
 
-  const deliverIfIdle = (): void => {
-    deliveryScheduled = false;
-    const current = sessionContext;
-    if (!current || !manager || shuttingDown || !current.isIdle()) return;
+  const deliverResults = (triggerTurn: boolean): void => {
+    if (!manager || shuttingDown) return;
     const results = manager.drainDeliveries();
     if (results.length === 0) return;
     pi.sendMessage(
@@ -173,9 +171,15 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         display: true,
         details: { ids: results.map((result) => result.id) },
       },
-      { deliverAs: "followUp", triggerTurn: true },
+      { deliverAs: "followUp", triggerTurn },
     );
     updateStatus();
+  };
+
+  const deliverIfIdle = (): void => {
+    deliveryScheduled = false;
+    if (!sessionContext?.isIdle()) return;
+    deliverResults(true);
   };
 
   const scheduleDelivery = (): void => {
@@ -245,7 +249,9 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     lifecycle.update(manager.snapshotState());
     lifecycle.snapshot();
     updateStatus();
-    if (manager.pendingDeliveryCount() > 0) scheduleDelivery();
+    // Restoring results must not restart work after a manual stop or overtake
+    // the user's next prompt. Keep them in context without starting a turn.
+    deliverResults(false);
   });
 
   pi.on("agent_settled", (_event, ctx) => {
