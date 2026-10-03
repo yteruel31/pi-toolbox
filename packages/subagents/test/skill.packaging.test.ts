@@ -37,7 +37,14 @@ describe("subagents skill distribution", () => {
       expect(skills).toHaveLength(1);
       expect(skills[0]).toMatchObject({ filePath: skillPath, disableModelInvocation: false });
       expect(formatSkillsForPrompt(skills)).toContain("<name>subagents</name>");
-      expect(formatSkillsForPrompt(skills)).toContain("configured routing");
+      const prompt = formatSkillsForPrompt(skills);
+      expect(prompt).toContain("configured routing");
+      expect(prompt).toContain("useful independent work");
+      expect(prompt).toContain("subagent_collect");
+      expect(prompt).toContain("wait only for required ids");
+      expect(prompt).toContain("never busywork");
+      expect(prompt).toContain("dependency boundary");
+      expect(prompt).toContain("print/headless");
     } finally {
       await rm(agentDir, { recursive: true, force: true });
     }

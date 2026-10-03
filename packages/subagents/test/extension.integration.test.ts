@@ -710,6 +710,16 @@ describe("spawn profile selection", () => {
     expect(properties.name).toMatchObject({ description: expect.stringContaining("display title only") });
     expect(spawn.promptGuidelines?.join(" ")).toContain("use agent when a named role is requested");
     expect(spawn.promptGuidelines?.join(" ")).toContain("omit harness, model, and reasoning_effort unless explicitly requested");
+    expect(spawn.description).toContain("do useful independent main work");
+    expect(spawn.description).toContain("never poll");
+    expect(spawn.promptGuidelines?.join(" ")).toContain("useful independent work");
+    expect(spawn.promptGuidelines?.join(" ")).toContain("subagent_collect once");
+    const wait = runtime.tools.get("subagent_wait")!;
+    expect(wait.description).toContain("required for the next dependency");
+    expect(wait.promptGuidelines?.join(" ")).toContain("print/headless");
+    const collect = runtime.tools.get("subagent_collect")!;
+    expect(collect.description).toContain("not to poll");
+    expect(collect.promptGuidelines?.join(" ")).toContain("dependency boundary");
   });
 });
 

@@ -20,12 +20,13 @@ The full `pi-toolbox` repository remains Git-installable. This scoped package is
 | --- | --- |
 | `subagent_spawn` | Start a background run and return its `run-N` id immediately. |
 | `subagent_agents` | Discover named profiles and show effective routing. |
-| `subagent_wait` | Wait for one or more runs and consume their results. |
+| `subagent_wait` | Wait for the exact runs needed for the next dependency and consume their results. |
+| `subagent_collect` | Collect selected ready terminal results without waiting; do not use it to poll. |
 | `subagent_cancel` | Request cancellation without deleting records. |
 | `subagent_check` | Inspect status, bounded activity, and result preview. |
 | `subagent_list` | List all session runs in creation order. |
 
-At most four runs are active at once across both harnesses and `/btw`. Results not collected with `subagent_wait` are delivered once when the parent becomes idle.
+At most four runs are active at once across both harnesses and `/btw`. Results not collected with `subagent_wait` or `subagent_collect` are delivered once when the parent becomes idle.
 
 The bundled [subagents skill](./skills/subagents/SKILL.md) explains profile selection, autonomous prompts, and result collection. Pi discovers it through both the standalone package and the full toolbox; load it with `/skill:subagents`.
 
@@ -42,9 +43,9 @@ subagent_spawn({
 
 `agent` selects the profile's system prompt, tools, skills, and configured routing. `name` is only a display title. If `name` exactly matches an existing profile without `agent`, spawn throws an actionable error before creating a run, even with explicit routing arguments. Supply `agent` to select that profile, or choose a different title for an intentionally generic run. Calls with both `agent` and `name` remain valid.
 
-Omit `harness`, `model`, and `reasoning_effort` unless an override is explicitly requested. For generic work, omit `agent` and use a free-form title; generic runs default to Pi. Keep working after spawn and call `subagent_wait` with the returned run id only when its result blocks progress.
+Omit `harness`, `model`, and `reasoning_effort` unless an override is explicitly requested. For generic work, omit `agent` and use a free-form title; generic runs default to Pi. After bounded independent spawns, the parent should do useful independent work (and may do work itself rather than delegating everything). At a dependency boundary, call `subagent_collect` once for relevant terminal results, then call `subagent_wait` only with ids required for the next step. Never list/check/collect poll, use busywork, or create an artificial keepalive. If no useful independent work remains, return honestly while children continue and automatic delivery resumes when idle. In print/headless `pi -p`, wait for required results before process exit; interactive or RPC sessions may yield while no result is required.
 
-Children cannot call subagent/workflow orchestration tools or interactive user-question tools. Give each child a complete, self-contained prompt.
+Children cannot call subagent/workflow orchestration tools or interactive user-question tools. Give each child a complete, self-contained prompt. Give parent and children disjoint file ownership, or a read-only worker boundary; never mutate the same files concurrently.
 
 ## Harnesses
 
