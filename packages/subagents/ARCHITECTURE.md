@@ -26,8 +26,8 @@ One manager exists per parent Pi session. It owns:
 - bounded activity plus a structured status/user/assistant/tool transcript with dropped-entry accounting;
 - an optional active-message control owned until settlement and disposed exactly once;
 - bounded diagnostics, output, model metadata, and previews;
-- explicit result consumption (`none`, `waited`, `delivered`, `suppressed`);
-- wait reservations that prevent auto-delivery from racing an explicit wait;
+- explicit result consumption (`none`, `waited`, `delivered`, `suppressed`) with deduplicated usage accounting; collection uses the existing `waited` state;
+- wait reservations that prevent auto-delivery or collection from racing an explicit wait;
 - deterministic creation and settlement ordering;
 - serialized state and a delivery queue, without Pi imports.
 
@@ -35,7 +35,7 @@ The manager observes both branches of every harness promise. Harness failures th
 
 ### Delivery and persistence
 
-A normal result exits exactly once through `subagent_wait` or automatic delivery. `/btw` starts with `suppressed` consumption and is never model-delivered.
+A normal result exits exactly once through `subagent_wait`, `subagent_collect`, or automatic delivery. Collection uses the existing `waited` consumption state and returns only selected terminal results immediately; active and wait-reserved runs remain pending, so it is not a polling mechanism. `/btw` starts with `suppressed` consumption and is never model-delivered.
 
 The adapter writes `PersistedRunState` through `pi.appendEntry`, which does not enter LLM context. On restore, settled consumption remains intact. Previously active processes are not resumed; their records become explicit interrupted failures. Unconsumed restored results are added to context once without triggering a parent turn, so restarting after a manual stop cannot resume work ahead of the user's next prompt. Results from newly spawned runs retain automatic delivery.
 
@@ -106,7 +106,7 @@ Jev credentials use a dedicated `pi-subagents` namespace. Setup stages the opt-i
 
 The default factory only registers tools, commands, and handlers. It starts no child process, watcher, or timer before `session_start`.
 
-On session start it restores state and builds both harnesses plus the manager. The six tools use TypeBox schemas and `StringEnum` values. Tool text is bounded; `subagent_wait` reports nested usage to Pi. Working directories must exist, resolve inside the trusted current project, and cannot escape through symlinks.
+On session start it restores state and builds both harnesses plus the manager. The seven tools use TypeBox schemas and `StringEnum` values. Tool text and prompt guidelines teach bounded independent work: collect relevant ready results once at a dependency boundary, wait only for required ids, and never poll or use artificial keepalive. In print/headless mode required results must be waited before exit; interactive/RPC sessions may yield while work continues. `subagent_wait` reports nested usage to Pi. Interactive/RPC steering is recorded as PRE-QUEUE intent, not post-queue acceptance; it locally releases a wait without cancelling children, while follow-up input retains its usual semantics. Working directories must exist, resolve inside the trusted current project, and cannot escape through symlinks.
 
 `session_shutdown` clears UI state, aborts all active runs, disposes harness resources through cancellation, and drops session closures idempotently.
 

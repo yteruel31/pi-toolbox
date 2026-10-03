@@ -292,11 +292,12 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     name: "subagent_spawn",
     label: "Spawn subagent",
     description:
-      "Start one autonomous background run and return its run id immediately. Use agent to select a named profile and its saved routing; name is only a display title. Child harnesses have normal host permissions; Claude bypasses permission prompts.",
+      "Start one autonomous background run and return its run id immediately. After spawning, do useful independent main work; at a dependency boundary, collect ready results or wait only for ids that block progress—never poll. Use agent to select a named profile and its saved routing; name is only a display title. Child harnesses have normal host permissions; Claude bypasses permission prompts.",
     promptSnippet: "Spawn an autonomous background subagent on Pi or Claude Code.",
     promptGuidelines: [
-      "Use subagent_spawn for self-contained work that can continue in the background.",
-      "After subagent_spawn, keep working; use subagent_wait only when the result blocks progress.",
+      "Use subagent_spawn for bounded, independent work with disjoint file ownership or read-only boundaries; the parent may do useful work itself instead of delegating everything.",
+      "After subagent_spawn, do useful independent work. At a dependency boundary, use subagent_collect once for relevant ready results, then use subagent_wait only for the exact run ids required for the next step; never poll or use busywork to keep working.",
+      "If no useful independent work remains, return an honest response while children continue; automatic delivery resumes when the parent is idle. In print/headless mode, wait for required results before process exit; interactive or RPC parents can yield when no result is required yet.",
       "For subagent_spawn, use agent when a named role is requested; discover exact profile names and routing with subagent_agents. name only sets a display title, not a profile.",
       "For subagent_spawn, omit harness, model, and reasoning_effort unless explicitly requested; preserve the configured profile routing. Pass auto only when automatic routing is requested and inherit only to force parent/SDK defaults.",
       "Children of subagent_spawn cannot spawn more agents or ask the user, so make the prompt complete and self-contained.",
@@ -446,9 +447,9 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   pi.registerTool({
     name: "subagent_wait",
     label: "Wait for subagents",
-    description: "Wait for all listed run ids to settle and consume their final results in request order. Use only when results block further work; otherwise keep working and receive automatic delivery when idle. Output is capped at 49,000 characters.",
+    description: "Wait for all listed run ids to settle and consume their final results in request order. List only ids required for the next dependency; use collect once for relevant ready results first when appropriate. Output is capped at 49,000 characters.",
     promptGuidelines: [
-      "Use subagent_wait only when one or more background results are required before continuing.",
+      "Use subagent_wait only for the exact background run ids required before the next step, not as polling. In print/headless mode, wait for required results before process exit; interactive or RPC parents may yield while no result is required.",
     ],
     parameters: Type.Object({
       ids: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {
@@ -484,9 +485,9 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   pi.registerTool({
     name: "subagent_collect",
     label: "Collect ready subagent results",
-    description: "Immediately return listed terminal subagent results without waiting. Active runs stay pending; results reserved by an in-progress wait remain reserved. Output is capped at 49,000 characters.",
+    description: "Immediately collect listed relevant terminal results without waiting. Active runs stay pending; results reserved by an in-progress wait remain reserved. Use once at a dependency boundary, not to poll. Output is capped at 49,000 characters.",
     promptGuidelines: [
-      "Use subagent_collect to selectively inspect results that may already be ready without blocking on active runs.",
+      "Use subagent_collect once at a dependency boundary to consume relevant ready results without blocking; do not poll it. Then wait only for ids actually required for the next step.",
     ],
     parameters: Type.Object({
       ids: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {

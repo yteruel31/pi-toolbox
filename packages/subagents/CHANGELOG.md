@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Clarify the parent workflow in tool guidance and the distributed skill: spawn bounded independent work, do useful parent work, collect relevant ready results once at a dependency boundary, and wait only for required ids. Guidance distinguishes headless required-result waits from interactive/RPC yielding and prohibits polling or artificial keepalive.
+
 - Add per-field `auto` and `inherit` routing modes for harness, model, and thinking/effort in spawn arguments, saved routing, and profile frontmatter. `auto` delegates the field to Jev over lower fixed values and resolves as `inherit` when Jev is off or unavailable. `inherit` uses parent Pi values or Claude SDK defaults and no longer stops Jev from routing other free fields. Only the exact bare lowercase strings are reserved, and the routing editor now labels absent fields `unset`.
 - Require Pi 0.87.1 and Claude Agent SDK 0.3.281 so routing sees the current model catalogues, including GPT-6 Astra, GPT-6 Sol, GPT-6 Luna, and Claude Opus 5.5.
 - Enrich Jev candidate descriptions with each catalogue's max output and accepted input plus the Claude SDK's adaptive-thinking flag, prefer the Claude SDK's own model description, and resolve `[1m]` long-context aliases.
