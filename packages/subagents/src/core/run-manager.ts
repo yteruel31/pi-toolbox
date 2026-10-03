@@ -34,6 +34,8 @@ import {
   isSettledStatus,
   type CancelEntry,
   type CancelReport,
+  type CollectEntry,
+  type CollectReport,
   type HarnessKind,
   type PersistedRunRecord,
   type PersistedRunState,
@@ -576,11 +578,13 @@ export class RunManager {
     // Success: consume exactly once (first consumer wins, later waits still
     // read the retained record).
     let mutated = false;
+    const newlyConsumedIds: string[] = [];
     for (const run of known) {
       run.reservations--;
       this.deliveryQueue.delete(run.id);
       if (run.consumption === "none") {
         run.consumption = "waited";
+        newlyConsumedIds.push(run.id);
         mutated = true;
       }
     }
@@ -593,7 +597,45 @@ export class RunManager {
           ? { kind: "result", id, result: this.toResult(run) }
           : { kind: "unknown", id };
       }),
+      newlyConsumedIds,
     };
+  }
+
+  /**
+   * Return terminal results that are ready now without waiting. A terminal
+   * result reserved by an active wait remains owned by that wait; active runs
+   * are only reported as pending and are otherwise untouched.
+   */
+  collectReady(ids: readonly string[]): CollectReport {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw new InvalidArgumentError(
+        "subagent_collect requires a non-empty array of run ids.",
+      );
+    }
+
+    const newlyConsumedIds: string[] = [];
+    const consumed = new Set<string>();
+    const entries = ids.map((id): CollectEntry => {
+      const run = this.runs.get(id);
+      if (!run) return { kind: "unknown", id };
+      if (!this.isSettled(run)) {
+        return { kind: "pending", id, status: run.status as Exclude<RunStatus, SettledRunStatus> };
+      }
+      if (run.reservations > 0 && run.consumption === "none") {
+        return { kind: "reserved", id, status: run.status as SettledRunStatus };
+      }
+      if (run.consumption === "none") {
+        run.consumption = "waited";
+        this.deliveryQueue.delete(run.id);
+        if (!consumed.has(run.id)) {
+          consumed.add(run.id);
+          newlyConsumedIds.push(run.id);
+        }
+      }
+      return { kind: "result", id, result: this.toResult(run) };
+    });
+    if (newlyConsumedIds.length > 0) this.persist();
+    return { entries, newlyConsumedIds };
   }
 
   private allSettled(

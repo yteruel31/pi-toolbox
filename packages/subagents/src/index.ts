@@ -80,6 +80,8 @@ export {
 export type {
   CancelEntry,
   CancelReport,
+  CollectEntry,
+  CollectReport,
   HarnessKind,
   PersistedRunRecord,
   PersistedRunState,
