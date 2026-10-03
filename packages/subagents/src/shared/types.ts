@@ -208,6 +208,23 @@ export type WaitEntry =
 export interface WaitReport {
   /** One entry per requested id, in request order. */
   entries: WaitEntry[];
+  /** Unique ids whose result this successful call consumed for the first time. */
+  newlyConsumedIds: string[];
+}
+
+/** Per-id outcome of non-blocking subagent_collect. */
+export type CollectEntry =
+  | { kind: "result"; id: string; result: RunResult }
+  | { kind: "pending"; id: string; status: Exclude<RunStatus, SettledRunStatus> }
+  /** A terminal result is reserved by an in-progress wait and cannot be claimed. */
+  | { kind: "reserved"; id: string; status: SettledRunStatus }
+  | { kind: "unknown"; id: string };
+
+export interface CollectReport {
+  /** One entry per requested id, in request order. */
+  entries: CollectEntry[];
+  /** Unique ids whose result this call consumed for the first time. */
+  newlyConsumedIds: string[];
 }
 
 /** Per-id outcome of subagent_cancel. */

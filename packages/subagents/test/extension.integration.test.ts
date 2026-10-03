@@ -598,6 +598,28 @@ describe("spawn profile selection", () => {
 });
 
 describe("Pi extension composition", () => {
+  it("collects ready results without duplicate usage accounting", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-collect-"));
+    temporary.push(cwd);
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, {
+      createPiHarness: () => harness,
+      createClaudeHarness: () => new ControlledHarness("claude"),
+    });
+    const ctx = { ...fakeContext(cwd, runtime.entries), isIdle: () => false } as ExtensionContext;
+    await emit(runtime, "session_start", {}, ctx);
+    await execute(runtime, "subagent_spawn", { prompt: "ready" }, ctx);
+    harness.finish(0, "collected once");
+    await Promise.resolve();
+
+    const first = await execute(runtime, "subagent_collect", { ids: ["run-1", "run-1"] }, ctx);
+    expect(first.details).toMatchObject({ report: { newlyConsumedIds: ["run-1"] } });
+    expect(first.usage).toMatchObject({ input: 3, output: 2, totalTokens: 6 });
+    const reread = await execute(runtime, "subagent_collect", { ids: ["run-1"] }, ctx);
+    expect(reread.usage).toBeUndefined();
+  });
+
   it("builds routing model catalogues from scoped Pi models and the Claude SDK", async () => {
     const ctx = {
       ...fakeContext("/tmp/project", []),
@@ -767,7 +789,7 @@ describe("Pi extension composition", () => {
     },
   );
 
-  it("registers six strict tools and composes wait, delivery, persistence, and shutdown", async () => {
+  it("registers seven strict tools and composes wait, delivery, persistence, and shutdown", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-extension-"));
     temporary.push(cwd);
     const runtime = fakePi();
@@ -785,6 +807,7 @@ describe("Pi extension composition", () => {
       "subagent_spawn",
       "subagent_agents",
       "subagent_wait",
+      "subagent_collect",
       "subagent_cancel",
       "subagent_check",
       "subagent_list",

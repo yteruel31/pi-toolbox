@@ -450,10 +450,34 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       onUpdate?.(textResult("Waiting for subagent runs…", { ids: params.ids }));
       const report = await runtime.manager.wait(params.ids, { signal });
       updateStatus();
-      const results = report.entries.flatMap((entry) =>
-        entry.kind === "result" ? [entry.result] : [],
-      );
+      const results = newlyConsumedResults(report);
       return textResult(formatWaitReport(report), { report }, aggregateToolUsage(results));
+    },
+  });
+
+  pi.registerTool({
+    name: "subagent_collect",
+    label: "Collect ready subagent results",
+    description: "Immediately return listed terminal subagent results without waiting. Active runs stay pending; results reserved by an in-progress wait remain reserved. Output is capped at 49,000 characters.",
+    promptGuidelines: [
+      "Use subagent_collect to selectively inspect results that may already be ready without blocking on active runs.",
+    ],
+    parameters: Type.Object({
+      ids: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {
+        minItems: 1,
+        maxItems: MAX_IDS,
+        description: "Run ids returned by subagent_spawn or subagent_list, in the desired result order; not profile names or display titles.",
+      }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      sessionContext = ctx;
+      const report = requireSession().manager.collectReady(params.ids);
+      updateStatus();
+      return textResult(
+        formatCollectReport(report),
+        { report },
+        aggregateToolUsage(newlyConsumedResults(report)),
+      );
     },
   });
 
@@ -1062,6 +1086,26 @@ function formatWaitReport(report: Awaited<ReturnType<RunManager["wait"]>>): stri
     ? `${entry.id}: unknown run id`
     : formatOneResult(entry.result));
   return truncateText(blocks.join("\n\n"), MAX_TOOL_TEXT);
+}
+
+function formatCollectReport(report: Awaited<ReturnType<RunManager["collectReady"]>>): string {
+  const blocks = report.entries.map((entry) => {
+    if (entry.kind === "unknown") return `${entry.id}: unknown run id`;
+    if (entry.kind === "pending") return `${entry.id}: pending (${entry.status})`;
+    if (entry.kind === "reserved") return `${entry.id}: result reserved by an active wait (${entry.status})`;
+    return formatOneResult(entry.result);
+  });
+  return truncateText(blocks.join("\n\n"), MAX_TOOL_TEXT);
+}
+
+function newlyConsumedResults(report: { entries: Array<{ kind: string; id: string; result?: RunResult }>; newlyConsumedIds: readonly string[] }): RunResult[] {
+  const ids = new Set(report.newlyConsumedIds);
+  const results: RunResult[] = [];
+  for (const entry of report.entries) {
+    if (entry.kind !== "result" || !entry.result || !ids.delete(entry.id)) continue;
+    results.push(entry.result);
+  }
+  return results;
 }
 
 function formatDeliveredResults(results: readonly RunResult[]): string {
