@@ -35,7 +35,7 @@ The manager observes both branches of every harness promise. Harness failures th
 
 ### Delivery and persistence
 
-A normal result exits exactly once through `subagent_wait`, `subagent_collect`, or automatic delivery. Collection uses the existing `waited` consumption state and returns only selected terminal results immediately; active and wait-reserved runs remain pending, so it is not a polling mechanism. `/btw` starts with `suppressed` consumption and is never model-delivered.
+A normal result exits exactly once through `subagent_wait`, `subagent_collect`, or automatic delivery. Collection uses the existing `waited` consumption state and returns only selected terminal results immediately; active and wait-reserved runs remain pending, so it is not a polling mechanism. `/btw` starts with `suppressed` consumption: automatic delivery and `subagent_collect` return no result payload for it, so its answer never enters parent-model context. Legacy explicit `subagent_wait`, `subagent_check`, and `subagent_list` remain backward compatible.
 
 The adapter writes `PersistedRunState` through `pi.appendEntry`, which does not enter LLM context. On restore, settled consumption remains intact. Previously active processes are not resumed; their records become explicit interrupted failures. Unconsumed restored results are added to context once without triggering a parent turn, so restarting after a manual stop cannot resume work ahead of the user's next prompt. Results from newly spawned runs retain automatic delivery.
 

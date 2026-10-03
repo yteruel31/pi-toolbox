@@ -835,6 +835,44 @@ describe("Pi extension composition", () => {
     expect(reread.usage).toBeUndefined();
   });
 
+  it("keeps settled /btw answers private from collect while the command still displays them", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "pi-subagents-collect-btw-"));
+    temporary.push(cwd);
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, {
+      createPiHarness: () => harness,
+      createClaudeHarness: () => new ControlledHarness("claude"),
+    });
+    const ctx = fakeContext(cwd, runtime.entries);
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await emit(runtime, "session_start", {}, ctx);
+      const command = runtime.commands.get("btw")!.handler("private question", ctx);
+      while (harness.requests.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+      harness.finish(0, "private sentinel answer");
+      await Promise.resolve();
+
+      const collected = await execute(runtime, "subagent_collect", { ids: ["run-1"] }, ctx);
+      expect(collected.details).toMatchObject({
+        report: {
+          entries: [{ kind: "suppressed", id: "run-1", status: "completed" }],
+          newlyConsumedIds: [],
+        },
+      });
+      expect(JSON.stringify(collected.details)).not.toContain("private sentinel answer");
+      expect((collected.content[0] as { text: string }).text).not.toContain("private sentinel answer");
+      expect(collected.usage).toBeUndefined();
+      expect(runtime.messages).toHaveLength(0);
+
+      await command;
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("private sentinel answer"));
+      expect(runtime.messages).toHaveLength(0);
+    } finally {
+      output.mockRestore();
+    }
+  });
+
   it("builds routing model catalogues from scoped Pi models and the Claude SDK", async () => {
     const ctx = {
       ...fakeContext("/tmp/project", []),

@@ -1155,6 +1155,7 @@ function formatCollectReport(report: Awaited<ReturnType<RunManager["collectReady
   const blocks = report.entries.map((entry) => {
     if (entry.kind === "unknown") return `${entry.id}: unknown run id`;
     if (entry.kind === "pending") return `${entry.id}: pending (${entry.status})`;
+    if (entry.kind === "suppressed") return `${entry.id}: private side result unavailable (${entry.status})`;
     if (entry.kind === "reserved") return `${entry.id}: result reserved by an active wait (${entry.status})`;
     return formatOneResult(entry.result);
   });

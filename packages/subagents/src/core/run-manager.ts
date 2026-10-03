@@ -621,6 +621,11 @@ export class RunManager {
       if (!this.isSettled(run)) {
         return { kind: "pending", id, status: run.status as Exclude<RunStatus, SettledRunStatus> };
       }
+      // /btw results remain private to its explicit command, even when a
+      // concurrent wait has reserved the terminal record.
+      if (!run.autoDeliver || run.consumption === "suppressed") {
+        return { kind: "suppressed", id, status: run.status as SettledRunStatus };
+      }
       if (run.reservations > 0 && run.consumption === "none") {
         return { kind: "reserved", id, status: run.status as SettledRunStatus };
       }
