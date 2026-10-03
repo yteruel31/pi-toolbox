@@ -174,6 +174,95 @@ describe("interactive wait release", () => {
     await emit(runtime, "session_shutdown", { reason: "exit" }, ctx);
   });
 
+  it("releases every registered wait through /subagents background without stopping children", async () => {
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { createPiHarness: () => harness, createClaudeHarness: () => harness });
+    const ctx = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, ctx);
+    const ids: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const spawned = await execute(runtime, "subagent_spawn", { prompt: "slow" }, ctx);
+      ids.push((spawned.details as { snapshot: { id: string } }).snapshot.id);
+    }
+    const waitOne = runtime.tools.get("subagent_wait")!.execute("wait-one", { ids: [ids[0]] }, undefined, undefined, ctx);
+    const waitTwo = runtime.tools.get("subagent_wait")!.execute("wait-two", { ids: [ids[1]] }, undefined, undefined, ctx);
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await runtime.commands.get("subagents")!.handler("background", ctx);
+    expect(JSON.stringify(await waitOne)).toContain('"reason":"background"');
+    expect(JSON.stringify(await waitTwo)).toContain('"reason":"background"');
+    expect(harness.requests.every((request) => !request.signal.aborted)).toBe(true);
+    expect(output).toHaveBeenCalledWith("Released 2 subagent waits; child work continues in the background.");
+    output.mockRestore();
+    await emit(runtime, "session_shutdown", { reason: "exit" }, ctx);
+  });
+
+  it("makes /subagents background a harmless no-op when no wait is registered", async () => {
+    const runtime = fakePi();
+    registerExtension(runtime);
+    const ctx = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, ctx);
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await runtime.commands.get("subagents")!.handler("background", ctx);
+    expect(output).toHaveBeenCalledWith("No model-facing subagent wait to release.");
+    output.mockRestore();
+    await emit(runtime, "session_shutdown", { reason: "exit" }, ctx);
+  });
+
+  it("renders live parent state transitions without changing aggregate counts", async () => {
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { createPiHarness: () => harness, createClaudeHarness: () => harness });
+    const statuses: Array<string | undefined> = [];
+    let idle = true;
+    const ctx = {
+      ...fakeContext(process.cwd(), runtime.entries),
+      hasUI: true,
+      isIdle: () => idle,
+      ui: { setStatus: (_key: string, text: string | undefined) => statuses.push(text), notify() {} },
+    } as unknown as ExtensionContext;
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await emit(runtime, "session_start", {}, ctx);
+      expect(statuses.at(-1)).toBeUndefined();
+      const spawned = await execute(runtime, "subagent_spawn", { prompt: "slow" }, ctx);
+      const id = (spawned.details as { snapshot: { id: string } }).snapshot.id;
+      const counts = "● 1 running · ✓ 0 completed · × 0 error";
+      const statusEventStart = runtime.emitted.length;
+
+      await emit(runtime, "agent_start", {}, ctx);
+      expect(statuses.at(-1)).toBe(`${counts} · busy · /subagents`);
+
+      const waiting = execute(runtime, "subagent_wait", { ids: [id] }, ctx);
+      expect(statuses.at(-1)).toBe(`${counts} · waiting · /subagents`);
+
+      // A sibling tool remains active after the wait is released.
+      idle = false;
+      await runtime.commands.get("subagents")!.handler("background", ctx);
+      expect(JSON.stringify(await waiting)).toContain('"reason":"background"');
+      expect(statuses.at(-1)).toBe(`${counts} · busy · /subagents`);
+      expect(harness.requests[0]!.signal.aborted).toBe(false);
+
+      idle = true;
+      await emit(runtime, "agent_settled", {}, ctx);
+      expect(statuses.at(-1)).toBe(`${counts} · available · /subagents`);
+      expect(statuses.filter((status) => status !== undefined)).toEqual(
+        expect.arrayContaining([
+          `${counts} · busy · /subagents`,
+          `${counts} · waiting · /subagents`,
+          `${counts} · available · /subagents`,
+        ]),
+      );
+      expect(runtime.emitted.slice(statusEventStart)
+        .filter(({ channel }) => channel === "pi-toolbox:subagents:status")
+        .every(({ data }) => JSON.stringify(data).includes('"running":1,"completed":0,"error":0'))).toBe(true);
+      await emit(runtime, "session_shutdown", { reason: "exit" }, ctx);
+      expect(statuses.at(-1)).toBeUndefined();
+    } finally {
+      output.mockRestore();
+    }
+  });
+
   it("does not release the separate /btw command wait", async () => {
     const runtime = fakePi();
     const harness = new ControlledHarness();

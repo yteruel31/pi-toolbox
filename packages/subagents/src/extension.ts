@@ -67,7 +67,7 @@ import {
 } from "./tui/model-catalog.js";
 import { routeFieldLabel } from "./tui/routing-view.js";
 import { JEV_SETUP_OVERLAY, JevSetupPanel, jevSetupRows } from "./tui/jev-setup.js";
-import type { RunCounts } from "./tui/status.js";
+import type { ParentState, RunCounts } from "./tui/status.js";
 import { openPiRoutingOverlay, openPiRunsOverlay } from "./tui/pi-views.js";
 import { countRuns, statusText } from "./tui/status.js";
 
@@ -127,6 +127,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   let claudeHarness: SubagentHarness | undefined;
   let deliveryScheduled = false;
   let shuttingDown = false;
+  let parentAgentActive = false;
   let jevConfig: StoredJevConfig | undefined;
   let jevConfigWarning: string | undefined;
   const runListeners = new Set<() => void>();
@@ -152,6 +153,14 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     pi.events?.emit(SUBAGENTS_STATUS_CHANNEL, event);
   };
 
+  const parentState = (): ParentState => {
+    // A live registered wait is more specific than the parent lifecycle.
+    if (waits.size > 0) return "waiting";
+    // `isIdle` includes sibling tools; never advertise availability while one runs.
+    if (parentAgentActive || !sessionContext?.isIdle()) return "busy";
+    return "available";
+  };
+
   /** Counts are owned here and broadcast even without a UI; the text slot stays UI-only. */
   const updateStatus = (): void => {
     if (!manager) return;
@@ -159,7 +168,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     emitStatus({ v: 1, counts: countRuns(runs) });
     const current = sessionContext;
     if (!current?.hasUI) return;
-    current.ui.setStatus("subagents", statusText(runs));
+    current.ui.setStatus("subagents", statusText(runs, parentState()));
   };
 
   const deliverResults = (triggerTurn: boolean): void => {
@@ -202,6 +211,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   pi.on("session_start", async (_event, ctx) => {
     waits.clear();
     shuttingDown = false;
+    parentAgentActive = false;
     sessionContext = ctx;
     const restore = findLatestPersistedState(ctx);
     try {
@@ -255,6 +265,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
           // Effective-model reports are live changes, not persistence mutations.
           if (manager) lifecycle?.update(manager.snapshotState());
           notifyRunListeners();
+          updateStatus();
         },
       },
     });
@@ -266,13 +277,22 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     deliverResults(false);
   });
 
+  pi.on("agent_start", (_event, ctx) => {
+    sessionContext = ctx;
+    parentAgentActive = true;
+    updateStatus();
+  });
+
   pi.on("agent_settled", (_event, ctx) => {
     sessionContext = ctx;
+    parentAgentActive = false;
+    updateStatus();
     deliverIfIdle();
   });
 
   pi.on("session_shutdown", (event, ctx) => {
     shuttingDown = true;
+    parentAgentActive = false;
     waits.clear();
     sessionContext = ctx;
     manager?.shutdown(`parent session ${event.reason}`);
@@ -463,6 +483,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       const runtime = requireSession();
       onUpdate?.(textResult("Waiting for subagent runs…", { ids: params.ids }));
       const registration = waits.register(_toolCallId, signal);
+      updateStatus();
       try {
         const report = await runtime.manager.wait(params.ids, { signal: registration.signal });
         updateStatus();
@@ -473,10 +494,14 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         if (!reason) throw error;
         const statuses = new Map(runtime.manager.list().map((run) => [run.id, run.status]));
         const details = { outcome: "interrupted", reason, entries: params.ids.map((id) => ({ id, status: statuses.get(id) ?? "unknown" })) };
+        const guidance = reason === "user-input"
+          ? "Wait interrupted by user input. Follow the latest user direction; do not immediately re-wait on the old dependency."
+          : "Wait released for background work. Acknowledge the ongoing work and end this response; do not re-wait.";
         onUpdate?.(textResult(`Wait released: ${reason}`, details));
-        return textResult(`Wait interrupted (${reason}); subagents continue in the background.`, details);
+        return textResult(guidance, details);
       } finally {
         registration.dispose();
+        updateStatus();
         scheduleDelivery();
       }
     },
@@ -656,6 +681,17 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     handler: async (args, ctx) => {
       sessionContext = ctx;
       let mode = args.trim().toLowerCase();
+      // This is intentionally before TUI selection: it releases every model-facing
+      // wait, but never aborts the parent, its sibling tools, or any child run.
+      if (mode === "background") {
+        const released = waits.size;
+        waits.releaseAll("background");
+        updateStatus();
+        showHuman(ctx, released > 0
+          ? `Released ${released} subagent wait${released === 1 ? "" : "s"}; child work continues in the background.`
+          : "No model-facing subagent wait to release.");
+        return;
+      }
       if (ctx.mode === "tui") {
         if (mode === "config") mode = "setup";
         if (!mode) {

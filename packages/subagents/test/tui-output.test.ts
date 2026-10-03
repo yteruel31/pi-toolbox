@@ -166,6 +166,13 @@ describe("status and widget summaries", () => {
     );
   });
 
+  it("adds optional live parent state without changing aggregate counts", () => {
+    expect(statusText([], "available")).toBeUndefined();
+    expect(statusText(runs, "waiting")).toContain("· waiting ·");
+    expect(statusText(runs, "busy")).toContain("· busy ·");
+    expect(() => assertBoundedRender([statusText(runs, "waiting")!], 100)).not.toThrow();
+  });
+
   it("shows active runs only and collapses overflow", () => {
     const lines = widgetLines(
       Array.from({ length: 6 }, (_, index) => run(`run-${index}`, "running")),

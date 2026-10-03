@@ -17,9 +17,12 @@ class ControlledHarness implements SubagentHarness {
   }
 }
 
-// The repository SDK predates codemode's ctx.executeTool support. This bounded
-// real-session regression still covers direct waits on that compatibility baseline.
-it("actual SDK processes steering before child completion and delivers once", async () => {
+// The repository SDK predates codemode's ctx.executeTool support. These bounded
+// real-session regressions retain direct steering and cover command release.
+it.each([
+  { name: "processes steering before child completion", input: "change direction", userMessages: 1 },
+  { name: "/subagents background releases an active wait", input: "/subagents background", userMessages: 0 },
+])("actual SDK $name and delivers once", async ({ input, userMessages }) => {
   const cwd = process.cwd();
   const settings = SettingsManager.inMemory({ retry: { enabled: false } });
   const harness = new ControlledHarness();
@@ -59,7 +62,7 @@ it("actual SDK processes steering before child completion and delivers once", as
     await session.setModel(runtime.getModel("wait-test", "fake")!);
     const prompt = session.prompt("start");
     await started;
-    await session.prompt("change direction", { streamingBehavior: "steer", source: "interactive" });
+    await session.prompt(input, { streamingBehavior: "steer", source: "interactive" });
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(siblingSignal).toBeDefined();
     expect(siblingSignal?.aborted).toBe(false);
@@ -67,7 +70,12 @@ it("actual SDK processes steering before child completion and delivers once", as
     await prompt;
     expect(session.messages.some((message) => message.role === "toolResult" && JSON.stringify(message).includes('"outcome":"interrupted"'))).toBe(true);
     expect(harness.request?.signal.aborted).toBe(false);
-    expect(session.messages.filter((message) => message.role === "user" && JSON.stringify(message.content).includes("change direction"))).toHaveLength(1);
+    if (userMessages > 0) {
+      expect(session.messages.filter((message) => message.role === "user" && JSON.stringify(message.content).includes(input))).toHaveLength(userMessages);
+    } else {
+      // Commands are handled outside model context and must not synthesize a user turn.
+      expect(session.messages.filter((message) => JSON.stringify(message).includes(input))).toHaveLength(0);
+    }
     expect(calls).toBeGreaterThan(2);
     harness.finish({ finalText: "slow child complete" });
     await new Promise<void>((resolve) => setImmediate(resolve));

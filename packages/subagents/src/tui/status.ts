@@ -3,6 +3,8 @@ import { isSettledStatus } from "../shared/types.js";
 import type { RunListEntry } from "../shared/types.js";
 import { fitLine, formatElapsed, statusGlyph } from "./text.js";
 
+export type ParentState = "waiting" | "busy" | "available";
+
 export interface RunCounts {
   /** queued + running */
   running: number;
@@ -21,12 +23,12 @@ export function countRuns(runs: readonly RunListEntry[]): RunCounts {
   return counts;
 }
 
-/** Persistent compact discovery/status line, cleared only when no runs exist. */
-export function statusText(runs: readonly RunListEntry[]): string | undefined {
+/** Persistent compact discovery/status line. `parentState` is optional for existing consumers. */
+export function statusText(runs: readonly RunListEntry[], parentState?: ParentState): string | undefined {
   if (runs.length === 0) return undefined;
   const counts = countRuns(runs);
   return fitLine(
-    `● ${counts.running} running · ✓ ${counts.completed} completed · × ${counts.error} error · /subagents`,
+    `● ${counts.running} running · ✓ ${counts.completed} completed · × ${counts.error} error${parentState ? ` · ${parentState}` : ""} · /subagents`,
     100,
   );
 }
