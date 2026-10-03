@@ -15,17 +15,17 @@ Use `ask_user_question` only when the next useful action depends on information 
 2. Separate facts from preferences, and stay within the requested scope.
 3. Continue ordinary implementation and checks with the smallest reversible repository-consistent default; do not interrupt for routine architectural details, cosmetic details, or other uncertainty that evidence resolves.
 4. If the user already made or delegated the choice explicitly, restate it and continue instead of asking again.
-5. Ask only when a consequential choice remains unresolved, an action is destructive, or authorization is missing. Preserve explicit interview requests and safety or permission boundaries.
+5. Ask only when a consequential choice remains unresolved and missing input would materially change the requested outcome after evidence and reversible defaults cannot resolve it. Product or research scope, evidence thresholds, costly vendor or security choices, and destructive actions are examples, not limits; authorization is always a gate. Preserve explicit interview requests and safety or permission boundaries.
 
 ## Good triggers
 
-Ask before choosing among unresolved materially different:
+Ask before choosing among unresolved materially different outcomes when missing input would change the requested result and evidence or a reversible default cannot resolve the choice:
 
 - product behavior, UX direction, migration strategy, public APIs, security controls, deployments, or destructive operations
-- costly vendor/tool choices, or research audience, scope, evidence threshold, budget, timeline, or output format
+- research audience, scope, evidence threshold, budget, timeline, or output format; costly vendor/tool choices
 - requirements whose alternatives cannot all be satisfied together
 
-Do not make every architectural detail a gate: follow established repository patterns and use a small reversible default when the user has requested implementation and no high-impact product or safety decision remains.
+Do not make every architectural detail a gate: follow established repository patterns and use a small reversible default when the user has requested implementation and no unresolved consequential or safety decision remains.
 
 When the user asks for an interview or requirements-gathering session, bundle 2-5 closely related questions. Otherwise prefer one focused decision boundary per call. Prevent question spew: do not turn every uncertainty into a form, do not ask speculative follow-ups, and never emit a chain of forms when one decision unlocks the work.
 
