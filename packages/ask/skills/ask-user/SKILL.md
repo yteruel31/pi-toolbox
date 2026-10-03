@@ -1,29 +1,31 @@
 ---
 name: ask-user
-description: Use ask_user_question to collect explicit decisions, requirements, preferences, or research constraints before ambiguous or consequential work.
+description: Use ask_user_question for unresolved consequential decisions, permissions, or explicit interviews; otherwise inspect evidence and continue requested work with reversible repository-consistent defaults.
 metadata:
   short-description: Structured user decision gate
 ---
 
 # Structured user decision gate
 
-Use `ask_user_question` when the next useful action depends on information the user has not supplied and silently choosing would materially alter the outcome.
+Use `ask_user_question` only when the next useful action depends on information the user has not supplied and silently choosing would materially alter the requested outcome. Continue routine requested implementation and verification without intermediate reapproval: inspect available evidence, then use small reversible repository-consistent defaults for ordinary technical details.
 
 ## Before asking
 
 1. Inspect available code, documents, and tool output first.
-2. Separate facts from preferences.
-3. Decide whether the missing input is consequential. Do not interrupt for cosmetic details that have an obvious reversible default.
-4. If the user already made the choice explicitly, restate it and continue instead of asking again.
+2. Separate facts from preferences, and stay within the requested scope.
+3. Continue ordinary implementation and checks with the smallest reversible repository-consistent default; do not interrupt for routine architectural details, cosmetic details, or other uncertainty that evidence resolves.
+4. If the user already made or delegated the choice explicitly, restate it and continue instead of asking again.
+5. Ask only when a consequential choice remains unresolved, an action is destructive, or authorization is missing. Preserve explicit interview requests and safety or permission boundaries.
 
 ## Good triggers
 
-Ask before choosing among materially different:
+Ask before choosing among unresolved materially different:
 
-- architecture, data models, public APIs, security controls, deployments, or destructive operations
-- product behavior, UX direction, migration strategy, or costly vendor/tool choices
-- research audience, scope, evidence threshold, budget, timeline, or output format
+- product behavior, UX direction, migration strategy, public APIs, security controls, deployments, or destructive operations
+- costly vendor/tool choices, or research audience, scope, evidence threshold, budget, timeline, or output format
 - requirements whose alternatives cannot all be satisfied together
+
+Do not make every architectural detail a gate: follow established repository patterns and use a small reversible default when the user has requested implementation and no high-impact product or safety decision remains.
 
 When the user asks for an interview or requirements-gathering session, bundle 2-5 closely related questions. Otherwise prefer one focused decision boundary per call. Prevent question spew: do not turn every uncertainty into a form, do not ask speculative follow-ups, and never emit a chain of forms when one decision unlocks the work.
 

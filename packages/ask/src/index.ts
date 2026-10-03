@@ -100,10 +100,11 @@ export default function askExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "ask_user_question",
     label: "Ask User",
-    description: "Ask one or more structured clarification questions. Supports single-select, multi-select, previews, free-form answers, and notes. Use when user input materially changes the next step.",
-    promptSnippet: "Ask structured clarification or decision questions instead of guessing",
+    description: "Ask one or more structured clarification questions when unresolved user input materially changes the requested work. Inspect evidence and continue routine implementation with small reversible repository-consistent defaults.",
+    promptSnippet: "Ask structured questions only for unresolved consequential decisions; otherwise inspect, implement, and verify",
     promptGuidelines: [
-      "Use ask_user_question when requirements, preferences, research scope, or a consequential decision remain unresolved; do not guess.",
+      "Inspect available evidence first. Continue requested implementation and verification without intermediate reapproval, choosing small reversible repository-consistent defaults for routine details; do not re-ask decisions already provided or delegated.",
+      "Use ask_user_question only for unresolved high-impact product decisions, destructive actions, or missing authorization. Preserve explicit interviews and safety or permission boundaries.",
       "Keep ask_user_question options distinct and outcome-oriented, and use recommended only as presentation metadata.",
     ],
     parameters: askParamsSchema,
