@@ -104,7 +104,7 @@ export default function askExtension(pi: ExtensionAPI): void {
     promptSnippet: "Ask structured questions only for unresolved consequential decisions; otherwise inspect, implement, and verify",
     promptGuidelines: [
       "Inspect available evidence first. Continue requested implementation and verification without intermediate reapproval, choosing small reversible repository-consistent defaults for routine details; do not re-ask decisions already provided or delegated.",
-      "Use ask_user_question only for unresolved high-impact product decisions, destructive actions, or missing authorization. Preserve explicit interviews and safety or permission boundaries.",
+      "Use ask_user_question only for unresolved consequential decisions when missing input materially changes the requested outcome and evidence or reversible defaults cannot resolve it. Product or research scope, evidence thresholds, costly vendor or security choices, and destructive actions are examples, not limits; missing authorization remains a gate. Preserve explicit interviews and safety or permission boundaries.",
       "Keep ask_user_question options distinct and outcome-oriented, and use recommended only as presentation metadata.",
     ],
     parameters: askParamsSchema,

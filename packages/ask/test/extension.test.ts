@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import askExtension, { recoverAskForm } from "../src/index.ts";
 
 function harness() {
@@ -29,13 +30,22 @@ test("extension registers one strict ask tool and all command surfaces", () => {
   assert.match(tool.promptSnippet, /only for unresolved consequential decisions/);
   assert.deepEqual(tool.promptGuidelines, [
     "Inspect available evidence first. Continue requested implementation and verification without intermediate reapproval, choosing small reversible repository-consistent defaults for routine details; do not re-ask decisions already provided or delegated.",
-    "Use ask_user_question only for unresolved high-impact product decisions, destructive actions, or missing authorization. Preserve explicit interviews and safety or permission boundaries.",
+    "Use ask_user_question only for unresolved consequential decisions when missing input materially changes the requested outcome and evidence or reversible defaults cannot resolve it. Product or research scope, evidence thresholds, costly vendor or security choices, and destructive actions are examples, not limits; missing authorization remains a gate. Preserve explicit interviews and safety or permission boundaries.",
     "Keep ask_user_question options distinct and outcome-oriented, and use recommended only as presentation metadata.",
   ]);
+  assert.match(tool.promptGuidelines[1], /research scope, evidence thresholds, costly vendor or security choices/);
+  assert.match(tool.promptGuidelines[0], /Continue requested implementation and verification without intermediate reapproval/);
   assert.equal(tool.parameters.required.includes("questions"), true);
   const option = tool.parameters.properties.questions.items.properties.options.items;
   assert.equal(option.required.includes("label"), true);
   assert.deepEqual([...commands.keys()].sort(), ["answer", "answer:again", "ask-settings", "ask:replay"]);
+});
+
+test("skill preserves consequential non-product gates and routine autonomy", () => {
+  const skill = readFileSync(new URL("../skills/ask-user/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /consequential choice remains unresolved and missing input would materially change/);
+  assert.match(skill, /research scope, evidence thresholds, costly vendor or security choices/);
+  assert.match(skill, /Continue ordinary implementation and checks with the smallest reversible repository-consistent default/);
 });
 
 test("print mode returns pending normalized choices without opening custom UI", async () => {
