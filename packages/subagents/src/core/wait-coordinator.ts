@@ -1,5 +1,12 @@
 export type WaitReleaseReason = "user-input" | "background";
 
+export interface WaitRegistration {
+  signal: AbortSignal;
+  readonly reason: WaitReleaseReason | undefined;
+  release(reason: WaitReleaseReason): void;
+  dispose(): void;
+}
+
 /** Owns only model-facing waits, never child runs or the parent's operation. */
 export class WaitCoordinator {
   private waits = new Map<string, { release(reason: WaitReleaseReason): void; dispose(): void }>();
@@ -8,7 +15,7 @@ export class WaitCoordinator {
   get transitioning(): boolean { return this.deferred !== undefined; }
   get size(): number { return this.waits.size; }
 
-  register(toolCallId: string, signal?: AbortSignal) {
+  register(toolCallId: string, signal?: AbortSignal): WaitRegistration {
     if (this.waits.has(toolCallId)) throw new Error(`Duplicate wait: ${toolCallId}`);
     const controller = new AbortController();
     let reason: WaitReleaseReason | undefined;
