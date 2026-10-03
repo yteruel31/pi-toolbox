@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { WaitCoordinator } from "./core/wait-coordinator.js";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -115,6 +116,7 @@ export function createPiSubagentsExtension(
 export default createPiSubagentsExtension();
 
 function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies): void {
+  const waits = new WaitCoordinator();
   let manager: RunManager | undefined;
   let lifecycle: LifecyclePublisher | undefined;
   pi.events?.on(SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL, (request: unknown) => {
@@ -161,7 +163,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   };
 
   const deliverResults = (triggerTurn: boolean): void => {
-    if (!manager || shuttingDown) return;
+    if (!manager || shuttingDown || waits.transitioning || sessionContext?.hasPendingMessages?.()) return;
     const results = manager.drainDeliveries();
     if (results.length === 0) return;
     pi.sendMessage(
@@ -188,7 +190,17 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     queueMicrotask(deliverIfIdle);
   };
 
+  pi.on("input", (event) => {
+    // PRE-QUEUE steering intent. Arbitrary later async interceptors can still
+    // delay or handle input; this is not a post-queue acceptance guarantee.
+    if ((event.source === "interactive" || event.source === "rpc") && event.streamingBehavior === "steer") {
+      waits.deferUserInput();
+    }
+    return { action: "continue" };
+  });
+
   pi.on("session_start", async (_event, ctx) => {
+    waits.clear();
     shuttingDown = false;
     sessionContext = ctx;
     const restore = findLatestPersistedState(ctx);
@@ -261,6 +273,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
 
   pi.on("session_shutdown", (event, ctx) => {
     shuttingDown = true;
+    waits.clear();
     sessionContext = ctx;
     manager?.shutdown(`parent session ${event.reason}`);
     lifecycle?.clear();
@@ -448,10 +461,23 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       sessionContext = ctx;
       const runtime = requireSession();
       onUpdate?.(textResult("Waiting for subagent runs…", { ids: params.ids }));
-      const report = await runtime.manager.wait(params.ids, { signal });
-      updateStatus();
-      const results = newlyConsumedResults(report);
-      return textResult(formatWaitReport(report), { report }, aggregateToolUsage(results));
+      const registration = waits.register(_toolCallId, signal);
+      try {
+        const report = await runtime.manager.wait(params.ids, { signal: registration.signal });
+        updateStatus();
+        const results = newlyConsumedResults(report);
+        return textResult(formatWaitReport(report), { report }, aggregateToolUsage(results));
+      } catch (error) {
+        const reason = registration.reason;
+        if (!reason) throw error;
+        const statuses = new Map(runtime.manager.list().map((run) => [run.id, run.status]));
+        const details = { outcome: "interrupted", reason, entries: params.ids.map((id) => ({ id, status: statuses.get(id) ?? "unknown" })) };
+        onUpdate?.(textResult(`Wait released: ${reason}`, details));
+        return textResult(`Wait interrupted (${reason}); subagents continue in the background.`, details);
+      } finally {
+        registration.dispose();
+        scheduleDelivery();
+      }
     },
   });
 

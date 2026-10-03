@@ -7,7 +7,7 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TObject } from "typebox";
 
 import type {
@@ -107,6 +107,121 @@ function fakePi(): FakeRuntime {
   return { pi, handlers, tools, commands, entries, messages, emitted };
 }
 
+describe("interactive wait release", () => {
+  it("requeues a reserved terminal result once on release, without including final text", async () => {
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { createPiHarness: () => harness, createClaudeHarness: () => harness });
+    const ctx = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, ctx);
+    const ids: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const result = await execute(runtime, "subagent_spawn", { prompt: "slow" }, ctx);
+      ids.push((result.details as { snapshot: { id: string } }).snapshot.id);
+    }
+    const waiting = execute(runtime, "subagent_wait", { ids }, ctx);
+    harness.finish(0, "reserved secret final");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.messages).toHaveLength(0);
+    await emit(runtime, "input", { source: "rpc", streamingBehavior: "steer", text: "hi" }, ctx);
+    const released = await waiting;
+    expect(JSON.stringify(released)).not.toContain("reserved secret final");
+    expect(runtime.messages).toHaveLength(1);
+    await emit(runtime, "agent_settled", {}, ctx);
+    expect(runtime.messages).toHaveLength(1);
+    expect(harness.requests[1]!.signal.aborted).toBe(false);
+    await emit(runtime, "session_shutdown", { reason: "exit" }, ctx);
+  });
+
+  it("keeps genuine tool abort as an error and cancels the pending deferred release", async () => {
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { createPiHarness: () => harness, createClaudeHarness: () => harness });
+    const ctx = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, ctx);
+    const spawned = await execute(runtime, "subagent_spawn", { prompt: "slow" }, ctx);
+    const id = (spawned.details as { snapshot: { id: string } }).snapshot.id;
+    const controller = new AbortController();
+    const waiting = runtime.tools.get("subagent_wait")!.execute("wait", { ids: [id] }, controller.signal, undefined, ctx);
+    const rejected = expect(waiting).rejects.toThrow();
+    await emit(runtime, "input", { source: "interactive", streamingBehavior: "steer" }, ctx);
+    controller.abort();
+    await rejected;
+    expect(harness.requests[0]!.signal.aborted).toBe(false);
+    harness.finish(0, "still deliverable");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.messages).toHaveLength(1);
+    await emit(runtime, "session_shutdown", { reason: "exit" }, ctx);
+  });
+
+  it("allows completion to win steering and returns unknown IDs normally", async () => {
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { createPiHarness: () => harness, createClaudeHarness: () => harness });
+    const ctx = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, ctx);
+    await emit(runtime, "input", { source: "interactive", streamingBehavior: "steer" }, ctx);
+    const unknown = await execute(runtime, "subagent_wait", { ids: ["missing"] }, ctx);
+    expect(unknown.details).toMatchObject({ report: { entries: [{ kind: "unknown", id: "missing" }] } });
+    const spawned = await execute(runtime, "subagent_spawn", { prompt: "slow" }, ctx);
+    const id = (spawned.details as { snapshot: { id: string } }).snapshot.id;
+    const waiting = execute(runtime, "subagent_wait", { ids: [id] }, ctx);
+    await emit(runtime, "input", { source: "interactive", streamingBehavior: "steer" }, ctx);
+    harness.finish(0, "completion wins");
+    expect(JSON.stringify(await waiting)).toContain("completion wins");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.messages).toHaveLength(0);
+    await emit(runtime, "session_shutdown", { reason: "exit" }, ctx);
+  });
+
+  it("does not release the separate /btw command wait", async () => {
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { createPiHarness: () => harness, createClaudeHarness: () => harness });
+    const ctx = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, ctx);
+    let finished = false;
+    const command = runtime.commands.get("btw")!.handler("side question", ctx).then(() => { finished = true; });
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    await emit(runtime, "input", { source: "interactive", streamingBehavior: "steer" }, ctx);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(finished).toBe(false);
+    expect(harness.requests[0]!.signal.aborted).toBe(false);
+    harness.finish(0, "side answer");
+    await command;
+    await emit(runtime, "session_shutdown", { reason: "exit" }, ctx);
+  });
+  it("preserves input and images, ignores followUp/extension, and leaves children running", async () => {
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { createPiHarness: () => harness, createClaudeHarness: () => harness });
+    const ctx = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, ctx);
+    const spawned = await execute(runtime, "subagent_spawn", { prompt: "slow" }, ctx);
+    const id = (spawned.details as { snapshot: { id: string } }).snapshot.id;
+    const waiting = execute(runtime, "subagent_wait", { ids: [id, "missing"] }, ctx);
+    for (const event of [{ source: "interactive", streamingBehavior: "followUp" }, { source: "extension", streamingBehavior: "steer" }]) {
+      await emit(runtime, "input", event, ctx);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(harness.requests[0]?.signal.aborted).toBe(false);
+    }
+    const event = { source: "interactive", streamingBehavior: "steer", text: "change direction", images: [{ type: "image", data: "image", mimeType: "image/png" }] };
+    const original = structuredClone(event);
+    const response = runtime.handlers.get("input")![0]!(event, ctx);
+    expect(response).toEqual({ action: "continue" });
+    expect(event).toEqual(original);
+    const result = await waiting;
+    expect(result.details).toMatchObject({ outcome: "interrupted", reason: "user-input", entries: [{ id, status: "running" }, { id: "missing", status: "unknown" }] });
+    expect(harness.requests[0]?.signal.aborted).toBe(false);
+    harness.finish(0, "child final");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.messages).toHaveLength(1);
+    await emit(runtime, "agent_settled", {}, ctx);
+    expect(runtime.messages).toHaveLength(1);
+    await emit(runtime, "session_shutdown", { reason: "exit" }, ctx);
+  });
+});
+
 const noLiveJevConfig = async () => undefined;
 
 function registerExtension(runtime: FakeRuntime, dependencies: ExtensionDependencies = {}): void {
@@ -120,6 +235,7 @@ function fakeContext(cwd: string, entries: FakeRuntime["entries"]): ExtensionCon
     hasUI: false,
     ui: { setStatus() {}, notify() {} },
     isIdle: () => true,
+    hasPendingMessages: () => false,
     isProjectTrusted: () => true,
     model: { provider: "fake", id: "parent" },
     thinkingLevel: "medium",
