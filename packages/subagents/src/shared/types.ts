@@ -215,6 +215,8 @@ export interface WaitReport {
 /** Per-id outcome of non-blocking subagent_collect. */
 export type CollectEntry =
   | { kind: "result"; id: string; result: RunResult }
+  /** A private /btw result is available only through its explicit command. */
+  | { kind: "suppressed"; id: string; status: SettledRunStatus }
   | { kind: "pending"; id: string; status: Exclude<RunStatus, SettledRunStatus> }
   /** A terminal result is reserved by an in-progress wait and cannot be claimed. */
   | { kind: "reserved"; id: string; status: SettledRunStatus }

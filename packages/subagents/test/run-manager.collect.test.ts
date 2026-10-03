@@ -43,7 +43,7 @@ describe("non-blocking result collection", () => {
     expect(manager.snapshotState().runs[0]!.consumption).toBe("waited");
   });
 
-  it("collects failures, cancellations, and suppressed side results without auto-delivery", async () => {
+  it("collects failures and cancellations while keeping suppressed side results private", async () => {
     const manager = new RunManager();
     const harness = new FakeHarness({ rejectOnAbort: true });
     const failed = manager.spawn({ prompt: "bad", harness });
@@ -55,7 +55,13 @@ describe("non-blocking result collection", () => {
     await flush();
 
     const report = manager.collectReady([failed.id, cancelled.id, suppressed.id]);
-    expect(report.entries.map(result).map((entry) => entry.status)).toEqual(["failed", "cancelled", "completed"]);
+    expect(result(report.entries[0]!).status).toBe("failed");
+    expect(result(report.entries[1]!).status).toBe("cancelled");
+    expect(report.entries[2]).toEqual({
+      kind: "suppressed",
+      id: suppressed.id,
+      status: "completed",
+    });
     expect(report.newlyConsumedIds).toEqual([failed.id, cancelled.id]);
     expect(manager.check(suppressed.id).consumption).toBe("suppressed");
     expect(manager.pendingDeliveryCount()).toBe(0);

@@ -21,12 +21,12 @@ The full `pi-toolbox` repository remains Git-installable. This scoped package is
 | `subagent_spawn` | Start a background run and return its `run-N` id immediately. |
 | `subagent_agents` | Discover named profiles and show effective routing. |
 | `subagent_wait` | Wait for the exact runs needed for the next dependency and consume their results. |
-| `subagent_collect` | Collect selected ready terminal results without waiting; do not use it to poll. |
+| `subagent_collect` | Collect selected ready terminal results without waiting; private `/btw` results remain unavailable. Do not use it to poll. |
 | `subagent_cancel` | Request cancellation without deleting records. |
 | `subagent_check` | Inspect status, bounded activity, and result preview. |
 | `subagent_list` | List all session runs in creation order. |
 
-At most four runs are active at once across both harnesses and `/btw`. Results not collected with `subagent_wait` or `subagent_collect` are delivered once when the parent becomes idle.
+At most four runs are active at once across both harnesses and `/btw`. Results not collected with `subagent_wait` or `subagent_collect` are delivered once when the parent becomes idle. Automatic delivery and `subagent_collect` exclude private `/btw` side results; legacy explicit `subagent_wait`, `subagent_check`, and `subagent_list` remain backward compatible.
 
 The bundled [subagents skill](./skills/subagents/SKILL.md) explains profile selection, autonomous prompts, and result collection. Pi discovers it through both the standalone package and the full toolbox; load it with `/skill:subagents`.
 
@@ -164,7 +164,7 @@ The routing editor shows `unset` for an absent field, and separately offers `inh
 - `/subagents agents` — open the routing editor.
 - `/subagents setup` — open user-global Jev opt-in and credential setup.
 - `/subagents background` — release any model-facing `subagent_wait` calls so child work continues; this does not cancel children, abort the parent, or interrupt sibling tools. The parent is cooperatively guided to acknowledge ongoing work and end its current response, so immediate preemption or model obedience is not guaranteed.
-- `/btw <question>` — ask a one-off Pi side question using the shared cap. Its answer is shown to the human and persisted as a custom entry, but never enters parent-model context or triggers a parent turn.
+- `/btw <question>` — ask a one-off Pi side question using the shared cap. Its answer is shown to the human and persisted as a custom entry, but automatic delivery and `subagent_collect` never expose it to parent-model context or trigger a parent turn. Legacy explicit `subagent_wait`, `subagent_check`, and `subagent_list` remain backward compatible.
 
 Both TUI panels use the full terminal and the active Pi theme. When a spawn supplies both a custom `name` and a named-agent profile, the parent transcript call heading, run lists, and details preserve the custom title and show its origin as `custom title (profile-name)`. With only a profile, the call heading shows `(profile-name)` without exposing the spawn prompt. Run list and detail metadata show the selected thinking level in parentheses after the model when available. In the run list, Enter opens the detailed structured transcript directly. Active Pi and Claude runs show a Pi `Editor`: Enter submits to that existing child, normal multiline/navigation editing stays available, PageUp/PageDown scroll the transcript, `r` refreshes with visible feedback, and `x` opens an in-panel cancellation confirmation (`y`/Enter confirms; `n`/Escape keeps the run active). Outside that confirmation, Escape returns to the list. Settled runs remain inspectable but become read-only. The transcript distinguishes lifecycle, user, assistant, and tool events and retains bounded tool input/output with omission accounting.
 
