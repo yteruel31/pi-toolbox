@@ -6,7 +6,7 @@ A Pi package that adds `ask_user_question`: a structured, keyboard-first clarifi
 pi install npm:@yteruel31/pi-ask
 ```
 
-The package also installs the `ask-user` decision-gate skill.
+The package also installs the `ask-user` decision-gate skill. It guides agents to inspect repository evidence and complete requested implementation and verification with small reversible, repository-consistent defaults. It reserves questions for unresolved high-impact product decisions, destructive actions, missing authorization, or an explicitly requested interview, rather than treating routine technical uncertainty as a gate.
 
 ## Commands
 

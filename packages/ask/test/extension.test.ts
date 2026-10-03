@@ -24,6 +24,14 @@ test("extension registers one strict ask tool and all command surfaces", () => {
   assert.deepEqual([...tools.keys()], ["ask_user_question"]);
   const tool = tools.get("ask_user_question");
   assert.ok(tool);
+  assert.match(tool.description, /unresolved user input materially changes the requested work/);
+  assert.match(tool.description, /small reversible repository-consistent defaults/);
+  assert.match(tool.promptSnippet, /only for unresolved consequential decisions/);
+  assert.deepEqual(tool.promptGuidelines, [
+    "Inspect available evidence first. Continue requested implementation and verification without intermediate reapproval, choosing small reversible repository-consistent defaults for routine details; do not re-ask decisions already provided or delegated.",
+    "Use ask_user_question only for unresolved high-impact product decisions, destructive actions, or missing authorization. Preserve explicit interviews and safety or permission boundaries.",
+    "Keep ask_user_question options distinct and outcome-oriented, and use recommended only as presentation metadata.",
+  ]);
   assert.equal(tool.parameters.required.includes("questions"), true);
   const option = tool.parameters.properties.questions.items.properties.options.items;
   assert.equal(option.required.includes("label"), true);
