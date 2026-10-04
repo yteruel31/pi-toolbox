@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { stripVTControlCharacters } from "node:util";
 import { parseConfig, type WebConfig } from "../src/config.js";
 import { RedditBrowserError } from "../src/reddit-browser.js";
@@ -13,7 +13,16 @@ import { validateRedditConfig } from "../src/reddit-config.js";
 import { WebService } from "../src/service.js";
 
 const diagnostic = (status: RedditDiagnostic["status"], eligible = status === "ready"): RedditDiagnostic => ({ status, eligible, message: `status ${status}` });
-const context = { cwd: "/tmp", hasUI: false } as ExtensionContext;
+const context = toolContext({ cwd: "/tmp", hasUI: false } as ExtensionContext);
+
+function toolContext(context: ExtensionContext): ExtensionToolContext {
+  return {
+    ...context,
+    tools: [],
+    executeTool: async () => { throw new Error("Unexpected nested tool execution in test"); },
+  };
+}
+
 function harness() {
   const tools = new Map<string, ToolDefinition>();
   return { tools, pi: { registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool) } as unknown as ExtensionAPI };

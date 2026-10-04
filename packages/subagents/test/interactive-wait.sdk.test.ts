@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import { pathToFileURL } from "node:url";
-import * as path from "node:path";
+import * as sdk from "@earendil-works/pi-coding-agent";
+import * as ai from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage } from "@earendil-works/pi-ai";
 import { ModelRuntime, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -17,8 +17,7 @@ class ControlledHarness implements SubagentHarness {
   }
 }
 
-// The repository SDK predates codemode's ctx.executeTool support. These bounded
-// real-session regressions retain direct steering and cover command release.
+// Bounded real-session regressions cover direct steering and command release.
 it.each([
   { name: "processes steering before child completion", input: "change direction", userMessages: 1 },
   { name: "/subagents background releases an active wait", input: "/subagents background", userMessages: 0 },
@@ -84,29 +83,11 @@ it.each([
   } finally { finishSibling(); await session.abort(); session.dispose(); }
 }, 15000);
 
-const testSdkRoot = process.env.PI_SUBAGENTS_TEST_SDK_ROOT;
-const nestedCodemodeTest = testSdkRoot ? it : it.skip;
-
-nestedCodemodeTest(
-  testSdkRoot
-    ? "opt-in SDK codemode nested wait releases for steering and delivers once"
-    : "skipped: repository SDK has no createCodemodeExtension/ctx.executeTool; set PI_SUBAGENTS_TEST_SDK_ROOT to test a supporting SDK",
+it(
+  "workspace SDK codemode nested wait releases for steering and delivers once",
   async () => {
-    // This test intentionally loads only the supplied SDK and its colocated pi-ai
-    // dependency. It does not discover local extensions, credentials, or context.
-    const root = testSdkRoot!;
-    const sdk = await import(pathToFileURL(path.join(root, "dist/index.js")).href) as {
-      createCodemodeExtension?: () => (pi: unknown) => void;
-      ModelRuntime: typeof ModelRuntime;
-      createAgentSession: typeof createAgentSession;
-      DefaultResourceLoader: typeof DefaultResourceLoader;
-      SessionManager: typeof SessionManager;
-      SettingsManager: typeof SettingsManager;
-    };
-    const ai = await import(pathToFileURL(path.join(root, "node_modules/@earendil-works/pi-ai/dist/index.js")).href) as {
-      InMemoryCredentialStore: typeof InMemoryCredentialStore;
-      createAssistantMessageEventStream: typeof createAssistantMessageEventStream;
-    };
+    // Exercise the installed workspace SDK without discovering credentials,
+    // local extensions, or context.
     expect(typeof sdk.createCodemodeExtension).toBe("function");
 
     const cwd = process.cwd();

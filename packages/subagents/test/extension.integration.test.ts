@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
+  ExtensionToolContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -142,7 +143,7 @@ describe("interactive wait release", () => {
     const spawned = await execute(runtime, "subagent_spawn", { prompt: "slow" }, ctx);
     const id = (spawned.details as { snapshot: { id: string } }).snapshot.id;
     const controller = new AbortController();
-    const waiting = runtime.tools.get("subagent_wait")!.execute("wait", { ids: [id] }, controller.signal, undefined, ctx);
+    const waiting = runtime.tools.get("subagent_wait")!.execute("wait", { ids: [id] }, controller.signal, undefined, toolContext(ctx));
     const rejected = expect(waiting).rejects.toThrow();
     await emit(runtime, "input", { source: "interactive", streamingBehavior: "steer" }, ctx);
     controller.abort();
@@ -185,8 +186,8 @@ describe("interactive wait release", () => {
       const spawned = await execute(runtime, "subagent_spawn", { prompt: "slow" }, ctx);
       ids.push((spawned.details as { snapshot: { id: string } }).snapshot.id);
     }
-    const waitOne = runtime.tools.get("subagent_wait")!.execute("wait-one", { ids: [ids[0]] }, undefined, undefined, ctx);
-    const waitTwo = runtime.tools.get("subagent_wait")!.execute("wait-two", { ids: [ids[1]] }, undefined, undefined, ctx);
+    const waitOne = runtime.tools.get("subagent_wait")!.execute("wait-one", { ids: [ids[0]] }, undefined, undefined, toolContext(ctx));
+    const waitTwo = runtime.tools.get("subagent_wait")!.execute("wait-two", { ids: [ids[1]] }, undefined, undefined, toolContext(ctx));
     const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
     await runtime.commands.get("subagents")!.handler("background", ctx);
     expect(JSON.stringify(await waitOne)).toContain('"reason":"background"');
@@ -353,7 +354,15 @@ async function emit(runtime: FakeRuntime, name: string, event: unknown, ctx: Ext
 async function execute(runtime: FakeRuntime, name: string, params: unknown, ctx: ExtensionContext) {
   const tool = runtime.tools.get(name);
   if (!tool) throw new Error(`missing ${name}`);
-  return tool.execute("call-1", params, undefined, undefined, ctx);
+  return tool.execute("call-1", params, undefined, undefined, toolContext(ctx));
+}
+
+function toolContext(ctx: ExtensionContext): ExtensionToolContext {
+  return {
+    ...ctx,
+    tools: [],
+    executeTool: async () => { throw new Error("Unexpected nested tool execution in test"); },
+  };
 }
 
 function persistedState(agentProfile?: string) {

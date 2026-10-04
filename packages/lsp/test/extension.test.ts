@@ -98,13 +98,18 @@ test("defers slow diagnostics without blocking the write result", async () => {
 
   const handlers = new Map<string, (...args: any[]) => any>();
   const messages: Array<{ content: string; details: unknown }> = [];
+  let resolveDeferredMessage!: () => void;
+  const deferredMessage = new Promise<void>((resolve) => { resolveDeferredMessage = resolve; });
   const pi = {
     on: (event: string, handler: (...args: any[]) => any) => handlers.set(event, handler),
     registerTool: () => undefined,
     registerEntryRenderer: () => undefined,
     registerMessageRenderer: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string; details: unknown }) => messages.push(message),
+    sendMessage: (message: { content: string; details: unknown }) => {
+      messages.push(message);
+      resolveDeferredMessage();
+    },
   } as unknown as ExtensionAPI;
   lspExtension(pi);
   const ctx = { cwd: root, mode: "tui", isProjectTrusted: () => true } as unknown as ExtensionContext;
@@ -125,7 +130,10 @@ test("defers slow diagnostics without blocking the write result", async () => {
     }, ctx);
     assert.equal(patched, undefined);
     assert.ok(Date.now() - started < 140, "write result should return before delayed diagnostics");
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await Promise.race([
+      deferredMessage,
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("timed out waiting for deferred diagnostics")), 1_500)),
+    ]);
     assert.equal(messages.length, 1);
     assert.match(messages[0]?.content ?? "", /\[delayed\]/);
   } finally {

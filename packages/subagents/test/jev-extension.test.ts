@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPiSubagentsExtension, type ExtensionDependencies } from "../src/extension.js";
 import type { HarnessRunRequest, SubagentHarness } from "../src/core/harness.js";
@@ -33,9 +33,18 @@ async function fixture(options: { config?: { enabled: boolean }; scoped?: any[];
   const scopedModels = options.scoped ?? [];
   const ctx = { cwd, mode: "print", hasUI: false, ui: { setStatus() {}, notify() {} }, isIdle: () => true, isProjectTrusted: () => true, model: model("openai", "a"), thinkingLevel: "medium", ...(scopedModels.length ? { scopedModels } : {}), modelRegistry: { find: () => model("openai", "a"), getAvailable: () => available }, sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
   const emit = async (name: string, event: unknown = {}) => { for (const fn of handlers.get(name) ?? []) await fn(event, ctx); };
-  const spawn = (params: any, signal?: AbortSignal) => tools.get("subagent_spawn")!.execute("call", params, signal, undefined, ctx);
+  const toolCtx = toolContext(ctx);
+  const spawn = (params: any, signal?: AbortSignal) => tools.get("subagent_spawn")!.execute("call", params, signal, undefined, toolCtx);
   await emit("session_start", { reason: "startup" });
-  return { ctx, emit, spawn, tools, piHarness, claudeHarness, readJevConfig, setStored(value: any) { stored = value; } };
+  return { ctx: toolCtx, emit, spawn, tools, piHarness, claudeHarness, readJevConfig, setStored(value: any) { stored = value; } };
+}
+
+function toolContext(ctx: ExtensionContext): ExtensionToolContext {
+  return {
+    ...ctx,
+    tools: [],
+    executeTool: async () => { throw new Error("Unexpected nested tool execution in test"); },
+  };
 }
 
 async function tick() { await new Promise<void>((resolve) => setImmediate(resolve)); }

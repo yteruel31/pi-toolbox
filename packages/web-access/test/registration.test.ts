@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createAgentSession, DefaultResourceLoader, defineTool, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, defineTool, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import webAccess, { CORE_TOOL_NAMES, registerTools } from "../src/index.js";
 import { parseConfig } from "../src/config.js";
@@ -11,12 +11,20 @@ import { WebService } from "../src/service.js";
 import { ResearchManager } from "../src/research.js";
 import { validateRedditConfig } from "../src/reddit-config.js";
 
+function toolContext(context: ExtensionContext): ExtensionToolContext {
+  return {
+    ...context,
+    tools: [],
+    executeTool: async () => { throw new Error("Unexpected nested tool execution in test"); },
+  };
+}
+
 function harness(existing: string[] = []) {
   const tools = new Map<string, ToolDefinition>();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
   const notifications: string[] = [];
   const pi = { registerCommand: () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => handlers.set(name, handler), getAllTools: () => existing.map((name) => ({ name, sourceInfo: { source: "sdk" } })) } as unknown as ExtensionAPI;
-  const ctx = { cwd: "/tmp", hasUI: true, scopedModels: [], ui: { notify: (text: string) => notifications.push(text) } } as unknown as ExtensionContext;
+  const ctx = toolContext({ cwd: "/tmp", hasUI: true, scopedModels: [], ui: { notify: (text: string) => notifications.push(text) } } as unknown as ExtensionContext);
   return { pi, tools, handlers, notifications, ctx };
 }
 async function isolated(run: (directory: string) => Promise<void>) {

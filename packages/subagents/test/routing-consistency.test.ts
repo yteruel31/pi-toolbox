@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DefaultRouteResolver, FileRoutingStore } from "../src/agents/index.js";
@@ -237,8 +237,9 @@ describe("spawn routing consistency", () => {
     const available = [extModel("openai", "a"), extModel("openai", "b")];
     const ctx = { cwd, mode: "print", hasUI: false, ui: { setStatus() {}, notify() {} }, isIdle: () => true, isProjectTrusted: () => true, model: extModel("openai", "a"), thinkingLevel: "medium", modelRegistry: { find: () => extModel("openai", "a"), getAvailable: () => available }, sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
     for (const fn of handlers.get("session_start") ?? []) await fn({ reason: "startup" }, ctx);
-    const spawn = (params: any) => tools.get("subagent_spawn")!.execute("call", params, undefined, undefined, ctx);
-    const check = (id: string) => tools.get("subagent_check")!.execute("check", { id }, undefined, undefined, ctx);
+    const toolCtx = toolContext(ctx);
+    const spawn = (params: any) => tools.get("subagent_spawn")!.execute("call", params, undefined, undefined, toolCtx);
+    const check = (id: string) => tools.get("subagent_check")!.execute("check", { id }, undefined, undefined, toolCtx);
     return { spawn, check, piHarness, claudeHarness };
   }
   const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -288,6 +289,14 @@ describe("spawn routing consistency", () => {
     expect(f.piHarness.requests).toHaveLength(4);
   });
 });
+
+function toolContext(ctx: ExtensionContext): ExtensionToolContext {
+  return {
+    ...ctx,
+    tools: [],
+    executeTool: async () => { throw new Error("Unexpected nested tool execution in test"); },
+  };
+}
 
 describe("routing panel mode labels", () => {
   const theme = {

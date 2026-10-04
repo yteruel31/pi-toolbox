@@ -123,7 +123,7 @@ export type PiSessionEvent = AgentSessionEvent;
 export interface PiSessionLike {
   subscribe(listener: (event: PiSessionEvent) => void): () => void;
   prompt(text: string): Promise<void>;
-  steer(text: string): Promise<void>;
+  steer(text: string): Promise<void | "queued" | "handled">;
   abort(): Promise<void>;
   dispose(): void;
   getActiveToolNames?(): string[];

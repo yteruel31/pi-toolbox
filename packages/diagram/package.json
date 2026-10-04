@@ -56,9 +56,9 @@
     "typebox": { "optional": true }
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.87.1",
-    "@earendil-works/pi-coding-agent": "0.87.1",
-    "@earendil-works/pi-tui": "0.87.1",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@earendil-works/pi-tui": "1.0.2",
     "@types/node": "^22.19.1",
     "@types/proper-lockfile": "^4.1.4",
     "tsx": "^4.21.0",
