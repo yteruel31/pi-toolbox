@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerWebDiagnosticTool } from "../src/diagnostic-tool.js";
 import { BrowserFailure } from "../src/browser-environment.js";
 import { testIsolatedRendering } from "../src/diagnostics.js";
+
+function toolContext(context: ExtensionContext): ExtensionToolContext {
+  return {
+    ...context,
+    tools: [],
+    executeTool: async () => { throw new Error("Unexpected nested tool execution in test"); },
+  };
+}
 
 function setup(lifetime?: AbortSignal) {
   let tool: ToolDefinition;
@@ -17,7 +25,7 @@ function setup(lifetime?: AbortSignal) {
     },
   });
   return {
-    run: (params: unknown = {}, signal?: AbortSignal) => tool.execute("id", params, signal, undefined, {} as ExtensionContext),
+    run: (params: unknown = {}, signal?: AbortSignal) => tool.execute("id", params, signal, undefined, toolContext({} as ExtensionContext)),
     counts: () => ({ inspections, probes }),
     signal: () => receivedSignal,
   };
@@ -58,7 +66,7 @@ test("successful render tool preserves its proof and combines shutdown cancellat
     inspect: async () => ({ checks: [], remedies: [] }),
     testRender: async (signal) => { received = signal; return { state: "passed", summary: "Synthetic proof" }; },
   });
-  const result = await tool!.execute("id", { action: "test_render" }, call.signal, undefined, {} as ExtensionContext);
+  const result = await tool!.execute("id", { action: "test_render" }, call.signal, undefined, toolContext({} as ExtensionContext));
   assert.equal((result.details as { probe: { state: string } }).probe.state, "passed");
   assert.equal(received?.aborted, false);
   lifetime.abort(); assert.equal(received?.aborted, true);

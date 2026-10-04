@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { HistoryStore } from "../src/history.js";
 import { createHistoryTool } from "../src/history-tool.js";
 import { entry } from "./helpers.js";
@@ -24,7 +24,15 @@ async function fixture() {
     signal: new AbortController().signal,
   } as unknown as ExtensionContext;
 
-  return { root, history, sessionId, ctx, cleanup: async () => { history.close(); await rm(root, { recursive: true, force: true }); } };
+  return { root, history, sessionId, ctx: toolContext(ctx), cleanup: async () => { history.close(); await rm(root, { recursive: true, force: true }); } };
+}
+
+function toolContext(ctx: ExtensionContext): ExtensionToolContext {
+  return {
+    ...ctx,
+    tools: [],
+    executeTool: async () => { throw new Error("Unexpected nested tool execution in test"); },
+  };
 }
 
 test("list action returns paginated entries with metadata", async () => {

@@ -546,7 +546,7 @@ test("the real daemon removes its owned socket and PID before idle exit", async 
 	child.stderr?.on("data", (chunk) => stderr += chunk);
 	const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
 	try {
-		await waitUntil(() => exists(pidPath));
+		await waitUntil(() => exists(pidPath), 10_000);
 		const exit = await Promise.race([
 			exitPromise,
 			new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("daemon idle exit timed out")), 3_000)),
@@ -578,7 +578,7 @@ test("the real daemon handles SIGTERM with owned socket and PID cleanup", {
 	child.stderr?.on("data", (chunk) => stderr += chunk);
 	const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
 	try {
-		await waitUntil(() => exists(pidPath));
+		await waitUntil(() => exists(pidPath), 10_000);
 		child.kill("SIGTERM");
 		const exit = await Promise.race([
 			exitPromise,

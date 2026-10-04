@@ -10,7 +10,7 @@ Background subagents for [Pi](https://github.com/badlogic/pi-mono): spawn autono
 pi install npm:@yteruel31/pi-subagents
 ```
 
-Restart Pi or run `/reload`. The package requires Node.js 22.19 or newer and Pi 0.87.1 or newer. The Claude Agent SDK is an optional dependency; if it cannot be installed or authenticated, the Pi harness still works and Claude runs fail with a bounded diagnostic.
+Restart Pi or run `/reload`. The package requires Node.js 22.19 or newer and Pi 1.0.2 or newer. The Claude Agent SDK is an optional dependency; if it cannot be installed or authenticated, the Pi harness still works and Claude runs fail with a bounded diagnostic.
 
 The full `pi-toolbox` repository remains Git-installable. This scoped package is the independently versioned distribution of its subagents extension.
 
