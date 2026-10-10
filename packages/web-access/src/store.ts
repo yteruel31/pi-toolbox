@@ -11,6 +11,9 @@ export function validId(id: string): string {
 }
 export function hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 export async function syncDirectory(path: string): Promise<void> {
+  // Windows does not support opening directories for fsync (EPERM). Atomic rename/link
+  // still provides publication semantics there; retain directory fsync on Unix.
+  if (process.platform === "win32") return;
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try { await handle.sync(); } finally { await handle.close(); }
 }
