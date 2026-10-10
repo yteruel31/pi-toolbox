@@ -64,6 +64,25 @@ test("registered tools revalidate mutated arguments and retrieve bounded cache c
   assert.equal(JSON.parse(text.text).content, "234");
   await research.stop();
 }));
+for (const inlineChars of [100, 12_000, 18_000]) test(`registered retrieval respects explicit and default budgets (${inlineChars})`, () => isolated(async (directory) => {
+  const config = parseConfig({ cache: { inlineChars } }, directory);
+  const service = new WebService(config), research = new ResearchManager(config, join(directory, "jobs")), h = harness();
+  registerTools(h.pi, config, service, research);
+  try {
+    const responseId = await service.store.put([{ title: "ASCII", content: "a".repeat(40_000) }]);
+    const tool = h.tools.get("get_search_content")!;
+    for (const limit of [undefined, 14_000, 18_000, 30_000]) {
+      const result = await tool.execute("id", { responseId, ...(limit === undefined ? {} : { limit }) }, undefined, undefined, h.ctx);
+      const text = result.content.find((block) => block.type === "text")!.text;
+      const page = JSON.parse(text);
+      assert.equal(page.content.length, limit ?? inlineChars);
+      assert.equal(page.nextOffset, page.content.length);
+      assert.ok(Buffer.byteLength(text) <= 32_000);
+    }
+    await assert.rejects(tool.execute("id", { responseId, limit: 30_001 }, undefined, undefined, h.ctx), /Invalid/);
+  } finally { await research.stop(); await service.close(); }
+}));
+
 test("invalid synthesize arguments fail before any search request", () => isolated(async (directory) => {
   const config = parseConfig({}, directory); const service = new WebService(config); let calls = 0;
   service.search = async () => { calls++; return []; };

@@ -73,6 +73,26 @@ test("cache supports recovery, bounded pagination, eviction and expiration", () 
   time += 2000;
   await assert.rejects(store.get(next), /expired/);
 }));
+test("retrieval supports explicit large and find excerpt budgets without losing literal semantics", () => {
+  const content = `before NEEDLE after ${"x".repeat(30_000)}\\.* ${"😀\"".repeat(2000)}`;
+  const docs = [{ title: "Document", content }];
+  for (const limit of [14_000, 18_000, 30_000]) assert.equal((retrieve(docs, { limit }, 100).content as string).length, limit);
+  assert.equal((retrieve(docs, {}, 100).content as string).length, 100);
+  assert.equal((retrieve(docs, {}, 18_000).content as string).length, 18_000);
+  const found = retrieve(docs, { findText: ["needle", "\\.*"], limit: 600 }, 100);
+  const matches = found.matches as Array<{ term: string; text: string; offset: number }>;
+  assert.equal(matches.length, 2); assert.ok(matches[0]!.text.toLowerCase().includes("needle"));
+  assert.equal(matches[1]!.text.includes("\\.*"), true);
+  assert.ok(matches.reduce((sum, match) => sum + match.text.length, 0) <= 600);
+  for (const match of matches) assert.equal(match.text, content.slice(match.offset, match.offset + match.text.length));
+  assert.deepEqual(retrieve(docs, { findText: "needle", findMode: "exact" }, 100).matches, []);
+  const unicode = "😀 prefix a.* suffix";
+  const exact = retrieve([{ title: "utf16", content: unicode }], { findText: "a.*", limit: 3 }, 100).matches as Array<{ text: string; offset: number; end: number; truncated?: boolean }>;
+  assert.deepEqual(exact, [{ term: "a.*", text: "a.*", offset: unicode.indexOf("a.*"), end: unicode.indexOf("a.*") + 3 }]);
+  const tiny = retrieve(docs, { findText: "needle", limit: 1 }, 100).matches as Array<{ truncated?: boolean }>;
+  assert.equal(tiny[0]!.truncated, true);
+  assert.throws(() => retrieve(docs, { findText: "needle", offset: 0 }, 100), /cannot be combined with offset/);
+});
 test("unsafe content IDs cannot read arbitrary files", () => temporary(async (directory) => {
   await writeFile(join(directory, "secret"), "private");
   const store = new ContentStore({ directory, maxEntries: 1, maxBytes: 1000, ttlMs: 1000, inlineChars: 100 });

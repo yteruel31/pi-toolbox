@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { AuthorizationDenied, authorizeOperation, type Operation, type OperationBus, type OperationTicket } from "@yteruel31/pi-operation-hooks";
+import { isRetrievalErrorCode, RetrievalError } from "./retrieval-error.js";
 
 export interface AuthorizationScope { bus?: OperationBus; context: unknown; rootToolCallId: string; toolName: string; ticket?: OperationTicket }
 const scopes = new AsyncLocalStorage<AuthorizationScope>();
@@ -16,16 +17,19 @@ export async function authorized<T>(name: string, args: Record<string, unknown>,
   const operation: Operation = { package: "web-access", name, args: name === "fetch_content" ? { sideEffects: ["local-read", "cache-write", "optional-git-clone", "optional-media-process", "optional-browser"], ...args } : args, urls, toolName: scope?.toolName, rootToolCallId: scope?.rootToolCallId };
   const receipt = await authorizeOperation(scope?.bus, operation, scope?.context, signal);
   let failed = true;
+  let inspecting = false;
   try {
     signal?.throwIfAborted();
     const value = await (scope ? scopes.run({ ...scope, ticket: receipt }, action) : action());
     const executionFailed = isError(value);
     if (!scope?.bus) { failed = executionFailed; return value; }
+    inspecting = true;
     const inspected = await receipt.inspectDelivery(value, signal);
     failed = executionFailed;
     return inspected;
   } catch (error) {
     if (error instanceof AuthorizationDenied || !scope?.bus) throw error;
+    if (name === "get_search_content" && !inspecting && error instanceof RetrievalError && isRetrievalErrorCode(error.code)) throw new RetrievalError(error.code);
     throw new Error("Web access operation failed.");
   } finally { receipt.result(failed); }
 }

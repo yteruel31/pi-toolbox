@@ -12,7 +12,8 @@ import { ResearchManager, type Job } from "./research.js";
 import { RedditService } from "./reddit-service.js";
 import { defaultRedditToolDependencies, REDDIT_TOOL_NAMES, registerRedditTools } from "./reddit-tools.js";
 import { WebService, mapBounded } from "./service.js";
-import { retrieve, type Document } from "./store.js";
+import { RetrievalError } from "./retrieval-error.js";
+import { MAX_RETRIEVAL_CHARS, retrieve, type Document } from "./store.js";
 import { CHECK_INSTRUCTIONS, synthesize, validateAssessment } from "./synthesis.js";
 import { registerSetupCommand } from "./setup-command.js";
 import { registerWebDiagnosticTool } from "./diagnostic-tool.js";
@@ -30,7 +31,7 @@ const searchFields = {
 export const schemas = {
   web_search: Type.Object({ ...searchFields, includeContent: Type.Optional(Type.Boolean()), synthesize: Type.Optional(Type.Boolean()), answerModel: optionalText(200) }, { additionalProperties: false }),
   fetch_content: Type.Object({ url: optionalText(8192), urls: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 8192 }), { minItems: 1, maxItems: 5 })), mode: Type.Optional(StringEnum(["readable", "raw", "answer"] as const)), prompt: optionalText(5000), answerModel: optionalText(200), render: Type.Optional(StringEnum(["auto", "never", "always"] as const)), timestamp: optionalText(64), frames: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })) }, { additionalProperties: false }),
-  get_search_content: Type.Object({ responseId: Type.String({ minLength: 32, maxLength: 64 }), index: Type.Optional(Type.Integer({ minimum: 0 })), url: optionalText(8192), query: optionalText(), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 30000 })), findText: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 500 }), Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { minItems: 1, maxItems: 10 })])), findMode: Type.Optional(StringEnum(["exact", "case-insensitive"] as const)) }, { additionalProperties: false }),
+  get_search_content: Type.Object({ responseId: Type.String({ minLength: 32, maxLength: 64 }), index: Type.Optional(Type.Integer({ minimum: 0 })), url: optionalText(8192), query: optionalText(), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_RETRIEVAL_CHARS, description: "Maximum returned characters, or aggregate matched-excerpt characters with findText. Omitted limit defaults to inlineChars. Serialized output is bounded to 32000 bytes. findText cannot be combined with offset." })), findText: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 500 }), Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { minItems: 1, maxItems: 10 })], { description: "Literal text (case-insensitive by default); matches use original UTF-16 offsets." })), findMode: Type.Optional(StringEnum(["exact", "case-insensitive"] as const)) }, { additionalProperties: false }),
   source_check: Type.Object({ claim: Type.String({ minLength: 1, maxLength: 5000 }), queries: searchFields.queries, provider: searchFields.provider, numResults: searchFields.numResults, domainFilter: searchFields.domainFilter, answerModel: optionalText(200) }, { additionalProperties: false }),
   deep_research: Type.Object({ action: StringEnum(["start", "status", "result", "cancel"] as const), researchId: optionalText(64), provider: Type.Optional(StringEnum(["gemini", "openai"] as const)), subject: optionalText(50000), model: optionalText(200), outputPath: optionalText(4096), requestKey: optionalText(200), upstreamId: optionalText(512) }, { additionalProperties: false }),
 };
@@ -134,17 +135,18 @@ export function registerTools(pi: ExtensionAPI, config: WebConfig, service: WebS
     }
     return output(`responseId: ${responseId}\n${preview}\nFull extracted text is available through get_search_content.`, { summary: `${urls.length} source(s), ${documents.reduce((n, d) => n + d.content.length, 0)} chars`, responseId }, images, usage);
   });
-  register("get_search_content", "Read stored search, fetch, source-check or research content by responseId. Select a document, paginate by character offset, or find exact/case-insensitive passages.", schemas.get_search_content, async (_id, params, signal) => {
+  register("get_search_content", "Read stored content by responseId. Select one document and paginate by UTF-16 character offset, or find literal exact/case-insensitive passages (case-insensitive by default). findText + limit is an aggregate excerpt-character budget (1–30000); findText + offset is not allowed. Omitted limit defaults to inlineChars; serialized output is bounded to 32000 bytes.", schemas.get_search_content, async (_id, params, signal) => {
     const documents = params.responseId.length === 64 ? [{ title: "Research report", content: await research.content(params.responseId) }] : await service.store.get(params.responseId);
-    let budget = config.cache.inlineChars;
-    let selected = retrieve(documents, params, budget);
+    let budget = params.limit ?? config.cache.inlineChars;
+    let selected = retrieve(documents, params, config.cache.inlineChars);
     let text = JSON.stringify(selected);
     while (Buffer.byteLength(text) > 32_000 && budget > 1) {
       budget = Math.max(1, Math.floor(budget / 2));
-      selected = retrieve(documents, params.findText === undefined ? { ...params, limit: Math.min(params.limit ?? budget, budget) } : params, budget);
+      // The reduced limit is only an output serialization adaptation, never validation.
+      selected = retrieve(documents, { ...params, limit: budget }, config.cache.inlineChars);
       text = JSON.stringify(selected);
     }
-    if (Buffer.byteLength(text) > 32_000) throw new Error("Document metadata exceeds retrieval output budget");
+    if (Buffer.byteLength(text) > 32_000) throw new RetrievalError("retrieval-budget");
     return output(JSON.stringify(await inspectIncoming(selected, signal)), { summary: "Stored content", responseId: params.responseId });
   });
   register("source_check", "Check a claim against up to five fetched web sources with a Pi model assessment and mechanically verified exact quotations. Verdicts are model judgments, not proof.", schemas.source_check, async (_id, params, signal, _update, ctx) => {
