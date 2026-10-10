@@ -196,6 +196,17 @@ test("corrupt cache and invalid local requests stay safe through the operation b
     await writeFile(path, JSON.stringify(entry)); await rejects(new RetrievalError("cache-unavailable").message);
   }
   await writeFile(path, "SECRET invalid JSON"); await rejects(new RetrievalError("cache-unavailable").message);
+  const ttlMs = service.store.options.ttlMs;
+  for (const createdAt of [Date.now() + 60_000, Number.MAX_VALUE]) {
+    const before = outcomes.length;
+    if (createdAt === Number.MAX_VALUE) {
+      Object.defineProperty(service.store, "now", { value: () => Number.MAX_VALUE });
+      service.store.options.ttlMs = Number.MAX_VALUE;
+    }
+    await writeFile(path, JSON.stringify({ ...valid, createdAt })); await rejects(new RetrievalError("cache-unavailable").message);
+    assert.equal(outcomes.length, before + 1); assert.equal(outcomes.at(-1), true);
+  }
+  Object.defineProperty(service.store, "now", { value: Date.now }); service.store.options.ttlMs = ttlMs;
   await writeFile(path, JSON.stringify({ ...valid, createdAt: 0 })); await rejects(new RetrievalError("cache-expired").message);
   await writeFile(path, JSON.stringify(valid));
   for (const args of [{ index: 10 }, { url: "missing" }, { query: "missing" }]) await rejects("Document selector not found", args);

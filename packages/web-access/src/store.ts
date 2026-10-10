@@ -110,7 +110,9 @@ export class ContentStore {
     catch { throw new RetrievalError("cache-unavailable"); }
     if (!entry || typeof entry !== "object" || Array.isArray(entry) || entry.version !== 1 || typeof entry.createdAt !== "number" || !Number.isFinite(entry.createdAt) || entry.createdAt < 0) throw new RetrievalError("cache-unavailable");
     if (!Array.isArray(entry.documents) || !entry.documents.length || entry.documents.length > 100 || entry.documents.some((document) => !document || typeof document !== "object" || Array.isArray(document) || typeof document.content !== "string" || typeof document.title !== "string" || (document.url !== undefined && typeof document.url !== "string") || (document.query !== undefined && typeof document.query !== "string"))) throw new RetrievalError("cache-unavailable");
-    if (entry.createdAt + this.options.ttlMs <= this.now()) throw new RetrievalError("cache-expired");
+    const now = this.now(), expiresAt = entry.createdAt + this.options.ttlMs;
+    if (entry.createdAt > now || !Number.isFinite(expiresAt)) throw new RetrievalError("cache-unavailable");
+    if (expiresAt <= now) throw new RetrievalError("cache-expired");
     return entry.documents;
   }
 }
