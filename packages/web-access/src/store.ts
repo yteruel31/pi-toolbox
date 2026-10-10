@@ -3,10 +3,12 @@ import { constants } from "node:fs";
 import { link, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { dirname, join, parse, resolve } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { RetrievalError } from "./retrieval-error.js";
 
 export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
+export const MAX_RETRIEVAL_CHARS = 30_000;
 export function validId(id: string): string {
-  if (!/^[a-f0-9]{32,64}$/.test(id)) throw new Error("Invalid content or research ID");
+  if (!/^[a-f0-9]{32,64}$/.test(id)) throw new RetrievalError("invalid-id");
   return id;
 }
 export function hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
@@ -102,41 +104,52 @@ export class ContentStore {
     });
   }
   async get(id: string): Promise<Document[]> {
+    const safeId = validId(id);
     let entry: RecordEntry;
-    try { entry = JSON.parse(await readPrivate(join(this.options.directory, `${validId(id)}.json`))); }
-    catch { throw new Error("Content is missing, expired, evicted or unreadable; fetch it again"); }
-    if (entry.version !== 1 || !Number.isFinite(entry.createdAt) || entry.createdAt + this.options.ttlMs <= this.now()) throw new Error("Content has expired; fetch it again");
-    if (!Array.isArray(entry.documents) || entry.documents.some((document) => typeof document.content !== "string" || typeof document.title !== "string")) throw new Error("Invalid stored content");
+    try { entry = JSON.parse(await readPrivate(join(this.options.directory, `${safeId}.json`))); }
+    catch { throw new RetrievalError("cache-unavailable"); }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || entry.version !== 1 || typeof entry.createdAt !== "number" || !Number.isFinite(entry.createdAt) || entry.createdAt < 0) throw new RetrievalError("cache-unavailable");
+    if (!Array.isArray(entry.documents) || !entry.documents.length || entry.documents.length > 100 || entry.documents.some((document) => !document || typeof document !== "object" || Array.isArray(document) || typeof document.content !== "string" || typeof document.title !== "string" || (document.url !== undefined && typeof document.url !== "string") || (document.query !== undefined && typeof document.query !== "string"))) throw new RetrievalError("cache-unavailable");
+    if (entry.createdAt + this.options.ttlMs <= this.now()) throw new RetrievalError("cache-expired");
     return entry.documents;
   }
 }
 export interface Retrieval { index?: number; url?: string; query?: string; offset?: number; limit?: number; findText?: string | string[]; findMode?: "exact" | "case-insensitive" }
 export function retrieve(documents: Document[], input: Retrieval, maxChars: number): Record<string, unknown> {
-  if ([input.index !== undefined, input.url !== undefined, input.query !== undefined].filter(Boolean).length > 1) throw new Error("Choose one document selector");
+  if ([input.index !== undefined, input.url !== undefined, input.query !== undefined].filter(Boolean).length > 1) throw new RetrievalError("conflicting-selectors");
   let index = input.index ?? 0;
   if (input.url !== undefined) index = documents.findIndex((item) => item.url === input.url);
   if (input.query !== undefined) index = documents.findIndex((item) => item.query === input.query);
   const document = documents[index];
-  if (!Number.isSafeInteger(index) || index < 0 || !document) throw new Error("Document selector not found");
+  if (!Number.isSafeInteger(index) || index < 0 || !document) throw new RetrievalError("invalid-selector");
   const metadata = { index, title: document.title.slice(0, 512), url: document.url?.slice(0, 2048), totalChars: document.content.length, documentCount: documents.length, documents: documents.slice(0, 20).map(({ title, url, query }, index) => ({ index, title: title.slice(0, 200), url: url?.slice(0, 512), query: query?.slice(0, 200) })) };
   if (input.findText !== undefined) {
-    if (input.offset !== undefined || input.limit !== undefined) throw new Error("findText cannot be combined with offset or limit");
+    if (input.offset !== undefined) throw new RetrievalError("find-with-offset");
     const needles = typeof input.findText === "string" ? [input.findText] : input.findText;
-    if (!needles.length || needles.length > 10 || needles.some((s) => !s || s.length > 500)) throw new Error("findText requires 1 to 10 strings, each 1 to 500 characters");
-    const matches: Array<{ term: string; offset: number; end: number; text: string }> = []; let budget = maxChars;
+    if (!needles.length || needles.length > 10 || needles.some((s) => !s || s.length > 500)) throw new RetrievalError("invalid-find");
+    const requested = input.limit ?? maxChars;
+    if (!Number.isSafeInteger(requested) || requested < 1 || requested > MAX_RETRIEVAL_CHARS) throw new RetrievalError("invalid-pagination");
+    const matches: Array<{ term: string; offset: number; end: number; text: string; truncated?: boolean }> = []; let budget = requested;
     for (const term of needles) {
       // Literal regular expressions retain original UTF-16 offsets even when case folding changes string length.
       const pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), input.findMode === "exact" ? "g" : "gi");
       let match: RegExpExecArray | null;
       while ((match = pattern.exec(document.content)) && matches.length < 20 && budget > 0) {
-        const start = Math.max(0, match.index - 150); const end = Math.min(document.content.length, match.index + match[0].length + 150, start + budget);
-        matches.push({ term, offset: start, end, text: document.content.slice(start, end) }); budget -= end - start;
+        const matchEnd = match.index + match[0].length;
+        let start = Math.max(0, match.index - 150); let end = Math.min(document.content.length, matchEnd + 150);
+        if (end - start > budget) {
+          // Keep the whole literal hit when it fits; otherwise identify the clipped excerpt.
+          start = match[0].length <= budget ? Math.max(0, Math.min(match.index - Math.floor((budget - match[0].length) / 2), document.content.length - budget)) : match.index;
+          end = Math.min(document.content.length, start + budget);
+        }
+        const truncated = start > match.index || end < matchEnd;
+        matches.push({ term, offset: start, end, text: document.content.slice(start, end), ...(truncated ? { truncated: true } : {}) }); budget -= end - start;
       }
     }
     return { ...metadata, matches, bounded: matches.length >= 20 || budget <= 0 };
   }
   const offset = input.offset ?? 0; const limit = input.limit ?? maxChars;
-  if (!Number.isSafeInteger(offset) || offset < 0 || offset > document.content.length || !Number.isSafeInteger(limit) || limit < 1 || limit > maxChars) throw new Error(`Invalid offset or limit (maximum ${maxChars})`);
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > document.content.length || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_RETRIEVAL_CHARS) throw new RetrievalError("invalid-pagination");
   const end = Math.min(document.content.length, offset + limit);
   return { ...metadata, offset, content: document.content.slice(offset, end), nextOffset: end < document.content.length ? end : null };
 }
