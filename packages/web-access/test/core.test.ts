@@ -51,11 +51,13 @@ test("atomic publication does not overwrite and rejects symlink parents", () => 
   await atomicWrite(path, "original");
   await assert.rejects(atomicWrite(path, "replacement"));
   assert.equal(await readFile(path, "utf8"), "original");
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
-  await symlink(directory, join(directory, "alias"));
+  if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await symlink(directory, join(directory, "alias"), process.platform === "win32" ? "junction" : undefined);
   await assert.rejects(atomicWrite(join(directory, "alias", "escape.md"), "no"), /symlink/);
-  await symlink(path, join(directory, "link.md"));
-  await assert.rejects(readPrivate(join(directory, "link.md")));
+  if (process.platform !== "win32") {
+    await symlink(path, join(directory, "link.md"));
+    await assert.rejects(readPrivate(join(directory, "link.md")));
+  }
 }));
 test("cache supports recovery, bounded pagination, eviction and expiration", () => temporary(async (directory) => {
   let time = Date.now();
