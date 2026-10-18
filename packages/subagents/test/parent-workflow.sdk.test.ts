@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage } from "@earendil-works/pi-ai";
 import { ModelRuntime, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 
+import { temporaryStateDirectory } from "./helpers/temp-state.js";
 import { createPiSubagentsExtension } from "../src/extension.js";
 import type { HarnessRunOutcome, HarnessRunRequest, SubagentHarness } from "../src/core/harness.js";
 
@@ -47,7 +48,7 @@ it("actual SDK lets parent work, collect a ready dependency, and auto-deliver re
     noThemes: true,
     noContextFiles: true,
     extensionFactories: [{ name: "parent-workflow-test", factory(pi) {
-      createPiSubagentsExtension({
+      createPiSubagentsExtension({ stateDirectory: temporaryStateDirectory(),
         readJevConfig: async () => undefined,
         createPiHarness: () => harness,
         createClaudeHarness: () => harness,

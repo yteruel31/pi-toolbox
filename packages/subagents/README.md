@@ -172,6 +172,20 @@ Host integrations can subscribe to the separate, versioned `pi-toolbox:subagents
 
 A persistent status below Pi's main editor summarizes running, completed, and errored runs, the live parent state (`waiting` means a model-facing wait is active, rather than that it is the only task), and advertises `/subagents`. `busy` includes non-idle parent lifecycle or sibling tools; `available` is shown only when the parent is genuinely idle, independently of child count. The same totals are broadcast on the `pi.events` channel `pi-toolbox:subagents:status` as `{ v: 1, counts: RunCounts }` (`running`, `completed`, `error`) whenever the status updates, including in headless sessions with no UI, with `{ v: 1, counts: null }` on shutdown so consumers discard stale counts. The routing panel supports arrows, Tab for scope, Enter to edit, `d` to delete, and Escape. Route editing stays inside the same panel: use arrows or Tab to select a field, left/right to change harness, model, or thinking, Enter to save, and Escape to return to the mapping list. Thinking is the only effort control in the UI and saved configuration; it maps to Claude SDK effort as described above. The model selector uses Pi's scoped models (or all currently available Pi models when no scope is configured) and Claude Agent SDK `supportedModels()`. Selecting a Pi scoped model with a pinned thinking level applies that level to the thinking selector. An existing saved value missing from the current catalogue stays selectable and is marked as saved instead of being silently replaced.
 
+## Session persistence
+
+Session entries use a compact v2 checkpoint containing artifact references and
+consumption state, not inline transcripts/results. Private content-addressed
+chunks live below `<getAgentDir()>/subagents/artifacts`. Unchanged payloads are
+not rewritten, including after collection. At N runs the checkpoint data is
+bounded to `256 + 160 * N` UTF-8 bytes (28,256 bytes for 175 runs).
+
+Legacy v1 checkpoints migrate on restore without copying their payloads into
+new session entries. Consumed results remain inspectable. Missing/corrupt
+artifacts fail closed; back up the artifact store together with session files.
+No historical storage is cleaned automatically. See [Persistence](PERSISTENCE.md)
+for format, compatibility, synthetic measurements, failure handling, and limits.
+
 ## Development
 
 ```bash

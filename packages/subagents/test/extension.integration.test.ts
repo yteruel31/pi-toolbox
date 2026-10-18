@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, unlink } from "node:fs/promises";
+import type { CompactRunState } from "../src/persistence/run-state-store.js";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -19,6 +20,7 @@ import type {
 import { FileAgentDiscovery } from "../src/agents/discovery.js";
 import { FileRoutingStore } from "../src/agents/routing-store.js";
 import type { RoutingEntry } from "../src/agents/types.js";
+import { temporaryStateDirectory } from "./helpers/temp-state.js";
 import { createPiSubagentsExtension, type ExtensionDependencies } from "../src/extension.js";
 import { buildClaudeOptions } from "../src/harnesses/claude.js";
 import { SUBAGENTS_LIFECYCLE_CHANNEL, SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL, type SubagentsLifecycleEvent } from "../src/shared/lifecycle.js";
@@ -315,7 +317,7 @@ describe("interactive wait release", () => {
 const noLiveJevConfig = async () => undefined;
 
 function registerExtension(runtime: FakeRuntime, dependencies: ExtensionDependencies = {}): void {
-  createPiSubagentsExtension({ readJevConfig: noLiveJevConfig, ...dependencies })(runtime.pi);
+  createPiSubagentsExtension({ stateDirectory: temporaryStateDirectory(), readJevConfig: noLiveJevConfig, ...dependencies })(runtime.pi);
 }
 
 function fakeContext(cwd: string, entries: FakeRuntime["entries"]): ExtensionContext {
@@ -1083,7 +1085,7 @@ describe("Pi extension composition", () => {
     const spawned = await execute(runtime, "subagent_spawn", { prompt: "first task" }, ctx);
     expect((spawned.content[0] as { text: string } | undefined)?.text).toContain("run-1");
     expect(harness.requests[0]?.prompt).toBe("first task");
-    expect(runtime.entries.some((entry) => entry.customType === "pi-subagents-state-v1")).toBe(true);
+    expect(runtime.entries.some((entry) => entry.customType === "pi-subagents-state-v2")).toBe(true);
 
     const waitPromise = execute(runtime, "subagent_wait", { ids: ["run-1", "missing"] }, ctx);
     harness.finish(0, "finished one");
@@ -1351,8 +1353,9 @@ describe("Pi extension composition", () => {
     const ctx = fakeContext(cwd, runtime.entries);
     await emit(runtime, "session_start", { type: "session_start", reason: "startup" }, ctx);
 
-    const spawned = await execute(runtime, "subagent_spawn", { prompt: "fresh" }, ctx);
-    expect((spawned.content[0] as { text: string }).text).toContain("run-1");
+    await expect(execute(runtime, "subagent_spawn", { prompt: "fresh" }, ctx)).rejects.toThrow("state validate failed");
+    expect(harness.requests).toHaveLength(0);
+    expect(runtime.entries).toHaveLength(2);
   });
 
   it("keeps /btw out of parent messages and rejects untrusted working directories", async () => {
@@ -1385,5 +1388,105 @@ describe("Pi extension composition", () => {
     } as ExtensionContext;
     await expect(execute(runtime, "subagent_spawn", { prompt: "unsafe" }, untrusted))
       .rejects.toThrow("trusted Pi project");
+  });
+});
+
+describe("compact session persistence integration", () => {
+  it("migrates legacy payloads and reloads collected v2 results without a second delivery", async () => {
+    const directory = temporaryStateDirectory();
+    const runtime = fakePi();
+    const legacy = persistedState();
+    legacy.runs[0]!.finalText = "large legacy result ".repeat(2000);
+    runtime.entries.push({ customType: "pi-subagents-state-v1", data: legacy });
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { stateDirectory: directory, createPiHarness: () => harness });
+    const ctx = { ...fakeContext(process.cwd(), runtime.entries), isIdle: () => false } as ExtensionContext;
+    await emit(runtime, "session_start", {}, ctx);
+    expect(runtime.entries.at(-1)!.customType).toBe("pi-subagents-state-v2");
+    expect(JSON.stringify(runtime.entries.at(-1))).not.toContain("large legacy result");
+    const spawned = await execute(runtime, "subagent_spawn", { prompt: "new task" }, ctx);
+    const id = (spawned.details as { snapshot: { id: string } }).snapshot.id;
+    harness.requests[0]!.reportTranscript({ kind: "assistant", text: "large new transcript ".repeat(200) });
+    harness.finish(0, "new final ".repeat(3000));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(JSON.stringify(await execute(runtime, "subagent_collect", { ids: [id] }, ctx))).toContain("new final");
+    expect(runtime.entries.filter((entry) => entry.customType === "pi-subagents-state-v2").every((entry) => {
+      const state = entry.data as CompactRunState;
+      return Buffer.byteLength(JSON.stringify(state)) <= 256 + 160 * state.runs.length;
+    })).toBe(true);
+
+    const reloaded = fakePi();
+    reloaded.entries.push(...runtime.entries);
+    registerExtension(reloaded, { stateDirectory: directory });
+    const reloadCtx = fakeContext(process.cwd(), reloaded.entries);
+    await emit(reloaded, "session_start", {}, reloadCtx);
+    expect(reloaded.messages).toEqual([]);
+    expect(JSON.stringify(await execute(reloaded, "subagent_check", { id }, reloadCtx))).toContain("large new transcript");
+    const recollected = await execute(reloaded, "subagent_collect", { ids: [id] }, reloadCtx);
+    expect(recollected.details).toMatchObject({ report: { newlyConsumedIds: [] } });
+    expect(JSON.stringify(recollected)).toContain("new final");
+  });
+
+  it("disables tools on a missing latest-v2 artifact without falling back or overwriting it", async () => {
+    const directory = temporaryStateDirectory();
+    const runtime = fakePi();
+    runtime.entries.push({ customType: "pi-subagents-state-v1", data: persistedState() });
+    registerExtension(runtime, { stateDirectory: directory });
+    const ctx = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, ctx);
+    const state = runtime.entries.at(-1)!.data as CompactRunState;
+    await unlink(path.join(directory, state.namespace, state.runs[0]!.artifact + ".json"));
+    const count = runtime.entries.length;
+    const output = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await emit(runtime, "session_start", {}, ctx);
+      await expect(execute(runtime, "subagent_list", {}, ctx)).rejects.toThrow("state read failed");
+      expect(runtime.entries).toHaveLength(count);
+      expect(runtime.messages).toEqual([]);
+      expect(output).toHaveBeenCalled();
+    } finally { output.mockRestore(); }
+  });
+
+  it("never auto-delivers on append failure and commits consumption once after retry", async () => {
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { createPiHarness: () => harness });
+    const ctx = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, ctx);
+    const spawned = await execute(runtime, "subagent_spawn", { prompt: "task" }, ctx);
+    const id = (spawned.details as { snapshot: { id: string } }).snapshot.id;
+    const append = vi.spyOn(runtime.pi, "appendEntry").mockImplementation(() => { throw new Error("private error sentinel"); });
+    const output = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      harness.finish(0, "owed final");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(runtime.messages).toEqual([]);
+      expect(JSON.stringify(await execute(runtime, "subagent_check", { id }, ctx))).toContain('"consumption":"none"');
+      expect(output.mock.calls.flat().join(" ")).not.toContain("sentinel");
+      append.mockRestore();
+      await emit(runtime, "agent_settled", {}, ctx);
+      expect(runtime.messages).toHaveLength(1);
+      await emit(runtime, "agent_settled", {}, ctx);
+      await emit(runtime, "session_start", {}, ctx);
+      expect(runtime.messages).toHaveLength(1);
+    } finally { append.mockRestore(); output.mockRestore(); }
+  });
+
+  it("keeps old-session completions out of a replacement session", async () => {
+    const runtime = fakePi();
+    const harness = new ControlledHarness();
+    registerExtension(runtime, { createPiHarness: () => harness });
+    const first = fakeContext(process.cwd(), runtime.entries);
+    await emit(runtime, "session_start", {}, first);
+    await execute(runtime, "subagent_spawn", { prompt: "old task" }, first);
+    const second = fakeContext(process.cwd(), []);
+    second.sessionManager.getSessionId = () => "another-session";
+    await emit(runtime, "session_start", {}, second);
+    const count = runtime.entries.length;
+    harness.finish(0, "stale completion");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.entries).toHaveLength(count);
+    expect(runtime.messages).toEqual([]);
+    expect(JSON.stringify(await execute(runtime, "subagent_list", {}, second))).not.toContain("run-1");
   });
 });

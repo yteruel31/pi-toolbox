@@ -40,6 +40,7 @@ import type {
 } from "./agents/types.js";
 import type { SubagentHarness } from "./core/harness.js";
 import { RunManager } from "./core/run-manager.js";
+import { FileRunStateStore, STATE_ENTRY_V1, STATE_ENTRY_V2 } from "./persistence/run-state-store.js";
 import { LifecyclePublisher, SUBAGENTS_LIFECYCLE_CHANNEL, SUBAGENTS_LIFECYCLE_REQUEST_CHANNEL } from "./shared/lifecycle.js";
 import {
   ClaudeHarness,
@@ -79,11 +80,9 @@ export type SubagentsStatusEvent =
   | { v: 1; counts: RunCounts }
   | { v: 1; counts: null };
 
-const STATE_ENTRY = "pi-subagents-state-v1";
 const BTW_ENTRY = "pi-subagents-btw-v1";
 const MAX_TOOL_TEXT = 49_000;
 const MAX_IDS = 64;
-const MAX_AGENT_PROFILE_CHARS = 100;
 const THINKING_LEVELS = [
   "off",
   "minimal",
@@ -95,6 +94,8 @@ const THINKING_LEVELS = [
 ] as const;
 
 export interface ExtensionDependencies extends RoutingModelCatalogDependencies {
+  /** Trusted local storage root; offline tests must use a temporary directory. */
+  stateDirectory?: string;
   routeJev?: typeof routeWithJev;
   createPiHarness?(options: PiHarnessOptions): SubagentHarness;
   createClaudeHarness?(options: ClaudeHarnessOptions): SubagentHarness;
@@ -123,6 +124,12 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
     if (request && typeof request === "object" && "v" in request && request.v === 1) lifecycle?.snapshot();
   });
   let sessionContext: ExtensionContext | undefined;
+  let sessionStateError: Error | undefined;
+  let sessionGeneration = 0;
+  const reportPersistenceError = (error: Error): void => {
+    if (sessionContext?.hasUI) sessionContext.ui.notify(error.message, "error");
+    else console.error(error.message);
+  };
   let piHarness: SubagentHarness | undefined;
   let claudeHarness: SubagentHarness | undefined;
   let deliveryScheduled = false;
@@ -144,7 +151,7 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
 
   const requireSession = () => {
     if (!manager || !sessionContext || !piHarness || !claudeHarness) {
-      throw new Error("Subagents are not ready: no active Pi session.");
+      throw sessionStateError ?? new Error("Subagents are not ready: no active Pi session.");
     }
     return { manager, ctx: sessionContext, piHarness, claudeHarness };
   };
@@ -173,7 +180,14 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
 
   const deliverResults = (triggerTurn: boolean): void => {
     if (!manager || shuttingDown || waits.transitioning || sessionContext?.hasPendingMessages?.()) return;
-    const results = manager.drainDeliveries();
+    let results: RunResult[];
+    try {
+      results = manager.drainDeliveries();
+    } catch {
+      // The manager reports the persistence error and rolls consumption back.
+      // Do not leak a rejection from the idle delivery microtask or send output.
+      return;
+    }
     if (results.length === 0) return;
     pi.sendMessage(
       {
@@ -209,11 +223,29 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    const generation = ++sessionGeneration;
+    shuttingDown = true;
     waits.clear();
+    manager?.shutdown("parent session replaced");
+    lifecycle?.clear();
+    lifecycle = undefined;
     shuttingDown = false;
     parentAgentActive = false;
     sessionContext = ctx;
-    const restore = findLatestPersistedState(ctx);
+    manager = undefined;
+    sessionStateError = undefined;
+    const stateStore = new FileRunStateStore(
+      dependencies.stateDirectory ?? path.join(getAgentDir(), "subagents", "artifacts"),
+      ctx.sessionManager.getSessionId(),
+    );
+    let restore: PersistedRunState | undefined;
+    try {
+      restore = findLatestPersistedState(ctx, stateStore);
+    } catch (error) {
+      sessionStateError = error instanceof Error ? error : new Error("Subagent state restoration failed.");
+      reportPersistenceError(sessionStateError);
+      return; // Never fall back to older state or overwrite a broken checkpoint.
+    }
     try {
       jevConfig = await (dependencies.readJevConfig ?? readJevConfig)(getAgentDir());
       jevConfigWarning = undefined;
@@ -254,14 +286,19 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
       restore,
       hooks: {
         persist: (state) => {
-          if (!shuttingDown) pi.appendEntry(STATE_ENTRY, state);
-          updateStatus();
+          if (generation !== sessionGeneration) throw new Error("Subagent session was replaced.");
+          if (!shuttingDown) pi.appendEntry(STATE_ENTRY_V2, stateStore.save(state));
+        },
+        onPersistenceError: (error) => {
+          if (generation === sessionGeneration) reportPersistenceError(error);
         },
         onDeliverableResults: () => {
+          if (generation !== sessionGeneration) return;
           updateStatus();
           scheduleDelivery();
         },
         onChange: () => {
+          if (generation !== sessionGeneration) return;
           // Effective-model reports are live changes, not persistence mutations.
           if (manager) lifecycle?.update(manager.snapshotState());
           notifyRunListeners();
@@ -269,6 +306,17 @@ function registerExtension(pi: ExtensionAPI, dependencies: ExtensionDependencies
         },
       },
     });
+    if (restore) {
+      try {
+        // Migrates legacy data immediately, including fully consumed sessions.
+        manager.checkpoint();
+      } catch (error) {
+        sessionStateError = error as Error;
+        manager = undefined;
+        lifecycle.clear();
+        return;
+      }
+    }
     lifecycle.update(manager.snapshotState());
     lifecycle.snapshot();
     updateStatus();
@@ -1042,90 +1090,17 @@ function isWithin(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function findLatestPersistedState(ctx: ExtensionContext): PersistedRunState | undefined {
+function findLatestPersistedState(ctx: ExtensionContext, store: FileRunStateStore): PersistedRunState | undefined {
   const entries = ctx.sessionManager.getBranch();
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index] as unknown as { type?: string; customType?: string; data?: unknown };
-    if (entry.type === "custom" && entry.customType === STATE_ENTRY) {
+    if (entry.type === "custom" && (entry.customType === STATE_ENTRY_V1 || entry.customType === STATE_ENTRY_V2)) {
       // The latest state is authoritative. Malformed latest data fails closed
       // instead of resurrecting an older lifecycle snapshot.
-      return isPersistedState(entry.data) ? entry.data : undefined;
+      return store.restore(entry.data);
     }
   }
   return undefined;
-}
-
-function isPersistedState(value: unknown): value is PersistedRunState {
-  if (!isRecord(value)) return false;
-  if (
-    value.version !== 1 ||
-    !isPositiveInteger(value.nextSerial) ||
-    !isPositiveInteger(value.nextSettlementSeq) ||
-    !Array.isArray(value.runs) ||
-    value.runs.length > 10_000
-  ) {
-    return false;
-  }
-  return value.runs.every((record) => {
-    if (!isRecord(record)) return false;
-    return (
-      typeof record.id === "string" && /^run-[1-9][0-9]*$/.test(record.id) &&
-      isPositiveInteger(record.serial) &&
-      typeof record.title === "string" &&
-      (record.agentProfile === undefined || (
-        typeof record.agentProfile === "string" &&
-        record.agentProfile.length <= MAX_AGENT_PROFILE_CHARS
-      )) &&
-      (record.harness === "pi" || record.harness === "claude") &&
-      ["queued", "running", "completed", "failed", "cancelled"].includes(String(record.status)) &&
-      typeof record.createdAt === "number" && Number.isFinite(record.createdAt) &&
-      Array.isArray(record.activity) && record.activity.length <= 1_000 &&
-      record.activity.every((entry) =>
-        isRecord(entry) && typeof entry.at === "number" && Number.isFinite(entry.at) && typeof entry.text === "string"
-      ) &&
-      (record.transcript === undefined || (
-        Array.isArray(record.transcript) &&
-        record.transcript.length <= 1_000 &&
-        record.transcript.every(isPersistedTranscriptEntry)
-      )) &&
-      (record.transcriptDropped === undefined || (
-        typeof record.transcriptDropped === "number" &&
-        Number.isSafeInteger(record.transcriptDropped) &&
-        record.transcriptDropped >= 0
-      )) &&
-      typeof record.activityDropped === "number" && Number.isSafeInteger(record.activityDropped) && record.activityDropped >= 0 &&
-      ["none", "waited", "delivered", "suppressed"].includes(String(record.consumption))
-    );
-  });
-}
-
-function isPersistedTranscriptEntry(value: unknown): boolean {
-  if (!isRecord(value) || typeof value.at !== "number" || !Number.isFinite(value.at)) {
-    return false;
-  }
-  if (value.kind === "status") {
-    return typeof value.text === "string" &&
-      (value.status === undefined || ["queued", "running", "completed", "failed", "cancelled"].includes(String(value.status)));
-  }
-  if (value.kind === "user" || value.kind === "assistant") {
-    return typeof value.text === "string";
-  }
-  if (value.kind === "tool") {
-    return typeof value.toolName === "string" &&
-      ["start", "update", "complete", "error"].includes(String(value.phase)) &&
-      (value.callId === undefined || typeof value.callId === "string") &&
-      (value.input === undefined || typeof value.input === "string") &&
-      (value.output === undefined || typeof value.output === "string");
-  }
-  return false;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function textResult(text: string, details: unknown, usage?: ReturnType<typeof aggregateToolUsage>) {

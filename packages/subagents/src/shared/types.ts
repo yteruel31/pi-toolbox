@@ -278,7 +278,7 @@ export interface PersistedRunRecord {
   routing?: RunRoutingDiagnostic;
 }
 
-/** Whole serialized manager state, written through the persistence hook. */
+/** Full manager interchange snapshot. Adapters may persist compact external references. */
 export interface PersistedRunState {
   version: 1;
   nextSerial: number;

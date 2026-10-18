@@ -62,15 +62,17 @@ import type {
   SubagentHarness,
 } from "./harness.js";
 
-/** Injected side-effect hooks. All optional; all must never throw upward. */
+/** Injected side-effect hooks. Persistence failures are caught by the manager. */
 export interface RunManagerHooks {
   /**
    * Called after every lifecycle mutation (spawn, settle, cancel request,
    * consumption change) with the full serializable state. The Pi adapter
-   * writes it into a custom session entry so delivery de-duplication
+   * externalizes payloads and writes a compact checkpoint so de-duplication
    * survives session reloads. Not called on progress events.
    */
   persist?(state: PersistedRunState): void;
+  /** Background lifecycle writes cannot reject unobserved harness promises. */
+  onPersistenceError?(error: Error): void;
   /**
    * Called when the delivery queue gains items. The adapter schedules an
    * idle-time drain (Pi `agent_settled`) and then calls drainDeliveries().
@@ -202,6 +204,7 @@ export class RunManager {
   private nextSerial = 1;
   private nextSettlementSeq = 1;
   private shutdownDone = false;
+  private persistenceFailure: Error | undefined;
 
   constructor(options: RunManagerOptions = {}) {
     this.maxActiveRuns = options.maxActiveRuns ?? 4;
@@ -288,7 +291,13 @@ export class RunManager {
     this.runs.set(run.id, run);
     this.creationOrder.push(run.id);
 
-    this.persist();
+    const persistenceError = this.persist();
+    if (persistenceError) {
+      // Never start an untracked child when the initial checkpoint failed.
+      this.runs.delete(run.id);
+      this.creationOrder.pop();
+      throw persistenceError;
+    }
     this.startRun(run, request);
     this.persist();
     return this.toSnapshot(run);
@@ -449,7 +458,7 @@ export class RunManager {
         200,
       );
     }
-    run.usage = outcome?.usage;
+    run.usage = outcome?.usage ? { ...outcome.usage } : undefined;
     if (run.cancelRequested) {
       // Completion/cancellation race: cancellation was requested first, so
       // the terminal state is cancelled; produced output is preserved as
@@ -588,7 +597,8 @@ export class RunManager {
         mutated = true;
       }
     }
-    if (mutated) this.persist();
+    if (mutated) this.commitConsumption(newlyConsumedIds);
+    else if (this.persistenceFailure && known.length > 0) this.checkpoint();
 
     return {
       entries: ids.map((id): WaitEntry => {
@@ -639,7 +649,8 @@ export class RunManager {
       }
       return { kind: "result", id, result: this.toResult(run) };
     });
-    if (newlyConsumedIds.length > 0) this.persist();
+    if (newlyConsumedIds.length > 0) this.commitConsumption(newlyConsumedIds);
+    else if (this.persistenceFailure && entries.some((entry) => entry.kind === "result")) this.checkpoint();
     return { entries, newlyConsumedIds };
   }
 
@@ -900,7 +911,7 @@ export class RunManager {
       .sort((a, b) => (a.settlementSeq ?? 0) - (b.settlementSeq ?? 0));
     this.deliveryQueue.clear();
     for (const run of drained) run.consumption = "delivered";
-    this.persist();
+    this.commitConsumption(drained.map((run) => run.id));
     return drained.map((run) => this.toResult(run));
   }
 
@@ -959,7 +970,7 @@ export class RunManager {
           consumption: run.consumption,
           finalText: run.finalText,
           errorText: run.errorText,
-          usage: run.usage,
+          usage: run.usage ? { ...run.usage } : undefined,
           activity: run.activity.entries().map((entry) => ({ ...entry })),
           activityDropped: run.activity.dropped,
           transcript: run.transcript.entries().map((entry) => ({ ...entry })),
@@ -970,9 +981,38 @@ export class RunManager {
     };
   }
 
-  private persist(): void {
-    this.hooks.persist?.(this.snapshotState());
-    this.hooks.onChange?.();
+  /** Commit restoration/migration before exposing the restored manager. */
+  checkpoint(): void {
+    const error = this.persist();
+    if (error) throw error;
+  }
+
+  private persist(): Error | undefined {
+    let failure: Error | undefined;
+    try {
+      this.hooks.persist?.(this.snapshotState());
+    } catch {
+      failure = new Error("Subagent state persistence failed; no result consumption was committed. Check the private subagent artifact store before retrying.");
+      try { this.hooks.onPersistenceError?.(failure); } catch { /* Observer only. */ }
+    }
+    this.persistenceFailure = failure;
+    if (!failure) {
+      try { this.hooks.onChange?.(); } catch { /* Display observers cannot undo a commit. */ }
+    }
+    return failure;
+  }
+
+  private commitConsumption(ids: readonly string[]): void {
+    const error = this.persist();
+    if (!error) return;
+    // Persist-before-return: a failed write must not claim successful collection
+    // or delivery. Keep payloads and requeue owed results for an explicit retry.
+    for (const id of ids) {
+      const run = this.runs.get(id)!;
+      run.consumption = "none";
+      if (run.autoDeliver && run.reservations === 0) this.deliveryQueue.add(id);
+    }
+    throw error;
   }
 
   private restore(state: PersistedRunState): void {
@@ -1004,7 +1044,7 @@ export class RunManager {
         consumption: record.consumption,
         finalText: record.finalText,
         errorText: record.errorText,
-        usage: record.usage,
+        usage: record.usage ? { ...record.usage } : undefined,
         abort: new AbortController(),
         supportsActiveMessages: false,
         activeControl: undefined,
@@ -1103,7 +1143,7 @@ export class RunManager {
       cancelRequested: run.cancelRequested,
       autoDeliver: run.autoDeliver,
       consumption: run.consumption,
-      usage: run.usage,
+      usage: run.usage ? { ...run.usage } : undefined,
       routing: this.cloneRouting(run.routing),
     };
   }
@@ -1123,7 +1163,7 @@ export class RunManager {
       finalText: run.finalText ?? "",
       errorText: run.errorText,
       effectiveModel: run.effectiveModel,
-      usage: run.usage,
+      usage: run.usage ? { ...run.usage } : undefined,
       createdAt: run.createdAt,
       settledAt: run.settledAt,
       durationMs: Math.max(0, run.settledAt - run.createdAt),

@@ -9,6 +9,7 @@ src/
   shared/      plain value types, bounded errors/text/logs
   core/        RunManager and harness contract
   agents/      secure discovery, route resolution, atomic routing storage
+  persistence/ compact session checkpoints and private immutable payload chunks
   harnesses/   concrete Pi and Claude Agent SDK adapters
   tui/         pure reducers/view models plus concrete Pi overlays
   extension.ts Pi composition root, tools, commands, persistence, delivery
@@ -37,7 +38,7 @@ The manager observes both branches of every harness promise. Harness failures th
 
 A normal result exits exactly once through `subagent_wait`, `subagent_collect`, or automatic delivery. Collection uses the existing `waited` consumption state and returns only selected terminal results immediately; active and wait-reserved runs remain pending, so it is not a polling mechanism. `/btw` starts with `suppressed` consumption: automatic delivery and `subagent_collect` return no result payload for it, so its answer never enters parent-model context. Legacy explicit `subagent_wait`, `subagent_check`, and `subagent_list` remain backward compatible.
 
-The adapter writes `PersistedRunState` through `pi.appendEntry`, which does not enter LLM context. On restore, settled consumption remains intact. Previously active processes are not resumed; their records become explicit interrupted failures. Unconsumed restored results are added to context once without triggering a parent turn, so restarting after a manual stop cannot resume work ahead of the user's next prompt. Results from newly spawned runs retain automatic delivery.
+The adapter externalizes the full `PersistedRunState` into private, content-addressed chunks and writes only a compact v2 reference/consumption checkpoint through `pi.appendEntry`, which does not enter LLM context. Legacy v1 checkpoints are read but never written again. Each activity/transcript entry is a separate shared chunk, so growing active logs do not produce repeated accumulated payloads. Consumption commits fail closed and roll back on persistence errors. See [PERSISTENCE.md](PERSISTENCE.md) for the byte guarantee, migration, retention and failure contracts. On restore, settled consumption remains intact. Previously active processes are not resumed; their records become explicit interrupted failures. Unconsumed restored results are added to context once without triggering a parent turn, so restarting after a manual stop cannot resume work ahead of the user's next prompt. Results from newly spawned runs retain automatic delivery.
 
 For live results, the manager signals when delivery is possible. The adapter drains only while Pi is idle, batches in settlement order, and injects one `followUp` custom message with `triggerTurn: true`. An explicit wait reservation removes its run from that queue.
 
