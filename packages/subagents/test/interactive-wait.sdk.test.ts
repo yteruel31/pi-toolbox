@@ -4,6 +4,7 @@ import * as ai from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage } from "@earendil-works/pi-ai";
 import { ModelRuntime, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { temporaryStateDirectory } from "./helpers/temp-state.js";
 import { createPiSubagentsExtension } from "../src/extension.js";
 import type { HarnessRunOutcome, HarnessRunRequest, SubagentHarness } from "../src/core/harness.js";
 class ControlledHarness implements SubagentHarness {
@@ -35,7 +36,7 @@ it.each([
   const loader = new DefaultResourceLoader({ cwd, agentDir: cwd,
     settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     extensionFactories: [{ name: "wait-test", factory(pi) {
-      createPiSubagentsExtension({ readJevConfig: async () => undefined, createPiHarness: () => harness, createClaudeHarness: () => harness })(pi);
+      createPiSubagentsExtension({ stateDirectory: temporaryStateDirectory(), readJevConfig: async () => undefined, createPiHarness: () => harness, createClaudeHarness: () => harness })(pi);
       pi.registerTool({ name: "sibling", label: "Sibling", description: "Controlled sibling", parameters: Type.Object({}), async execute(_id, _params, signal) {
         siblingSignal = signal;
         await siblingDone;
@@ -102,7 +103,7 @@ it(
       settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       extensionFactories: [{ name: "nested-wait-test", factory(pi: any) {
         sdk.createCodemodeExtension!()(pi);
-        createPiSubagentsExtension({ readJevConfig: async () => undefined, createPiHarness: () => harness, createClaudeHarness: () => harness })(pi);
+        createPiSubagentsExtension({ stateDirectory: temporaryStateDirectory(), readJevConfig: async () => undefined, createPiHarness: () => harness, createClaudeHarness: () => harness })(pi);
         pi.on("tool_execution_start", (event: { toolName: string; parentToolCallId?: string }) => {
           if (event.toolName === "subagent_wait" && event.parentToolCallId) setImmediate(waiting);
         });

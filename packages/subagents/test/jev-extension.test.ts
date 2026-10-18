@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { temporaryStateDirectory } from "./helpers/temp-state.js";
 import { createPiSubagentsExtension, type ExtensionDependencies } from "../src/extension.js";
 import type { HarnessRunRequest, SubagentHarness } from "../src/core/harness.js";
 
@@ -28,7 +29,7 @@ async function fixture(options: { config?: { enabled: boolean }; scoped?: any[];
   const piHarness = new Harness("pi"), claudeHarness = new Harness("claude");
   let stored = options.config;
   const readJevConfig = vi.fn(async () => stored as any);
-  createPiSubagentsExtension({ createPiHarness: () => piHarness, createClaudeHarness: () => claudeHarness, readJevConfig, listClaudeModels: async () => [], resolveJevKey: async () => "key", ...options.dependencies })(pi);
+  createPiSubagentsExtension({ stateDirectory: temporaryStateDirectory(), createPiHarness: () => piHarness, createClaudeHarness: () => claudeHarness, readJevConfig, listClaudeModels: async () => [], resolveJevKey: async () => "key", ...options.dependencies })(pi);
   const available = options.available ?? [model("openai", "a"), model("openai", "b")];
   const scopedModels = options.scoped ?? [];
   const ctx = { cwd, mode: "print", hasUI: false, ui: { setStatus() {}, notify() {} }, isIdle: () => true, isProjectTrusted: () => true, model: model("openai", "a"), thinkingLevel: "medium", ...(scopedModels.length ? { scopedModels } : {}), modelRegistry: { find: () => model("openai", "a"), getAvailable: () => available }, sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;

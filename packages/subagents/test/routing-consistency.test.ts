@@ -9,6 +9,7 @@ import { DefaultRouteResolver, FileRoutingStore } from "../src/agents/index.js";
 import { JevRoutingConflictError, routeWithJev } from "../src/agents/jev.js";
 import type { AgentDefinition, RouteResolutionInput, RoutingEntry } from "../src/agents/types.js";
 import type { HarnessRunRequest, SubagentHarness } from "../src/core/harness.js";
+import { temporaryStateDirectory } from "./helpers/temp-state.js";
 import { createPiSubagentsExtension, type ExtensionDependencies } from "../src/extension.js";
 import type { ClaudeSupportedModel } from "../src/harnesses/claude.js";
 import { renderRoutingPanel } from "../src/tui/pi-panel-renderer.js";
@@ -224,7 +225,7 @@ describe("spawn routing consistency", () => {
     const pi = { on(name: string, fn: Function) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); }, registerTool(tool: ToolDefinition) { tools.set(tool.name, tool); }, registerCommand() {}, appendEntry() {}, sendMessage() {}, events: { emit() {}, on: () => () => {} } } as unknown as ExtensionAPI;
     const piHarness = new Harness("pi"), claudeHarness = new Harness("claude");
     const profile = options.profile;
-    createPiSubagentsExtension({
+    createPiSubagentsExtension({ stateDirectory: temporaryStateDirectory(),
       createPiHarness: () => piHarness,
       createClaudeHarness: () => claudeHarness,
       readJevConfig: async () => (options.enabled ? { version: 1, enabled: true, credential: { source: "environment", value: "JEV_KEY" } } : undefined) as any,
